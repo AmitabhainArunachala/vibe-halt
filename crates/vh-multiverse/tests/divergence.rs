@@ -5,7 +5,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use vh_gremlin::FaultPlan;
-use vh_multiverse::{run_multiverse, run_universe, MultiverseConfig, UniverseCtx, Workload};
+use vh_multiverse::{
+    run_multiverse, run_universe, run_universe_with_fault_plan, MultiverseConfig, UniverseCtx,
+    Workload,
+};
 
 /// A small deterministic workload: draws ops and a fault plan from named
 /// streams, records everything.
@@ -19,7 +22,7 @@ impl Workload for DeterministicDemo {
     fn run(&self, ctx: &mut UniverseCtx) {
         let mut ops = ctx.stream("ops");
         let mut gremlin = ctx.stream("gremlin");
-        let plan = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
+        let plan = ctx.fault_plan_or(|| FaultPlan::generate(&mut gremlin, 1_000_000, 4));
         let mut cursor = 0;
         for i in 0..50u64 {
             let now = i * 20_000;
@@ -96,6 +99,33 @@ fn multiverse_replays_across_many_runs() {
         .map(|r| r.trace_hash.clone())
         .collect();
     assert_eq!(hashes, hashes2);
+}
+
+/// The shrinker's oracle surface: an override plan replaces the
+/// workload-generated one through the identical code path, deterministically.
+#[test]
+fn fault_plan_override_replays_deterministically() {
+    let w = DeterministicDemo;
+    let baseline = run_universe(0xD1CE, 3, &w);
+
+    // Empty plan: no faults fire; the run must differ from the baseline
+    // (whose generated plan injects 4 faults) but replay identically.
+    let empty = FaultPlan::default();
+    let a = run_universe_with_fault_plan(0xD1CE, 3, &w, empty.clone());
+    let b = run_universe_with_fault_plan(0xD1CE, 3, &w, empty);
+    assert_eq!(a, b, "override replay must be bit-identical");
+    assert_ne!(
+        a.trace_hash, baseline.trace_hash,
+        "empty override must actually suppress the generated faults"
+    );
+
+    // Overriding with the plan the workload would have generated anyway
+    // must reproduce the baseline exactly — proving override and generated
+    // paths are the same path.
+    let mut gremlin = vh_core::SeedTree::new(0xD1CE).stream(3, "gremlin");
+    let generated = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
+    let c = run_universe_with_fault_plan(0xD1CE, 3, &w, generated);
+    assert_eq!(c, baseline);
 }
 
 #[test]

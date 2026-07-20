@@ -44,8 +44,19 @@ You own (create, edit freely):
 Append-only edits allowed (flag each in the PR body):
 - `docs/governance/ACTIVE_TRACK.yaml` — append your track (§3.1)
 - `Cargo.toml` — append your two crates to `members`
+- `Cargo.lock` — regenerate (`cargo generate-lockfile`) after the members
+  append; the workspace is zero-external-dependency, so the lockfile only
+  gains local package entries. Validate with `cargo build --locked`.
+  (Authorized 2026-07-20 per PR #2 scope question.)
 - `scripts/check_determinism_denylist.py` — append `crates/vh-shrink` and
   `crates/vh-verify` to `KERNEL_CRATES` (your crates are kernel-grade)
+
+Timing-boundary ruling (2026-07-20, PR #2): `crates/vh-verify/src/main.rs`
+is a per-file scanner exemption (`EXEMPT_FILES` in
+`scripts/check_determinism_denylist.py`) so the soak binary may emit
+wall-clock upH telemetry, PROVIDED wall-clock values never enter replay
+inputs or trace hashes. The crate's lib and tests remain fully scanned —
+append the crate to `KERNEL_CRATES` as specified.
 
 Off-limits (Claude's surfaces; changes flow through §4 protocol):
 - `crates/vh-core/**`, `crates/vh-trace/**`, `crates/vh-gremlin/**`,

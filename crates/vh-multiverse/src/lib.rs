@@ -12,6 +12,7 @@
 use std::collections::BTreeMap;
 
 use vh_core::{SeedTree, VirtualClock, VirtualTime, Xoshiro256pp};
+use vh_gremlin::FaultPlan;
 use vh_props::{AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
@@ -24,16 +25,30 @@ pub struct UniverseCtx {
     pub clock: VirtualClock,
     pub trace: Trace,
     pub props: Properties,
+    fault_plan_override: Option<FaultPlan>,
 }
 
 impl UniverseCtx {
-    fn new(root_seed: u64, universe_id: u64) -> Self {
+    fn new(root_seed: u64, universe_id: u64, fault_plan_override: Option<FaultPlan>) -> Self {
         Self {
             universe_id,
             seed_tree: SeedTree::new(root_seed),
             clock: VirtualClock::new(),
             trace: Trace::new(),
             props: Properties::new(),
+            fault_plan_override,
+        }
+    }
+
+    /// The fault plan for this universe: the externally supplied override
+    /// (shrinker/replay path via [`run_universe_with_fault_plan`]) if one
+    /// exists, else the plan the workload generates itself. Workloads MUST
+    /// route their plan through this so a shrunk plan replays through the
+    /// exact same code path as the original.
+    pub fn fault_plan_or(&self, generate: impl FnOnce() -> FaultPlan) -> FaultPlan {
+        match &self.fault_plan_override {
+            Some(plan) => plan.clone(),
+            None => generate(),
         }
     }
 
@@ -77,7 +92,30 @@ impl UniverseResult {
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
-    let mut ctx = UniverseCtx::new(root_seed, universe_id);
+    run_universe_inner(root_seed, universe_id, workload, None)
+}
+
+/// Replay a universe with an externally supplied fault plan instead of the
+/// workload-generated one. This is the shrinker's oracle surface: minimize
+/// a failing plan by replaying candidate sub-plans through the identical
+/// workload path. Identical (seed, universe, workload, plan) inputs produce
+/// identical observable results — Tier 1.
+pub fn run_universe_with_fault_plan(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    plan: FaultPlan,
+) -> UniverseResult {
+    run_universe_inner(root_seed, universe_id, workload, Some(plan))
+}
+
+fn run_universe_inner(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_plan_override: Option<FaultPlan>,
+) -> UniverseResult {
+    let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
     workload.run(&mut ctx);
     UniverseResult {
         universe_id,

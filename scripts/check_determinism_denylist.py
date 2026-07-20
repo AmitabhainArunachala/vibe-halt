@@ -27,6 +27,15 @@ KERNEL_CRATES = [
     "crates/vh-multiverse",
 ]
 
+# Narrow boundary exemptions (PR #2 timing-boundary ruling): a kernel-grade
+# crate's *binary entrypoint* may use wall-clock time for telemetry that
+# stays OUTSIDE replay inputs and trace hashes (e.g. vh-verify's soak upH
+# line). The exemption is per-file, never per-crate; lib and test code in
+# the same crate remains fully scanned.
+EXEMPT_FILES = {
+    "crates/vh-verify/src/main.rs",
+}
+
 # Pattern -> reason. Keep patterns coarse: false positives are cheap to
 # rename around; false negatives silently rot determinism.
 # Known, accepted miss (documented, PR #1 review): float NaN/precision
@@ -115,6 +124,8 @@ def main() -> int:
             print(f"denylist: missing kernel crate {crate}", file=sys.stderr)
             return 2
         for path in sorted(crate_dir.rglob("*.rs")):
+            if str(path.relative_to(REPO)) in EXEMPT_FILES:
+                continue
             scanned += 1
             text = path.read_text(encoding="utf-8")
             for lineno, line in enumerate(text.splitlines(), start=1):
