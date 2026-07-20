@@ -153,7 +153,7 @@ impl Workload for VerdictFlipDemo {
         let n = VERDICT_FLIPPER.fetch_add(1, Ordering::SeqCst);
         ctx.record("op", "constant"); // identical trace on every replay
         ctx.props
-            .always("stable_verdict", n % 2 == 0, || format!("flip #{n}"));
+            .always("stable_verdict", n.is_multiple_of(2), || format!("flip #{n}"));
     }
 }
 

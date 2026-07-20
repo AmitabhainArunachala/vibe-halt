@@ -24,6 +24,7 @@ fmt-check:
 gate:
 	python3 scripts/check_determinism_denylist.py --self-test
 	python3 scripts/check_determinism_denylist.py
+	cargo clippy --workspace --all-targets -- -D warnings
 	cargo test --workspace
 	cargo run -q -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
 	@if cargo run -q -p vh-cli -- run --workload demo-buggy --universes 50 > /dev/null; then \
