@@ -66,37 +66,103 @@ class Track:
         self.surfaces: list[str] = []
 
 
-def parse_tracks(text: str) -> tuple[int, list[str], list[Track]]:
+# Fail-closed status vocabulary: anything else is a governance problem,
+# not a silent deactivation (PR #1 hardening-loop-2 GAP: `status:
+# "ACTIVE"` and typo'd statuses used to silently drop a track from every
+# WIP/overlap check).
+KNOWN_STATUSES = {"ACTIVE", "PAUSED", "SHIPPED", "RETIRED"}
+
+
+def _unquote(value: str) -> str:
+    """YAML semantics for the scalar forms this file uses: matching
+    single/double quotes wrap the same string."""
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        return value[1:-1]
+    return value
+
+
+def _scalar(stripped: str) -> str:
+    return _unquote(stripped.split(":", 1)[1].split("#", 1)[0].strip())
+
+
+def _surface_form_ok(surface: str) -> bool:
+    """Only exact paths and a trailing '/**' are supported. Any other glob
+    metacharacter would silently defeat the overlap check, so it is
+    rejected instead of ignored."""
+    body = surface[:-3] if surface.endswith("/**") else surface
+    return body != "" and not any(c in body for c in "*?[]")
+
+
+def parse_tracks(text: str) -> tuple[int, list[str], list[Track], list[str]]:
     """yaml-lite parse of ACTIVE_TRACK.yaml: wip_max, shared_surfaces,
-    per-track id/status/owned_surfaces. Intentionally simple; the file's
-    structure is owned by this repo."""
+    per-track id/status/owned_surfaces, plus fail-closed parse problems.
+    Intentionally simple; the file's structure is owned by this repo."""
     wip_max = 0
     shared: list[str] = []
     tracks: list[Track] = []
+    problems: list[str] = []
+    top_key = ""
     section = ""
     for raw in text.splitlines():
         line = raw.rstrip()
         stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        # Track the current top-level key so list entries are attributed to
+        # the section they are actually in. The previous parser treated
+        # EVERY '- id:' at two-space indent as a track, silently absorbing
+        # spine_objectives entries as empty-status tracks (fail-open,
+        # masked until statuses were validated).
+        if not line[0].isspace():
+            top_key = stripped.split(":", 1)[0]
+            section = "shared" if top_key == "shared_surfaces" else ""
         if stripped.startswith("wip_max:"):
-            wip_max = int(stripped.split(":", 1)[1])
-        elif stripped == "shared_surfaces:":
-            section = "shared"
-        elif stripped.startswith("- id:") and line.startswith("  -"):
-            tracks.append(Track(stripped.split(":", 1)[1].strip()))
-            section = "track"
+            try:
+                wip_max = int(_scalar(stripped))
+            except ValueError:
+                problems.append(f"ACTIVE_TRACK.yaml: unparseable wip_max: {stripped!r}")
         elif section == "shared" and stripped.startswith("- "):
-            shared.append(stripped[2:].strip())
-        elif section == "shared" and stripped and not stripped.startswith(("- ", "#")):
-            section = ""
-        elif tracks and stripped.startswith("status:"):
-            tracks[-1].status = stripped.split(":", 1)[1].strip()
-        elif tracks and stripped == "owned_surfaces:":
+            shared.append(_unquote(stripped[2:].split("#", 1)[0].strip()))
+        elif top_key == "tracks" and stripped.startswith("- id:") and line.startswith("  -"):
+            tracks.append(Track(_scalar(stripped[2:])))
+            section = "track"
+        elif top_key == "tracks" and tracks and stripped.startswith("status:"):
+            tracks[-1].status = _scalar(stripped)
+        elif top_key == "tracks" and tracks and stripped == "owned_surfaces:":
             section = "surfaces"
         elif section == "surfaces" and stripped.startswith("- "):
-            tracks[-1].surfaces.append(stripped[2:].split("#", 1)[0].strip())
-        elif section == "surfaces" and stripped and not stripped.startswith(("- ", "#")):
+            tracks[-1].surfaces.append(_unquote(stripped[2:].split("#", 1)[0].strip()))
+        elif section == "surfaces" and not stripped.startswith(("- ", "#")):
             section = "track"
-    return wip_max, shared, tracks
+
+    seen_ids: set[str] = set()
+    for t in tracks:
+        if not t.track_id:
+            problems.append("ACTIVE_TRACK.yaml: track with empty id")
+        elif t.track_id in seen_ids:
+            problems.append(f"ACTIVE_TRACK.yaml: duplicate track id {t.track_id}")
+        seen_ids.add(t.track_id)
+        if t.status not in KNOWN_STATUSES:
+            problems.append(
+                f"ACTIVE_TRACK.yaml: track {t.track_id}: unknown status "
+                f"{t.status!r} (known: {sorted(KNOWN_STATUSES)})"
+            )
+        if t.status == "ACTIVE" and not t.surfaces:
+            problems.append(
+                f"ACTIVE_TRACK.yaml: ACTIVE track {t.track_id} owns no surfaces"
+            )
+        for s in t.surfaces:
+            if not _surface_form_ok(s):
+                problems.append(
+                    f"ACTIVE_TRACK.yaml: track {t.track_id}: unsupported surface "
+                    f"glob {s!r} (exact path or trailing /** only)"
+                )
+    for s in shared:
+        if not _surface_form_ok(s):
+            problems.append(
+                f"ACTIVE_TRACK.yaml: unsupported shared surface glob {s!r}"
+            )
+    return wip_max, shared, tracks, problems
 
 
 def normalize(surface: str) -> str:
@@ -113,7 +179,10 @@ def check_governance(problems: list[str]) -> None:
     if not track_file.is_file():
         problems.append("docs/governance/ACTIVE_TRACK.yaml missing")
         return
-    wip_max, shared, tracks = parse_tracks(track_file.read_text(encoding="utf-8"))
+    wip_max, shared, tracks, parse_problems = parse_tracks(
+        track_file.read_text(encoding="utf-8")
+    )
+    problems.extend(parse_problems)
     if wip_max <= 0 or not tracks:
         problems.append("ACTIVE_TRACK.yaml unparseable (no wip_max or no tracks)")
         return
@@ -141,15 +210,27 @@ def main() -> int:
     print("=== vibe-halt onboard ===\n")
     problems: list[str] = []
 
+    # Checkout failures and detached HEAD are verdict problems, not just
+    # printed curiosities (PR #1 hardening-loop-2 GAP): a session must not
+    # start READY on a checkout it cannot even describe.
     print("Checkout:")
+    branch = ""
     for label, cmd in [
         ("branch", ["git", "rev-parse", "--abbrev-ref", "HEAD"]),
         ("head", ["git", "rev-parse", "--short", "HEAD"]),
     ]:
         code, out = run(cmd)
         print(f"  {label}: {out if code == 0 else '(unavailable)'}")
+        if code != 0:
+            problems.append(f"git {label} unavailable ({out})")
+        elif label == "branch":
+            branch = out
+    if branch == "HEAD":
+        problems.append("detached HEAD — onboard requires a branch checkout")
     code, out = run(["git", "status", "--porcelain"])
-    print(f"  dirty files: {len(out.splitlines()) if out else 0}")
+    if code != 0:
+        problems.append(f"git status unavailable ({out})")
+    print(f"  dirty files: {len(out.splitlines()) if code == 0 and out else 0}")
 
     print("\nToolchain (pinned):")
     check_toolchain(problems)
