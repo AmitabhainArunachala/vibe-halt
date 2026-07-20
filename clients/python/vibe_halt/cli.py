@@ -1,18 +1,19 @@
-import argparse
-from .core.runner import MultiverseRunner
+"""QUARANTINED console script (PR #1 hardening-loop-4 BLOCKER 3).
+
+The installed `vibe-halt` command used to manufacture success — "All
+properties held across N universes" — without executing its target. It
+now fails explicitly as unimplemented instead of emitting fabricated
+evidence. Use the Rust engine: `cargo run -p vh-cli -- run ...`.
+"""
+
+import sys
+
+from .core.runner import QUARANTINE_MESSAGE
 
 
-def main():
-    parser = argparse.ArgumentParser(description="Mega Hyper Vibration Multiverse Halting Machine")
-    parser.add_argument("--target", required=True, help="Path to file or diff")
-    parser.add_argument("--universes", type=int, default=1000)
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    runner = MultiverseRunner(args.target, args.universes, args.seed)
-    report = runner.run()
-    print(report.summary)
-    print(report.to_dict())
+def main() -> None:
+    print(f"error: {QUARANTINE_MESSAGE}", file=sys.stderr)
+    raise SystemExit(2)
 
 
 if __name__ == "__main__":
