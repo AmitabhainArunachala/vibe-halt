@@ -691,3 +691,109 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
     );
     assert_eq!(runtime_evidence, r.runtime_evidence());
 }
+
+/// End-state oracles fail closed (Phase-2 oracles pulled early,
+/// 2026-07-21): a contract-required oracle the workload never supplies
+/// is a per-universe contract violation, and a failing oracle is an
+/// always-failure named `oracle:<name>` — neither can reach CLEAN.
+#[test]
+fn required_oracle_missing_or_failing_fails_closed() {
+    struct NoOracle;
+    impl Workload for NoOracle {
+        fn name(&self) -> &str {
+            "no-oracle"
+        }
+        fn property_contract(&self) -> PropertyContract {
+            PropertyContract::new(&[], &[]).with_oracles(&["durability"])
+        }
+        fn run(&self, _ctx: &mut UniverseCtx) -> RunOutcome {
+            RunOutcome::Completed
+        }
+    }
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 1,
+            universes: count(2),
+            check_divergence: true,
+        },
+        &NoOracle,
+    );
+    assert_eq!(report.contract_violations().len(), 2);
+    assert!(report.contract_violations()[0]
+        .1
+        .contains("end-state oracle 'durability' was never judged"));
+    assert_eq!(report.verdict(), Verdict::Findings);
+
+    struct FailingOracle;
+    impl Workload for FailingOracle {
+        fn name(&self) -> &str {
+            "failing-oracle"
+        }
+        fn property_contract(&self) -> PropertyContract {
+            PropertyContract::new(&[], &[]).with_oracles(&["broken"])
+        }
+        fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+            vec![vh_multiverse::EndStateOracle {
+                name: "broken",
+                check: |end| {
+                    Err(format!(
+                        "end state had {} keys and the law failed",
+                        end.len()
+                    ))
+                },
+            }]
+        }
+        fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+            ctx.declare_end("k", "v");
+            RunOutcome::Completed
+        }
+    }
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 1,
+            universes: count(1),
+            check_divergence: true,
+        },
+        &FailingOracle,
+    );
+    assert_eq!(report.verdict(), Verdict::Findings);
+    let failures = report.results()[0].always_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].name, "oracle:broken");
+    assert_eq!(
+        failures[0].detail,
+        "end state had 1 keys and the law failed"
+    );
+    assert!(report.contract_violations().is_empty());
+}
+
+/// Oracle verdicts are part of the observable transcript: two replays
+/// whose oracle outcomes differ would differ in `always_checks` — and a
+/// passing oracle entry is present, so a replay that skipped judgment is
+/// observably different (same doctrine as skipped passing invariants).
+#[test]
+fn oracle_judgment_enters_the_observable_transcript() {
+    struct Judged;
+    impl Workload for Judged {
+        fn name(&self) -> &str {
+            "judged"
+        }
+        fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+            vec![vh_multiverse::EndStateOracle {
+                name: "law",
+                check: |_| Ok(()),
+            }]
+        }
+        fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+            ctx.record("op", "x");
+            RunOutcome::Completed
+        }
+    }
+    let r = run_universe(9, 0, &Judged);
+    assert_eq!(r.always_checks().len(), 1);
+    assert_eq!(r.always_checks()[0].name, "oracle:law");
+    assert!(r.always_checks()[0].passed);
+    // And judgment reads state only: the trace carries the workload's one
+    // event, nothing from the oracle.
+    assert_eq!(r.trace_events(), 1);
+}

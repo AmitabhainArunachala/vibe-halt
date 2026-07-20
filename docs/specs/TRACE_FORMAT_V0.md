@@ -70,13 +70,20 @@ check; this list must grow with the struct. Enforced by
   (runner-owned semantic fault-lifecycle evidence — the runtime, not the
   workload, owns injection and measures Offered → Armed → Injected →
   Manifested → Recovered per injection; closes the loop-4 DEFERRED item
-  ~4 weeks ahead of 2026-08-15). The doctor observable fingerprint
+  ~4 weeks ahead of 2026-08-15). In the same migration, the demo's
+  durability law was re-expressed as an END-STATE ORACLE (Phase-2 pulled
+  early): the runner judges declared `acked:*`/`committed:*` end state
+  post-run and records exactly one `oracle:durability` transcript entry
+  per universe in place of the 32 inline per-key checks (per-key
+  granularity lives on in the oracle's failure detail; oracles record no
+  trace events by construction). The doctor observable fingerprint
   migrated `vh-doctor-observable-v2` (`cdb049391ddbacc06eb3faf3ea1cb43a`)
-  → `vh-doctor-observable-v3` (`25f5fa4126e8390f2b4fd61df4874f9f`); the
-  v3 renderer records `runtime-evidence: none` for legacy-path universes
-  and one `runtime-injection` line per injection otherwise, and doctor
-  additionally asserts the frozen demo universe stays on the LEGACY path
-  (its runtime evidence must be `None`). The TRACE hash identity
+  → `vh-doctor-observable-v3` (`1684e7c347e645f43a80a30abc46adb7`),
+  covering both causes; the v3 renderer records `runtime-evidence: none`
+  for legacy-path universes and one `runtime-injection` line per
+  injection otherwise, and doctor additionally asserts the frozen demo
+  universe stays on the LEGACY path (its runtime evidence must be
+  `None`) with the one-entry oracle transcript. The TRACE hash identity
   (`9ce6199f133f4d3c9dd0da0075e352d2`, 45 events) is unchanged — no
   recorded trace hash is invalidated. Additive in the same change:
   `FaultKind` gained TornWrite / FsyncLie / NetworkDuplicate /

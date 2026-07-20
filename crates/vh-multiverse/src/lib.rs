@@ -41,6 +41,7 @@ use vh_trace::Trace;
 
 pub use evidence::{InjectionOutcome, RuntimeEvidence};
 pub use runtime::{DeliveryNote, DiskError, NodeId, SimRuntime, StepEvent};
+pub use vh_props::{EndState, EndStateOracle};
 
 /// Everything a workload may touch inside one universe. All randomness comes
 /// from named streams; all time comes from the virtual clock; all observable
@@ -72,6 +73,11 @@ pub struct UniverseCtx {
     /// Phase-1 sim runtime ([`UniverseCtx::runtime`]); `None` for
     /// universes that never constructed the runtime.
     pub(crate) runtime_evidence: Option<RuntimeEvidence>,
+    /// The workload's declared end state, judged post-run by the
+    /// workload's [`EndStateOracle`]s. Oracles read state and never
+    /// record trace events; their verdicts enter the always transcript
+    /// as `oracle:<name>` entries.
+    pub(crate) end_state: EndState,
 }
 
 impl UniverseCtx {
@@ -88,6 +94,7 @@ impl UniverseCtx {
             fault_plan_retrievals: 0,
             plan_digest_trace,
             runtime_evidence: None,
+            end_state: EndState::new(),
         }
     }
 
@@ -162,6 +169,15 @@ impl UniverseCtx {
     /// the name was never declared (fail-closed declaration discipline).
     pub fn sometimes(&mut self, name: &str) {
         self.props.sometimes(name);
+    }
+
+    /// Declare one end-state fact for post-run oracle judgment. Last
+    /// write per key wins (deterministic; keys iterate in BTreeMap
+    /// order). Declaring end state records NO trace event — oracles are
+    /// read-only over state, so re-expressing an inline check as an
+    /// oracle leaves the frozen trace identity untouched.
+    pub fn declare_end(&mut self, key: &str, value: &str) {
+        self.end_state.insert(key.to_string(), value.to_string());
     }
 }
 
@@ -266,6 +282,7 @@ impl UniverseLifecycle {
 pub struct PropertyContract {
     required_always: Vec<String>,
     required_sometimes: Vec<String>,
+    required_oracles: Vec<String>,
 }
 
 impl PropertyContract {
@@ -273,7 +290,23 @@ impl PropertyContract {
         Self {
             required_always: required_always.iter().map(|s| s.to_string()).collect(),
             required_sometimes: required_sometimes.iter().map(|s| s.to_string()).collect(),
+            required_oracles: Vec::new(),
         }
+    }
+
+    /// Require named [`EndStateOracle`]s to have been evaluated in every
+    /// universe (their verdicts appear as `oracle:<name>` transcript
+    /// entries). A workload whose oracle list omits a required name is a
+    /// contract violation — belt and suspenders against the two lists
+    /// drifting apart.
+    pub fn with_oracles(mut self, names: &[&str]) -> Self {
+        self.required_oracles = names.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// End-state oracle names that must be judged in every universe.
+    pub fn required_oracles(&self) -> &[String] {
+        &self.required_oracles
     }
 
     /// Always-invariant names that must be evaluated at least once in
@@ -288,7 +321,9 @@ impl PropertyContract {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.required_always.is_empty() && self.required_sometimes.is_empty()
+        self.required_always.is_empty()
+            && self.required_sometimes.is_empty()
+            && self.required_oracles.is_empty()
     }
 
     /// Contract violations for one universe's transcript. Runner-owned:
@@ -309,6 +344,14 @@ impl PropertyContract {
                 ));
             }
         }
+        for name in &self.required_oracles {
+            let entry = format!("oracle:{name}");
+            if !result.always_checks().iter().any(|c| c.name == entry) {
+                out.push(format!(
+                    "required end-state oracle '{name}' was never judged"
+                ));
+            }
+        }
         out
     }
 }
@@ -323,6 +366,17 @@ pub trait Workload {
     /// (hardening-loop-4 GAP 5).
     fn property_contract(&self) -> PropertyContract {
         PropertyContract::default()
+    }
+
+    /// Typed post-run assertions over the declared end state. The runner
+    /// judges each oracle ONCE per universe after `run` returns and
+    /// records the verdict as an `oracle:<name>` entry in the always
+    /// transcript (in list order, after every inline check). Oracles
+    /// read state only — they cannot record trace events, so the frozen
+    /// trace identity of a re-expressed check is untouched by
+    /// construction.
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        Vec::new()
     }
 }
 
@@ -496,6 +550,17 @@ fn run_universe_inner(
     let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
     let outcome = workload.run(&mut ctx);
+    // Post-run oracle judgment: runner-owned, over the immutable declared
+    // end state, one transcript entry per oracle in list order. Judged
+    // unconditionally (an errored universe's oracle verdicts are evidence
+    // too; invalid completions already bar CLEAN).
+    for oracle in workload.end_state_oracles() {
+        let name = format!("oracle:{}", oracle.name);
+        match (oracle.check)(&ctx.end_state) {
+            Ok(()) => ctx.props.always(&name, true, String::new),
+            Err(detail) => ctx.props.always(&name, false, || detail.clone()),
+        }
+    }
     let fault_plan = match (override_supplied, ctx.fault_plan_retrievals) {
         (false, n) => FaultPlanDiscipline::SelfGenerated { retrievals: n },
         (true, 1) => FaultPlanDiscipline::OverrideRetrieved,

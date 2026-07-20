@@ -60,7 +60,7 @@ fn single_universe_replay_with_findings_exits_1() {
     ]);
     assert_eq!(code, 1, "failing replay must exit 1:\n{stdout}");
     assert!(stdout.contains("replay verdict: FINDINGS"), "{stdout}");
-    assert!(stdout.contains("ALWAYS-FAIL durability"), "{stdout}");
+    assert!(stdout.contains("ALWAYS-FAIL oracle:durability"), "{stdout}");
 }
 
 /// Pre-repair: `--universes 0 --universe 0` exited 0 because the single-

@@ -329,15 +329,19 @@ fn observable_fingerprint(result: &UniverseResult) -> String {
 /// sometimes states, lifecycle, fault-plan digest, and runtime evidence
 /// — a regression in any observable fails doctor even when the trace
 /// hash survives (hardening-loop-2 GAP).
-const DOCTOR_EXPECTED_FINGERPRINT: &str = "25f5fa4126e8390f2b4fd61df4874f9f";
+const DOCTOR_EXPECTED_FINGERPRINT: &str = "1684e7c347e645f43a80a30abc46adb7";
 
 /// Frozen semantic expectations for the doctor universe (demo, seed
 /// 0xD1CE, universe 0), asserted individually so a drift names the
-/// observable that moved: 32 passing `durability` checks, and BOTH crash
-/// sometimes declared-but-unreached — universe 0's generated fault plan
-/// happens to contain no CrashRestart, so its crash paths never fire
-/// (crash coverage is a multiverse-level property; see demo.rs).
-const DOCTOR_EXPECTED_ALWAYS_CHECKS: usize = 32;
+/// observable that moved: exactly ONE passing runner-judged
+/// `oracle:durability` transcript entry (the durability law re-expressed
+/// as an end-state oracle, 2026-07-21 — the 32 inline per-key checks it
+/// replaces live on in the oracle's per-key detail granularity), and
+/// BOTH crash sometimes declared-but-unreached — universe 0's generated
+/// fault plan happens to contain no CrashRestart, so its crash paths
+/// never fire (crash coverage is a multiverse-level property; see
+/// demo.rs).
+const DOCTOR_EXPECTED_ALWAYS_CHECKS: usize = 1;
 
 fn cmd_doctor() -> i32 {
     println!(
@@ -373,10 +377,10 @@ fn cmd_doctor() -> i32 {
     if a.always_checks().len() != DOCTOR_EXPECTED_ALWAYS_CHECKS
         || a.always_checks()
             .iter()
-            .any(|c| c.name != "durability" || !c.passed)
+            .any(|c| c.name != "oracle:durability" || !c.passed)
     {
         semantic_failures.push(format!(
-            "assertion transcript changed: {} checks (expected {DOCTOR_EXPECTED_ALWAYS_CHECKS} passing 'durability')",
+            "assertion transcript changed: {} checks (expected {DOCTOR_EXPECTED_ALWAYS_CHECKS} passing 'oracle:durability')",
             a.always_checks().len()
         ));
     }

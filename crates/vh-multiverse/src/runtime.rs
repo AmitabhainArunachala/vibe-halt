@@ -246,6 +246,12 @@ impl<'a> SimRuntime<'a> {
         self.ctx.props.sometimes(name);
     }
 
+    /// Declare one end-state fact for post-run oracle judgment (see
+    /// [`UniverseCtx::declare_end`] — records no trace event).
+    pub fn declare_end(&mut self, key: &str, value: &str) {
+        self.ctx.declare_end(key, value);
+    }
+
     /// Messages dropped so far (partition, crash-epoch, reorder expiry) —
     /// runtime-attested, for coverage assertions.
     pub fn drops(&self) -> u64 {

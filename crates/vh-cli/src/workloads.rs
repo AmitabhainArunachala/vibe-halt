@@ -9,7 +9,9 @@
 use std::collections::BTreeMap;
 
 use vh_gremlin::{FaultKind, FaultPlan};
-use vh_multiverse::{PropertyContract, RunOutcome, UniverseCtx, Workload};
+use vh_multiverse::{
+    EndState, EndStateOracle, PropertyContract, RunOutcome, UniverseCtx, Workload,
+};
 
 const OPS: u64 = 40;
 const OP_SPACING_NANOS: u64 = 25_000;
@@ -31,10 +33,26 @@ impl Workload for KvDemo {
     }
 
     /// The runner verifies this contract per universe (hardening-loop-4
-    /// GAP 5): every universe must evaluate `durability` at least once
-    /// and declare both crash sometimes-properties.
+    /// GAP 5): every universe must be judged by the `durability`
+    /// end-state oracle and declare both crash sometimes-properties.
     fn property_contract(&self) -> PropertyContract {
-        PropertyContract::new(&["durability"], &["crash_injected", "crash_with_dirty_wal"])
+        PropertyContract::new(&[], &["crash_injected", "crash_with_dirty_wal"])
+            .with_oracles(&["durability"])
+    }
+
+    /// Durability re-expressed as an end-state oracle (Phase-2 pulled
+    /// early, 2026-07-21): the run declares `acked:*` / `committed:*`
+    /// facts; the runner judges them post-run. Oracles read state and
+    /// record no trace events, so the frozen demo TRACE identity
+    /// (9ce6199f133f4d3c9dd0da0075e352d2, 45 events) is untouched by
+    /// this re-expression — pinned by doctor and by
+    /// `demo_trace_identity_survives_the_oracle_reexpression` in
+    /// tests/demo.rs.
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "durability",
+            check: durability_oracle,
+        }]
     }
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
@@ -113,13 +131,10 @@ impl Workload for KvDemo {
         ctx.record("flush", "final");
 
         for (key, value) in &acked {
-            let stored = committed.get(key);
-            ctx.always("durability", stored == Some(value), || {
-                format!(
-                    "acknowledged write {key}={value} missing after crash (committed={:?})",
-                    stored
-                )
-            });
+            ctx.declare_end(&format!("acked:{key}"), value);
+        }
+        for (key, value) in &committed {
+            ctx.declare_end(&format!("committed:{key}"), value);
         }
         debug_assert!(
             lost_acked_to_crash || acked.iter().all(|(k, v)| committed.get(k) == Some(v)),
@@ -130,6 +145,29 @@ impl Workload for KvDemo {
             &format!("committed={} acked={}", committed.len(), acked.len()),
         );
         RunOutcome::Completed
+    }
+}
+
+/// The demo's durability law over declared end state: every acknowledged
+/// write must be committed with the acknowledged value. The detail names
+/// every violated key (BTreeMap order — deterministic), preserving the
+/// per-key evidence granularity of the inline checks it replaces.
+fn durability_oracle(end: &EndState) -> Result<(), String> {
+    let mut violations = Vec::new();
+    for (key, value) in end {
+        if let Some(k) = key.strip_prefix("acked:") {
+            let stored = end.get(&format!("committed:{k}"));
+            if stored != Some(value) {
+                violations.push(format!(
+                    "acknowledged write {k}={value} missing after crash (committed={stored:?})"
+                ));
+            }
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(violations.join("; "))
     }
 }
 
