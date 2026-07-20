@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use vh_gremlin::{FaultKind, FaultPlan};
-use vh_multiverse::{UniverseCtx, Workload};
+use vh_multiverse::{RunOutcome, UniverseCtx, Workload};
 
 const OPS: u64 = 40;
 const OP_SPACING_NANOS: u64 = 25_000;
@@ -30,7 +30,7 @@ impl Workload for KvDemo {
         }
     }
 
-    fn run(&self, ctx: &mut UniverseCtx) {
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         ctx.declare_sometimes("crash_injected");
         ctx.declare_sometimes("crash_with_dirty_wal");
 
@@ -122,6 +122,7 @@ impl Workload for KvDemo {
             "final",
             &format!("committed={} acked={}", committed.len(), acked.len()),
         );
+        RunOutcome::Completed
     }
 }
 
@@ -135,11 +136,12 @@ impl Workload for NondetDemo {
         "demo-nondet"
     }
 
-    fn run(&self, ctx: &mut UniverseCtx) {
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         use std::sync::atomic::{AtomicU64, Ordering};
         static LEAK: AtomicU64 = AtomicU64::new(0);
         let leaked = LEAK.fetch_add(1, Ordering::SeqCst);
         ctx.record("leak", &format!("counter={leaked}"));
+        RunOutcome::Completed
     }
 }
 

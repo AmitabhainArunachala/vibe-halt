@@ -212,6 +212,7 @@ mod tests {
         let mut r = Xoshiro256pp::from_seed(0xD1CE);
         assert!(!r.next_bool(0.0)); // consumes frozen head word 0
         assert!(r.next_bool(1.0)); // consumes frozen head word 1
+
         // The next raw draw must be frozen head word 2 — proving exactly
         // one word per boundary call, unchanged by input validation.
         assert_eq!(r.next_u64(), 0xa120_3c4b_5476_b7fd);

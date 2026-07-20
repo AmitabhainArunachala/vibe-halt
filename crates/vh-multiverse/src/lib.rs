@@ -2,22 +2,28 @@
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
 //! TWICE and the complete observable results — trace hash, event count,
-//! assertion transcript, always-failures, and sometimes map — must match
-//! exactly. A mismatch means nondeterminism leaked into the kernel or the
-//! workload, and the report says so loudly instead of pretending the run
-//! was reproducible.
+//! assertion transcript, always-failures, sometimes map, and runner
+//! lifecycle evidence — must match exactly. A mismatch means nondeterminism
+//! leaked into the kernel or the workload, and the report says so loudly
+//! instead of pretending the run was reproducible.
 //!
 //! Evidence integrity: workloads interact with the evidence ledger ONLY
 //! through capability methods (`record`, `always`, `sometimes`, ...) —
 //! the trace, properties, clock, and identity fields are private, so a
 //! safe-Rust workload cannot erase, replace, or re-attribute evidence
-//! (PR #1 hardening-loop BLOCKER). This is an API guarantee for safe code
-//! in-process, not a sandbox: untrusted code belongs in Tier-2 subprocess
-//! universes, never linked into the runner.
+//! (PR #1 hardening-loop BLOCKER). The same applies downstream: every
+//! `UniverseResult` and `MultiverseReport` evidence field is private with
+//! read-only getters and internal construction, so safe downstream code
+//! cannot forge an empty divergence-checked report or flip its flags
+//! (hardening-loop-2 BLOCKER; the privacy is enforced by rustc — the
+//! pre-repair forgery repro no longer compiles). This is an API guarantee
+//! for safe code in-process, not a sandbox: untrusted code belongs in
+//! Tier-2 subprocess universes, never linked into the runner.
 
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::fmt;
 use std::num::NonZeroU64;
 
 use vh_core::{SeedTree, VirtualClock, VirtualTime, Xoshiro256pp};
@@ -35,6 +41,10 @@ pub struct UniverseCtx {
     trace: Trace,
     props: Properties,
     fault_plan_override: Option<FaultPlan>,
+    /// Runner-owned ledger: how many times the workload asked for its
+    /// fault plan. Finalized into [`FaultPlanDiscipline`] — a workload
+    /// cannot edit it (hardening-loop-2 BLOCKER).
+    fault_plan_consumptions: u64,
 }
 
 impl UniverseCtx {
@@ -46,6 +56,7 @@ impl UniverseCtx {
             trace: Trace::new(),
             props: Properties::new(),
             fault_plan_override,
+            fault_plan_consumptions: 0,
         }
     }
 
@@ -64,10 +75,20 @@ impl UniverseCtx {
     /// exists, else the plan the workload generates itself. Workloads MUST
     /// route their plan through this so a shrunk plan replays through the
     /// exact same code path as the original.
-    pub fn fault_plan_or(&self, generate: impl FnOnce() -> FaultPlan) -> FaultPlan {
+    ///
+    /// The generator closure is ALWAYS evaluated — override present or not
+    /// — so its effects (PRNG stream draws) happen identically on both
+    /// paths. Before this, an override skipped generation, and any workload
+    /// whose generator shared a stream with later draws consumed a
+    /// different number of words under replay, contradicting the
+    /// identical-path claim (hardening-loop-2 BLOCKER). Each call is
+    /// counted in a runner-owned ledger; see [`FaultPlanDiscipline`].
+    pub fn fault_plan_or(&mut self, generate: impl FnOnce() -> FaultPlan) -> FaultPlan {
+        let generated = generate();
+        self.fault_plan_consumptions += 1;
         match &self.fault_plan_override {
             Some(plan) => plan.clone(),
-            None => generate(),
+            None => generated,
         }
     }
 
@@ -97,31 +118,143 @@ impl UniverseCtx {
         self.props.declare_sometimes(name);
     }
 
-    /// Mark a sometimes-assertion as reached in this universe.
+    /// Mark a sometimes-assertion as reached in this universe. Panics if
+    /// the name was never declared (fail-closed declaration discipline).
     pub fn sometimes(&mut self, name: &str) {
         self.props.sometimes(name);
     }
 }
 
-pub trait Workload {
-    fn name(&self) -> &str;
-    fn run(&self, ctx: &mut UniverseCtx);
+/// Typed completion outcome a workload must return (hardening-loop-2
+/// BLOCKER): a report can only be CLEAN when every universe's workload
+/// AFFIRMATIVELY completed. Before this, `run` returned nothing, so a
+/// workload that silently did no work reached CLEAN through an empty
+/// finding ledger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RunOutcome {
+    /// The workload ran to its intended end; its evidence is a valid basis
+    /// for a verdict.
+    Completed,
+    /// A precondition of the workload did not hold; the universe proves
+    /// nothing about the property space. Never CLEAN.
+    InvalidAssumption(String),
+    /// The workload hit an error path it could not absorb. Never CLEAN.
+    ExecutionError(String),
 }
 
+/// Runner-derived fault-plan discipline for one universe. Produced from
+/// the private consumption ledger after the workload returns; a workload
+/// cannot construct or edit it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FaultPlanDiscipline {
+    /// No override was supplied; the workload generated its own plan
+    /// `consumptions` times through [`UniverseCtx::fault_plan_or`]
+    /// (zero is legal — not every workload uses fault plans).
+    SelfGenerated { consumptions: u64 },
+    /// An override was supplied and consumed exactly once: the replay
+    /// contract held.
+    OverrideConsumed,
+    /// An override was supplied but never consumed — the workload ignored
+    /// the replacement plan, so any replay claim would be false. Fails
+    /// closed: never a valid completion.
+    OverrideIgnored,
+    /// An override was supplied and consumed more than once — ambiguous
+    /// replay. Fails closed: never a valid completion.
+    OverrideOverconsumed { consumptions: u64 },
+}
+
+/// Runner-owned lifecycle evidence for one universe: the workload's typed
+/// outcome plus the fault-plan discipline. Part of the observable result
+/// and its equality (Tier-1 identity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UniverseLifecycle {
+    outcome: RunOutcome,
+    fault_plan: FaultPlanDiscipline,
+}
+
+impl UniverseLifecycle {
+    /// The workload's typed completion outcome.
+    pub fn outcome(&self) -> &RunOutcome {
+        &self.outcome
+    }
+
+    /// The runner-derived fault-plan discipline.
+    pub fn fault_plan(&self) -> &FaultPlanDiscipline {
+        &self.fault_plan
+    }
+
+    /// A universe is validly complete iff the workload affirmatively
+    /// completed AND the fault-plan discipline held. CLEAN requires this
+    /// for every universe.
+    pub fn is_valid_completion(&self) -> bool {
+        self.outcome == RunOutcome::Completed
+            && matches!(
+                self.fault_plan,
+                FaultPlanDiscipline::SelfGenerated { .. } | FaultPlanDiscipline::OverrideConsumed
+            )
+    }
+}
+
+pub trait Workload {
+    fn name(&self) -> &str;
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome;
+}
+
+/// The complete public observation of one universe execution. All fields
+/// are private with read-only getters; construction is internal to the
+/// runner, so safe downstream code cannot forge or edit evidence
+/// (hardening-loop-2 BLOCKER). Tier-1 identity is the WHOLE struct — see
+/// `observably_equal`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UniverseResult {
-    pub universe_id: u64,
-    pub trace_hash: String,
-    pub trace_events: usize,
-    /// Full assertion transcript in invocation order — passing checks
-    /// included, so a replay that skips a passing invariant is observably
-    /// different (PR #1 hardening-loop BLOCKER).
-    pub always_checks: Vec<AlwaysCheck>,
-    pub always_failures: Vec<AlwaysFailure>,
-    pub sometimes: BTreeMap<String, bool>,
+    universe_id: u64,
+    trace_hash: String,
+    trace_events: usize,
+    always_checks: Vec<AlwaysCheck>,
+    always_failures: Vec<AlwaysFailure>,
+    sometimes: BTreeMap<String, bool>,
+    lifecycle: UniverseLifecycle,
 }
 
 impl UniverseResult {
+    /// This universe's identity.
+    pub fn universe_id(&self) -> u64 {
+        self.universe_id
+    }
+
+    /// Chain hash of the trace (docs/specs/TRACE_FORMAT_V0.md).
+    pub fn trace_hash(&self) -> &str {
+        &self.trace_hash
+    }
+
+    /// Number of trace events.
+    pub fn trace_events(&self) -> usize {
+        self.trace_events
+    }
+
+    /// Full assertion transcript in invocation order — passing checks
+    /// included, so a replay that skips a passing invariant is observably
+    /// different (PR #1 hardening-loop BLOCKER).
+    pub fn always_checks(&self) -> &[AlwaysCheck] {
+        &self.always_checks
+    }
+
+    /// Ordered always-failures with details.
+    pub fn always_failures(&self) -> &[AlwaysFailure] {
+        &self.always_failures
+    }
+
+    /// Declared sometimes properties and their reached state.
+    pub fn sometimes(&self) -> &BTreeMap<String, bool> {
+        &self.sometimes
+    }
+
+    /// Runner-owned lifecycle evidence (typed outcome + fault-plan
+    /// discipline).
+    pub fn lifecycle(&self) -> &UniverseLifecycle {
+        &self.lifecycle
+    }
+
     /// Two replays are the same run iff EVERY observable agrees. Struct
     /// equality is the definition on purpose: adding an observable field
     /// automatically strengthens the divergence check.
@@ -137,8 +270,15 @@ pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -
 /// Replay a universe with an externally supplied fault plan instead of the
 /// workload-generated one. This is the shrinker's oracle surface: minimize
 /// a failing plan by replaying candidate sub-plans through the identical
-/// workload path. Identical (seed, universe, workload, plan) inputs produce
-/// identical observable results — Tier 1.
+/// workload path.
+///
+/// Tier honesty: identical (seed, universe, workload, plan) inputs produce
+/// identical observable results — Tier 1 — PROVIDED the workload draws all
+/// nondeterminism from its `UniverseCtx` and its lifecycle reports
+/// `OverrideConsumed`. A result whose fault-plan discipline is
+/// `OverrideIgnored` or `OverrideOverconsumed` is not a valid replay and
+/// never a valid completion; the divergence detector remains the
+/// mechanical check for workload purity.
 pub fn run_universe_with_fault_plan(
     root_seed: u64,
     universe_id: u64,
@@ -154,8 +294,15 @@ fn run_universe_inner(
     workload: &dyn Workload,
     fault_plan_override: Option<FaultPlan>,
 ) -> UniverseResult {
+    let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
-    workload.run(&mut ctx);
+    let outcome = workload.run(&mut ctx);
+    let fault_plan = match (override_supplied, ctx.fault_plan_consumptions) {
+        (false, n) => FaultPlanDiscipline::SelfGenerated { consumptions: n },
+        (true, 1) => FaultPlanDiscipline::OverrideConsumed,
+        (true, 0) => FaultPlanDiscipline::OverrideIgnored,
+        (true, n) => FaultPlanDiscipline::OverrideOverconsumed { consumptions: n },
+    };
     UniverseResult {
         universe_id: ctx.universe_id,
         trace_hash: ctx.trace.hash_hex(),
@@ -163,15 +310,81 @@ fn run_universe_inner(
         always_checks: ctx.props.always_checks().to_vec(),
         always_failures: ctx.props.always_failures().to_vec(),
         sometimes: ctx.props.sometimes_map().clone(),
+        lifecycle: UniverseLifecycle {
+            outcome,
+            fault_plan,
+        },
+    }
+}
+
+/// Typed universe count: nonzero AND bounded. Zero work is never certified
+/// (hardening-loop-1 BLOCKER); an absurd count is a typed configuration
+/// error instead of an allocation abort — `--universes u64::MAX` used to
+/// exit 101 through `Vec::with_capacity` (hardening-loop-2 GAP).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UniverseCount(NonZeroU64);
+
+impl UniverseCount {
+    /// v0 resource bound: the sequential runner refuses campaigns beyond
+    /// this rather than attempting them. Raising it is a resourcing
+    /// decision, not a refactor.
+    pub const MAX: u64 = 1 << 20;
+
+    pub fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MultiverseConfigError {
+    /// Zero universes: an empty campaign can never be certified.
+    ZeroUniverses,
+    /// More universes than the v0 resource bound.
+    TooManyUniverses { requested: u64, max: u64 },
+}
+
+impl fmt::Display for MultiverseConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            MultiverseConfigError::ZeroUniverses => {
+                write!(
+                    f,
+                    "--universes must be nonzero — zero work is never certified"
+                )
+            }
+            MultiverseConfigError::TooManyUniverses { requested, max } => {
+                write!(
+                    f,
+                    "--universes {requested} exceeds the v0 resource bound ({max}) — refusing the allocation instead of aborting"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for MultiverseConfigError {}
+
+impl TryFrom<u64> for UniverseCount {
+    type Error = MultiverseConfigError;
+
+    fn try_from(n: u64) -> Result<Self, Self::Error> {
+        match NonZeroU64::new(n) {
+            None => Err(MultiverseConfigError::ZeroUniverses),
+            Some(_) if n > Self::MAX => Err(MultiverseConfigError::TooManyUniverses {
+                requested: n,
+                max: Self::MAX,
+            }),
+            Some(nz) => Ok(Self(nz)),
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct MultiverseConfig {
     pub root_seed: u64,
-    /// Typed nonzero: an empty multiverse cannot be constructed, so zero
-    /// work can never be certified (PR #1 hardening-loop BLOCKER).
-    pub universes: NonZeroU64,
+    /// Typed nonzero-and-bounded: an empty or absurd multiverse cannot be
+    /// constructed (hardening loops 1 and 2).
+    pub universes: UniverseCount,
     /// Run every universe twice and compare complete observable results.
     /// When false the report's verdict is UNCHECKED, never CLEAN.
     pub check_divergence: bool,
@@ -181,27 +394,87 @@ pub struct MultiverseConfig {
 /// divergence detection disabled can never share the CLEAN verdict path.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verdict {
-    /// Divergence-checked and finding-free.
+    /// Divergence-checked, finding-free, every universe validly completed.
     Clean,
-    /// At least one always-failure, divergence, or unreached sometimes.
+    /// At least one always-failure, divergence, unreached sometimes,
+    /// invalid completion, or report-integrity violation.
     Findings,
     /// Finding-free but divergence detection was disabled: inconclusive.
     Unchecked,
 }
 
+/// Typed replay-evidence quality, orthogonal to finding status
+/// (hardening-loop-2 GAP): the tier claim and whether it was mechanically
+/// checked travel with the report instead of living in prose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayEvidence {
+    /// Every universe ran twice and complete observations were compared:
+    /// the Tier-1 claim is mechanically checked (divergences, if any, are
+    /// findings — checked ≠ clean).
+    Tier1DivergenceChecked,
+    /// Single executions only: Tier 1 claimed by the simulated-runtime
+    /// substrate (docs/specs/DETERMINISM_TIERS.md) but not verified in
+    /// this run.
+    Tier1Unchecked,
+}
+
+impl ReplayEvidence {
+    pub fn label(self) -> &'static str {
+        match self {
+            ReplayEvidence::Tier1DivergenceChecked => "Tier 1 (divergence-checked)",
+            ReplayEvidence::Tier1Unchecked => "Tier 1 claimed (divergence check disabled)",
+        }
+    }
+}
+
+/// Campaign evidence. All fields private with read-only getters and
+/// internal construction: safe downstream code cannot build an empty
+/// `divergence_checked` report or flip its flags, and `verdict()` only
+/// ever reads runner-produced state (hardening-loop-2 BLOCKER).
 #[derive(Debug, Clone)]
 pub struct MultiverseReport {
-    pub root_seed: u64,
-    pub workload: String,
-    /// Whether every universe was replayed and compared.
-    pub divergence_checked: bool,
-    pub results: Vec<UniverseResult>,
-    /// Universe ids whose two runs produced different observable results.
-    pub divergent_universes: Vec<u64>,
-    pub merged: MergedProperties,
+    root_seed: u64,
+    workload: String,
+    divergence_checked: bool,
+    universes_requested: u64,
+    results: Vec<UniverseResult>,
+    divergent_universes: Vec<u64>,
+    merged: MergedProperties,
 }
 
 impl MultiverseReport {
+    pub fn root_seed(&self) -> u64 {
+        self.root_seed
+    }
+
+    pub fn workload(&self) -> &str {
+        &self.workload
+    }
+
+    /// Whether every universe was replayed and compared.
+    pub fn divergence_checked(&self) -> bool {
+        self.divergence_checked
+    }
+
+    /// The campaign size that was requested — stored so the verdict can
+    /// cross-check result cardinality instead of trusting `results` alone.
+    pub fn universes_requested(&self) -> u64 {
+        self.universes_requested
+    }
+
+    pub fn results(&self) -> &[UniverseResult] {
+        &self.results
+    }
+
+    /// Universe ids whose two runs produced different observable results.
+    pub fn divergent_universes(&self) -> &[u64] {
+        &self.divergent_universes
+    }
+
+    pub fn merged(&self) -> &MergedProperties {
+        &self.merged
+    }
+
     /// Universe ids with at least one always-failure.
     pub fn failing_universes(&self) -> Vec<u64> {
         self.results
@@ -211,15 +484,44 @@ impl MultiverseReport {
             .collect()
     }
 
+    /// Universe ids whose lifecycle is not a valid completion (workload
+    /// outcome not `Completed`, or fault-plan discipline violated).
+    pub fn invalid_universes(&self) -> Vec<u64> {
+        self.results
+            .iter()
+            .filter(|r| !r.lifecycle.is_valid_completion())
+            .map(|r| r.universe_id)
+            .collect()
+    }
+
+    /// Typed replay-evidence quality (orthogonal to findings).
+    pub fn replay_evidence(&self) -> ReplayEvidence {
+        if self.divergence_checked {
+            ReplayEvidence::Tier1DivergenceChecked
+        } else {
+            ReplayEvidence::Tier1Unchecked
+        }
+    }
+
     fn has_findings(&self) -> bool {
         !self.failing_universes().is_empty()
+            || !self.invalid_universes().is_empty()
             || !self.divergent_universes.is_empty()
             || !self.merged.unreached_sometimes().is_empty()
     }
 
-    /// Tri-state verdict; CLEAN requires divergence checking to have run.
+    /// Report integrity: exactly the requested number of universes must
+    /// have produced results. Internal construction should make a mismatch
+    /// impossible; the check fails closed against internal bugs anyway.
+    fn cardinality_ok(&self) -> bool {
+        self.results.len() as u64 == self.universes_requested
+    }
+
+    /// Tri-state verdict; CLEAN requires divergence checking to have run,
+    /// every universe to have validly completed, and result cardinality to
+    /// match the requested campaign size.
     pub fn verdict(&self) -> Verdict {
-        if self.has_findings() {
+        if !self.cardinality_ok() || self.has_findings() {
             Verdict::Findings
         } else if self.divergence_checked {
             Verdict::Clean
@@ -228,7 +530,8 @@ impl MultiverseReport {
         }
     }
 
-    /// True only for a divergence-checked, finding-free run.
+    /// True only for a divergence-checked, finding-free, validly completed
+    /// run.
     pub fn is_clean(&self) -> bool {
         self.verdict() == Verdict::Clean
     }
@@ -239,6 +542,8 @@ impl MultiverseReport {
 /// runner must match hash-for-hash.
 pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> MultiverseReport {
     let universes = cfg.universes.get();
+    // UniverseCount::MAX bounds this preallocation; the typed constructor
+    // rejects anything larger before we get here.
     let mut results = Vec::with_capacity(universes as usize);
     let mut divergent = Vec::new();
     let mut merged = MergedProperties::default();
@@ -259,6 +564,7 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
         root_seed: cfg.root_seed,
         workload: workload.name().to_string(),
         divergence_checked: cfg.check_divergence,
+        universes_requested: universes,
         results,
         divergent_universes: divergent,
         merged,
