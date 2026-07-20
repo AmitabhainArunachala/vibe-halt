@@ -27,8 +27,10 @@ cargo run -p vh-cli -- doctor
 ```
 
 `vh run` exits 0 only if the multiverse is clean: no always-failure, no
-divergence between the two runs of each universe, and every declared
-sometimes-assertion reached.
+divergence between the two runs of each universe, every declared
+sometimes-assertion reached, every universe validly completed, and the
+workload's non-empty property contract satisfied everywhere (a workload
+that asserts nothing is UNCHECKED, never CLEAN).
 
 ## Layout
 

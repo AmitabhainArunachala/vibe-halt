@@ -48,7 +48,9 @@ WORKLOADS:
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every
-universe validly completed. With --no-divergence-check a finding-free run
+universe validly completed, and the workload's NON-EMPTY property
+contract satisfied in every universe (a workload that asserts nothing is
+UNCHECKED, never CLEAN). With --no-divergence-check a finding-free run
 is UNCHECKED (exit 3), never CLEAN. A single-universe replay (--universe)
 is likewise UNCHECKED (exit 3) when finding-free — one execution proves
 nothing about reproducibility. --universes must be nonzero and within the
@@ -140,6 +142,11 @@ fn cmd_run(args: &[String]) -> i32 {
             result.trace_hash(),
             result.trace_events()
         );
+        println!(
+            "  fault-plan digest: {} ({})",
+            result.fault_plan_digest().unwrap_or("none"),
+            vh_multiverse::FAULT_PLAN_DIGEST_SCHEMA
+        );
         for f in result.always_failures() {
             println!("  ALWAYS-FAIL {}: {}", f.name, f.detail);
         }
@@ -156,8 +163,13 @@ fn cmd_run(args: &[String]) -> i32 {
                 result.lifecycle().fault_plan()
             );
         }
-        let has_findings =
-            !result.always_failures().is_empty() || !result.lifecycle().is_valid_completion();
+        let contract_violations = workload.property_contract().violations(&result);
+        for v in &contract_violations {
+            println!("  CONTRACT: {v}");
+        }
+        let has_findings = !result.always_failures().is_empty()
+            || !result.lifecycle().is_valid_completion()
+            || !contract_violations.is_empty();
         return if has_findings {
             println!("  replay verdict: FINDINGS");
             1
@@ -192,11 +204,12 @@ fn cmd_run(args: &[String]) -> i32 {
         run.check_divergence
     );
     println!(
-        "  always-failures: {} universe(s); divergent: {}; sometimes unreached: {}; invalid completions: {}",
+        "  always-failures: {} universe(s); divergent: {}; sometimes unreached: {}; invalid completions: {}; contract violations: {}",
         failing.len(),
         report.divergent_universes().len(),
         report.merged().unreached_sometimes().len(),
-        invalid.len()
+        invalid.len(),
+        report.contract_violations().len()
     );
     println!("  evidence: {}", report.replay_evidence().label());
 
@@ -228,6 +241,15 @@ fn cmd_run(args: &[String]) -> i32 {
     for name in report.merged().unreached_sometimes() {
         println!("  SOMETIMES-UNREACHED: {name} (dead path across the whole multiverse)");
     }
+    for (u, v) in report.contract_violations().iter().take(10) {
+        println!("  CONTRACT universe {u}: {v}");
+    }
+    if report.contract_violations().len() > 10 {
+        println!(
+            "  ... and {} more contract violations",
+            report.contract_violations().len() - 10
+        );
+    }
 
     match report.verdict() {
         Verdict::Clean => {
@@ -239,7 +261,17 @@ fn cmd_run(args: &[String]) -> i32 {
             1
         }
         Verdict::Unchecked => {
-            println!("  verdict: UNCHECKED (no findings, but divergence detection was disabled — inconclusive)");
+            let mut reasons: Vec<&str> = Vec::new();
+            if !run.check_divergence {
+                reasons.push("divergence detection was disabled");
+            }
+            if report.contract().is_empty() {
+                reasons.push("the workload asserts no property contract");
+            }
+            println!(
+                "  verdict: UNCHECKED (no findings, but {} — inconclusive)",
+                reasons.join(" and ")
+            );
             3
         }
     }
@@ -249,8 +281,12 @@ fn cmd_run(args: &[String]) -> i32 {
 /// fresh trace and hash it: one canonical fingerprint over every
 /// observable field, reusing the frozen trace-hash machinery
 /// (docs/specs/TRACE_FORMAT_V0.md). Schema versioned: renderer changes
-/// are compatibility decisions.
-const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v1";
+/// are compatibility decisions. v2 (hardening-loop-4 GAP 5): adds the
+/// fault-plan digest observable and renders the renamed retrieval
+/// lifecycle — an explicit migration from v1
+/// (`462e803383be1b24594e76d5f9301be8`), recorded here; the underlying
+/// TRACE hash identity is unchanged.
+const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v2";
 
 fn observable_fingerprint(result: &UniverseResult) -> String {
     let mut t = vh_trace::Trace::new();
@@ -268,15 +304,21 @@ fn observable_fingerprint(result: &UniverseResult) -> String {
         t.record(0, "sometimes", &format!("{name}={hit}"));
     }
     t.record(0, "lifecycle", &format!("{:?}", result.lifecycle()));
+    t.record(
+        0,
+        "fault-plan-digest",
+        result.fault_plan_digest().unwrap_or("none"),
+    );
     t.hash_hex()
 }
 
 /// Frozen fingerprint of the complete doctor observation (demo workload,
-/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v1`. Unlike the
+/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v2`. Unlike the
 /// trace hash alone, this pins the assertion transcript, failures,
-/// sometimes states, and lifecycle — a regression in any observable fails
-/// doctor even when the trace hash survives (hardening-loop-2 GAP).
-const DOCTOR_EXPECTED_FINGERPRINT: &str = "462e803383be1b24594e76d5f9301be8";
+/// sometimes states, lifecycle, and fault-plan digest — a regression in
+/// any observable fails doctor even when the trace hash survives
+/// (hardening-loop-2 GAP).
+const DOCTOR_EXPECTED_FINGERPRINT: &str = "cdb049391ddbacc06eb3faf3ea1cb43a";
 
 /// Frozen semantic expectations for the doctor universe (demo, seed
 /// 0xD1CE, universe 0), asserted individually so a drift names the
@@ -335,6 +377,13 @@ fn cmd_doctor() -> i32 {
     }
     if !a.lifecycle().is_valid_completion() {
         semantic_failures.push(format!("lifecycle invalid: {:?}", a.lifecycle()));
+    }
+    if a.fault_plan_digest().is_none() {
+        semantic_failures.push(
+            "fault-plan digest missing: the demo workload retrieves a plan, so its \
+             replay-input identity must be bound into the result"
+                .to_string(),
+        );
     }
     let fingerprint = observable_fingerprint(&a);
     if fingerprint != DOCTOR_EXPECTED_FINGERPRINT {

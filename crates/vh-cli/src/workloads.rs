@@ -9,7 +9,7 @@
 use std::collections::BTreeMap;
 
 use vh_gremlin::{FaultKind, FaultPlan};
-use vh_multiverse::{RunOutcome, UniverseCtx, Workload};
+use vh_multiverse::{PropertyContract, RunOutcome, UniverseCtx, Workload};
 
 const OPS: u64 = 40;
 const OP_SPACING_NANOS: u64 = 25_000;
@@ -28,6 +28,13 @@ impl Workload for KvDemo {
         } else {
             "demo"
         }
+    }
+
+    /// The runner verifies this contract per universe (hardening-loop-4
+    /// GAP 5): every universe must evaluate `durability` at least once
+    /// and declare both crash sometimes-properties.
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&["durability"], &["crash_injected", "crash_with_dirty_wal"])
     }
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {

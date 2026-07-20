@@ -46,14 +46,23 @@ pub struct UniverseCtx {
     trace: Trace,
     props: Properties,
     fault_plan_override: Option<FaultPlan>,
-    /// Runner-owned ledger: how many times the workload asked for its
-    /// fault plan. Finalized into [`FaultPlanDiscipline`] — a workload
-    /// cannot edit it (hardening-loop-2 BLOCKER).
-    fault_plan_consumptions: u64,
+    /// Runner-owned ledger: how many times the workload RETRIEVED its
+    /// fault plan through [`UniverseCtx::fault_plan_or`]. Finalized into
+    /// [`FaultPlanDiscipline`] — a workload cannot edit it
+    /// (hardening-loop-2 BLOCKER). Retrieval is all this ledger can
+    /// truthfully claim; see [`FaultPlanDiscipline`] for what it does
+    /// NOT claim (hardening-loop-4 GAP 5).
+    fault_plan_retrievals: u64,
+    /// Runner-owned canonical digest ledger of every retrieved plan, in
+    /// retrieval order, under [`FAULT_PLAN_DIGEST_SCHEMA`]. Bound into
+    /// [`UniverseResult`] so replay evidence carries its input identity.
+    plan_digest_trace: Trace,
 }
 
 impl UniverseCtx {
     fn new(root_seed: u64, universe_id: u64, fault_plan_override: Option<FaultPlan>) -> Self {
+        let mut plan_digest_trace = Trace::new();
+        plan_digest_trace.record(0, "schema", FAULT_PLAN_DIGEST_SCHEMA);
         Self {
             universe_id,
             seed_tree: SeedTree::new(root_seed),
@@ -61,7 +70,8 @@ impl UniverseCtx {
             trace: Trace::new(),
             props: Properties::new(),
             fault_plan_override,
-            fault_plan_consumptions: 0,
+            fault_plan_retrievals: 0,
+            plan_digest_trace,
         }
     }
 
@@ -86,15 +96,24 @@ impl UniverseCtx {
     /// paths. Before this, an override skipped generation, and any workload
     /// whose generator shared a stream with later draws consumed a
     /// different number of words under replay, contradicting the
-    /// identical-path claim (hardening-loop-2 BLOCKER). Each call is
-    /// counted in a runner-owned ledger; see [`FaultPlanDiscipline`].
+    /// identical-path claim (hardening-loop-2 BLOCKER). Each RETRIEVAL is
+    /// counted in a runner-owned ledger and the retrieved plan's canonical
+    /// digest is bound into the universe's evidence; see
+    /// [`FaultPlanDiscipline`] and [`UniverseResult::fault_plan_digest`].
     pub fn fault_plan_or(&mut self, generate: impl FnOnce() -> FaultPlan) -> FaultPlan {
         let generated = generate();
-        self.fault_plan_consumptions += 1;
-        match &self.fault_plan_override {
+        self.fault_plan_retrievals += 1;
+        let effective = match &self.fault_plan_override {
             Some(plan) => plan.clone(),
             None => generated,
+        };
+        self.plan_digest_trace
+            .record(self.fault_plan_retrievals, "retrieval", "");
+        for inj in effective.injections() {
+            self.plan_digest_trace
+                .record(inj.at_nanos, "injection", &inj.fault.canonical());
         }
+        effective
     }
 
     /// A named, independent PRNG stream for this universe.
@@ -147,25 +166,45 @@ pub enum RunOutcome {
     ExecutionError(String),
 }
 
-/// Runner-derived fault-plan discipline for one universe. Produced from
-/// the private consumption ledger after the workload returns; a workload
-/// cannot construct or edit it.
+/// Versioned schema of the canonical fault-plan digest carried by
+/// [`UniverseResult::fault_plan_digest`]: the frozen trace hasher over a
+/// schema record plus, per retrieval, a `retrieval` marker and one
+/// `injection` record per canonical injection
+/// ([`vh_gremlin::FaultKind::canonical`]). Changing the rendering is a
+/// schema bump (v2), never a refactor.
+pub const FAULT_PLAN_DIGEST_SCHEMA: &str = "vh-fault-plan-v1";
+
+/// Runner-derived fault-plan RETRIEVAL discipline for one universe.
+/// Produced from the private retrieval ledger after the workload
+/// returns; a workload cannot construct or edit it.
+///
+/// Truthful scope (hardening-loop-4 GAP 5): this ledger records that the
+/// workload RETRIEVED a plan through [`UniverseCtx::fault_plan_or`] —
+/// nothing more. It does NOT claim the plan was applied, that any
+/// injection became eligible, or that a fault manifested; a workload can
+/// retrieve a plan and discard it while still reporting `Completed`. The
+/// semantic lifecycle (offered → retrieved → armed → manifested →
+/// effect-observed) requires the runtime to own fault scheduling, which
+/// lands with the Phase-1 sim runtime — until then the names here
+/// promise only what is measured. DEFERRED: owner
+/// vibe-halt-core-2026-07 (Claude), due with Phase 1 (2026-08-15).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaultPlanDiscipline {
-    /// No override was supplied; the workload generated its own plan
-    /// `consumptions` times through [`UniverseCtx::fault_plan_or`]
+    /// No override was supplied; the workload retrieved a self-generated
+    /// plan `retrievals` times through [`UniverseCtx::fault_plan_or`]
     /// (zero is legal — not every workload uses fault plans).
-    SelfGenerated { consumptions: u64 },
-    /// An override was supplied and consumed exactly once: the replay
-    /// contract held.
-    OverrideConsumed,
-    /// An override was supplied but never consumed — the workload ignored
-    /// the replacement plan, so any replay claim would be false. Fails
-    /// closed: never a valid completion.
-    OverrideIgnored,
-    /// An override was supplied and consumed more than once — ambiguous
+    SelfGenerated { retrievals: u64 },
+    /// An override was supplied and retrieved exactly once: the replay
+    /// input reached the workload (whether it was honored is a
+    /// divergence-detector question, not a ledger claim).
+    OverrideRetrieved,
+    /// An override was supplied but never retrieved — the replacement
+    /// plan cannot have influenced the run, so any replay claim would be
+    /// false. Fails closed: never a valid completion.
+    OverrideNeverRetrieved,
+    /// An override was supplied and retrieved more than once — ambiguous
     /// replay. Fails closed: never a valid completion.
-    OverrideOverconsumed { consumptions: u64 },
+    OverrideRetrievedMultiply { retrievals: u64 },
 }
 
 /// Runner-owned lifecycle evidence for one universe: the workload's typed
@@ -189,20 +228,86 @@ impl UniverseLifecycle {
     }
 
     /// A universe is validly complete iff the workload affirmatively
-    /// completed AND the fault-plan discipline held. CLEAN requires this
-    /// for every universe.
+    /// completed AND the fault-plan retrieval discipline held. CLEAN
+    /// requires this for every universe.
     pub fn is_valid_completion(&self) -> bool {
         self.outcome == RunOutcome::Completed
             && matches!(
                 self.fault_plan,
-                FaultPlanDiscipline::SelfGenerated { .. } | FaultPlanDiscipline::OverrideConsumed
+                FaultPlanDiscipline::SelfGenerated { .. } | FaultPlanDiscipline::OverrideRetrieved
             )
+    }
+}
+
+/// Runner-owned property contract (hardening-loop-4 GAP 5): what a
+/// workload COMMITS to asserting in every universe. Before this, a no-op
+/// workload could return `Completed` with no properties and reach CLEAN
+/// through an empty finding ledger. The runner verifies the contract
+/// against each universe's transcript; an EMPTY contract means the
+/// campaign asserted nothing and can never be CLEAN (it is UNCHECKED,
+/// the honest tri-state).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PropertyContract {
+    required_always: Vec<String>,
+    required_sometimes: Vec<String>,
+}
+
+impl PropertyContract {
+    pub fn new(required_always: &[&str], required_sometimes: &[&str]) -> Self {
+        Self {
+            required_always: required_always.iter().map(|s| s.to_string()).collect(),
+            required_sometimes: required_sometimes.iter().map(|s| s.to_string()).collect(),
+        }
+    }
+
+    /// Always-invariant names that must be evaluated at least once in
+    /// every universe.
+    pub fn required_always(&self) -> &[String] {
+        &self.required_always
+    }
+
+    /// Sometimes-property names that must be declared in every universe.
+    pub fn required_sometimes(&self) -> &[String] {
+        &self.required_sometimes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.required_always.is_empty() && self.required_sometimes.is_empty()
+    }
+
+    /// Contract violations for one universe's transcript. Runner-owned:
+    /// evaluated against the immutable result, never workload state.
+    pub fn violations(&self, result: &UniverseResult) -> Vec<String> {
+        let mut out = Vec::new();
+        for name in &self.required_always {
+            if !result.always_checks().iter().any(|c| &c.name == name) {
+                out.push(format!(
+                    "required always property '{name}' was never evaluated"
+                ));
+            }
+        }
+        for name in &self.required_sometimes {
+            if !result.sometimes().contains_key(name) {
+                out.push(format!(
+                    "required sometimes property '{name}' was never declared"
+                ));
+            }
+        }
+        out
     }
 }
 
 pub trait Workload {
     fn name(&self) -> &str;
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome;
+
+    /// The properties this workload commits to asserting in every
+    /// universe. Default is the EMPTY contract, which fails closed: a
+    /// campaign that asserts nothing is UNCHECKED, never CLEAN
+    /// (hardening-loop-4 GAP 5).
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::default()
+    }
 }
 
 /// The complete public observation of one universe execution. All fields
@@ -219,6 +324,7 @@ pub struct UniverseResult {
     always_failures: Vec<AlwaysFailure>,
     sometimes: BTreeMap<String, bool>,
     lifecycle: UniverseLifecycle,
+    fault_plan_digest: Option<String>,
 }
 
 impl UniverseResult {
@@ -255,9 +361,17 @@ impl UniverseResult {
     }
 
     /// Runner-owned lifecycle evidence (typed outcome + fault-plan
-    /// discipline).
+    /// retrieval discipline).
     pub fn lifecycle(&self) -> &UniverseLifecycle {
         &self.lifecycle
+    }
+
+    /// Canonical digest of every fault plan the workload retrieved, in
+    /// retrieval order, under [`FAULT_PLAN_DIGEST_SCHEMA`] — the replay
+    /// input's identity, bound into the observable result
+    /// (hardening-loop-4 GAP 5). `None` iff no plan was ever retrieved.
+    pub fn fault_plan_digest(&self) -> Option<&str> {
+        self.fault_plan_digest.as_deref()
     }
 
     /// Two replays are the same run iff EVERY observable agrees. Struct
@@ -280,10 +394,11 @@ pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -
 /// Tier honesty: identical (seed, universe, workload, plan) inputs produce
 /// identical observable results — Tier 1 — PROVIDED the workload draws all
 /// nondeterminism from its `UniverseCtx` and its lifecycle reports
-/// `OverrideConsumed`. A result whose fault-plan discipline is
-/// `OverrideIgnored` or `OverrideOverconsumed` is not a valid replay and
-/// never a valid completion; the divergence detector remains the
-/// mechanical check for workload purity.
+/// `OverrideRetrieved`. A result whose fault-plan discipline is
+/// `OverrideNeverRetrieved` or `OverrideRetrievedMultiply` is not a valid
+/// replay and never a valid completion; the divergence detector remains
+/// the mechanical check for workload purity, and retrieval is all the
+/// ledger claims (see [`FaultPlanDiscipline`]).
 pub fn run_universe_with_fault_plan(
     root_seed: u64,
     universe_id: u64,
@@ -302,11 +417,16 @@ fn run_universe_inner(
     let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
     let outcome = workload.run(&mut ctx);
-    let fault_plan = match (override_supplied, ctx.fault_plan_consumptions) {
-        (false, n) => FaultPlanDiscipline::SelfGenerated { consumptions: n },
-        (true, 1) => FaultPlanDiscipline::OverrideConsumed,
-        (true, 0) => FaultPlanDiscipline::OverrideIgnored,
-        (true, n) => FaultPlanDiscipline::OverrideOverconsumed { consumptions: n },
+    let fault_plan = match (override_supplied, ctx.fault_plan_retrievals) {
+        (false, n) => FaultPlanDiscipline::SelfGenerated { retrievals: n },
+        (true, 1) => FaultPlanDiscipline::OverrideRetrieved,
+        (true, 0) => FaultPlanDiscipline::OverrideNeverRetrieved,
+        (true, n) => FaultPlanDiscipline::OverrideRetrievedMultiply { retrievals: n },
+    };
+    let fault_plan_digest = if ctx.fault_plan_retrievals > 0 {
+        Some(ctx.plan_digest_trace.hash_hex())
+    } else {
+        None
     };
     UniverseResult {
         universe_id: ctx.universe_id,
@@ -319,6 +439,7 @@ fn run_universe_inner(
             outcome,
             fault_plan,
         },
+        fault_plan_digest,
     }
 }
 
@@ -458,6 +579,8 @@ pub struct MultiverseReport {
     results: Vec<UniverseResult>,
     divergent_universes: Vec<u64>,
     merged: MergedProperties,
+    contract: PropertyContract,
+    contract_violations: Vec<(u64, String)>,
 }
 
 impl MultiverseReport {
@@ -521,11 +644,22 @@ impl MultiverseReport {
         }
     }
 
+    /// The runner-verified property contract this campaign ran under.
+    pub fn contract(&self) -> &PropertyContract {
+        &self.contract
+    }
+
+    /// Per-universe contract violations (universe id, description).
+    pub fn contract_violations(&self) -> &[(u64, String)] {
+        &self.contract_violations
+    }
+
     fn has_findings(&self) -> bool {
         !self.failing_universes().is_empty()
             || !self.invalid_universes().is_empty()
             || !self.divergent_universes.is_empty()
             || !self.merged.unreached_sometimes().is_empty()
+            || !self.contract_violations.is_empty()
     }
 
     /// Report integrity: exactly the requested number of universes must
@@ -536,12 +670,15 @@ impl MultiverseReport {
     }
 
     /// Tri-state verdict; CLEAN requires divergence checking to have run,
-    /// every universe to have validly completed, and result cardinality to
-    /// match the requested campaign size.
+    /// every universe to have validly completed under a NON-EMPTY,
+    /// satisfied property contract, and result cardinality to match the
+    /// requested campaign size. An empty contract is UNCHECKED — a
+    /// campaign that asserted nothing proved nothing
+    /// (hardening-loop-4 GAP 5).
     pub fn verdict(&self) -> Verdict {
         if !self.cardinality_ok() || self.has_findings() {
             Verdict::Findings
-        } else if self.divergence_checked {
+        } else if self.divergence_checked && !self.contract.is_empty() {
             Verdict::Clean
         } else {
             Verdict::Unchecked
@@ -576,10 +713,15 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
     let mut results = Vec::with_capacity(universes as usize);
     let mut divergent = Vec::new();
     let mut merged = MergedProperties::default();
+    let contract = workload.property_contract();
+    let mut contract_violations: Vec<(u64, String)> = Vec::new();
 
     for universe_id in 0..universes {
         let first = run_universe(cfg.root_seed, universe_id, workload);
         merged.absorb(universe_id, &props_of(&first));
+        for v in contract.violations(&first) {
+            contract_violations.push((universe_id, v));
+        }
         results.push(first);
     }
     if cfg.check_divergence {
@@ -599,6 +741,8 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
         results,
         divergent_universes: divergent,
         merged,
+        contract,
+        contract_violations,
     }
 }
 

@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vh_gremlin::FaultPlan;
 use vh_multiverse::{
     run_multiverse, run_universe, run_universe_with_fault_plan, FaultPlanDiscipline,
-    MultiverseConfig, RunOutcome, UniverseCount, UniverseCtx, Workload,
+    MultiverseConfig, PropertyContract, RunOutcome, UniverseCount, UniverseCtx, Verdict, Workload,
 };
 
 fn count(n: u64) -> UniverseCount {
@@ -116,7 +116,7 @@ fn fault_plan_override_replays_deterministically() {
     let baseline = run_universe(0xD1CE, 3, &w);
     assert_eq!(
         baseline.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::SelfGenerated { consumptions: 1 }
+        &FaultPlanDiscipline::SelfGenerated { retrievals: 1 }
     );
 
     // Empty plan: no faults fire; the run must differ from the baseline
@@ -132,14 +132,14 @@ fn fault_plan_override_replays_deterministically() {
     );
     assert_eq!(
         a.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideConsumed
+        &FaultPlanDiscipline::OverrideRetrieved
     );
     assert!(a.lifecycle().is_valid_completion());
 
     // Overriding with the plan the workload would have generated anyway
     // must reproduce the baseline's observables exactly — proving override
     // and generated paths are the same path. (Lifecycles differ by
-    // provenance — SelfGenerated vs OverrideConsumed — which is honest:
+    // provenance — SelfGenerated vs OverrideRetrieved — which is honest:
     // they ARE different modes; the workload-visible path is identical.)
     let mut gremlin = vh_core::SeedTree::new(0xD1CE).stream(3, "gremlin");
     let generated = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
@@ -192,7 +192,7 @@ fn override_preserves_generator_stream_effects() {
     assert_eq!(replay.trace_events(), baseline.trace_events());
     assert_eq!(
         replay.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideConsumed
+        &FaultPlanDiscipline::OverrideRetrieved
     );
 }
 
@@ -219,7 +219,7 @@ fn ignored_override_is_never_a_valid_completion() {
     let result = run_universe_with_fault_plan(1, 0, &w, FaultPlan::default());
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideIgnored
+        &FaultPlanDiscipline::OverrideNeverRetrieved
     );
     assert!(!result.lifecycle().is_valid_completion());
     // Without an override the same workload is fine — not every workload
@@ -227,7 +227,7 @@ fn ignored_override_is_never_a_valid_completion() {
     let plain = run_universe(1, 0, &w);
     assert_eq!(
         plain.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::SelfGenerated { consumptions: 0 }
+        &FaultPlanDiscipline::SelfGenerated { retrievals: 0 }
     );
     assert!(plain.lifecycle().is_valid_completion());
 }
@@ -255,7 +255,7 @@ fn overconsumed_override_is_never_a_valid_completion() {
     let result = run_universe_with_fault_plan(1, 0, &w, FaultPlan::default());
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideOverconsumed { consumptions: 2 }
+        &FaultPlanDiscipline::OverrideRetrievedMultiply { retrievals: 2 }
     );
     assert!(!result.lifecycle().is_valid_completion());
 }
@@ -450,6 +450,110 @@ impl Workload for ReorderedChecksDemo {
         }
         RunOutcome::Completed
     }
+}
+
+/// Hardening-loop-4 GAP 5, reproduced: a no-op workload returning
+/// `Completed` with no properties used to reach CLEAN through an empty
+/// finding ledger. With the runner-owned property contract, an EMPTY
+/// contract campaign is UNCHECKED — never CLEAN.
+struct NoOpDemo;
+
+impl Workload for NoOpDemo {
+    fn name(&self) -> &str {
+        "no-op-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.record("op", "nothing asserted");
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn no_op_completed_workload_with_no_contract_is_never_clean() {
+    let w = NoOpDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 1,
+        universes: count(3),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert!(report.divergent_universes().is_empty());
+    assert!(report.contract().is_empty());
+    assert_eq!(
+        report.verdict(),
+        Verdict::Unchecked,
+        "an empty property contract asserted nothing and must be UNCHECKED, never CLEAN"
+    );
+    assert!(!report.is_clean());
+}
+
+/// A workload that DECLARES a contract and then fails to honor it: the
+/// runner, not the workload, detects the breach per universe.
+struct ContractBreakingDemo;
+
+impl Workload for ContractBreakingDemo {
+    fn name(&self) -> &str {
+        "contract-breaking-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.record("op", "contract never honored");
+        RunOutcome::Completed
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&["durability"], &["crash_seen"])
+    }
+}
+
+#[test]
+fn unmet_property_contract_is_a_finding() {
+    let w = ContractBreakingDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 1,
+        universes: count(2),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert_eq!(
+        report.contract_violations().len(),
+        4,
+        "both universes must report both unmet requirements: {:?}",
+        report.contract_violations()
+    );
+    assert_eq!(report.verdict(), Verdict::Findings);
+    assert!(!report.is_clean());
+}
+
+/// The fault-plan digest binds the replay input's identity into the
+/// observable result (hardening-loop-4 GAP 5): different plans yield
+/// different digests, identical plans yield identical digests, and a
+/// workload that never retrieves a plan carries none.
+#[test]
+fn fault_plan_digest_binds_replay_input_identity() {
+    let w = DeterministicDemo;
+    let empty = run_universe_with_fault_plan(0xD1CE, 3, &w, FaultPlan::default());
+    let mut gremlin = vh_core::SeedTree::new(0xD1CE).stream(3, "gremlin");
+    let generated = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
+    let full = run_universe_with_fault_plan(0xD1CE, 3, &w, generated.clone());
+    let full_again = run_universe_with_fault_plan(0xD1CE, 3, &w, generated);
+    assert!(empty.fault_plan_digest().is_some());
+    assert_ne!(
+        empty.fault_plan_digest(),
+        full.fault_plan_digest(),
+        "different replay inputs must carry different digests"
+    );
+    assert_eq!(full.fault_plan_digest(), full_again.fault_plan_digest());
+
+    // The baseline (self-generated) run retrieved the same plan content,
+    // so its digest matches the override replay of that plan.
+    let baseline = run_universe(0xD1CE, 3, &w);
+    assert_eq!(baseline.fault_plan_digest(), full.fault_plan_digest());
+
+    // No retrieval → no digest.
+    let none = run_universe(1, 0, &IgnoresPlanDemo);
+    assert_eq!(none.fault_plan_digest(), None);
 }
 
 /// Hardening-loop-4 BLOCKER 2, reproduced: `GLOBAL.fetch_add(1) / 2`

@@ -32,6 +32,21 @@ impl FaultKind {
             FaultKind::ClockSkew { .. } => "clock_skew",
         }
     }
+
+    /// Canonical rendering — label plus every parameter — for versioned
+    /// evidence digests (`vh-fault-plan-v1` in vh-multiverse). Changing
+    /// this output is a digest schema bump, never a refactor.
+    pub fn canonical(&self) -> String {
+        match self {
+            FaultKind::CrashRestart => "crash_restart".to_string(),
+            FaultKind::NetworkDelay { delay_nanos } => format!("network_delay:{delay_nanos}"),
+            FaultKind::NetworkPartition { duration_nanos } => {
+                format!("network_partition:{duration_nanos}")
+            }
+            FaultKind::DiskWriteFail => "disk_write_fail".to_string(),
+            FaultKind::ClockSkew { skew_nanos } => format!("clock_skew:{skew_nanos}"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
