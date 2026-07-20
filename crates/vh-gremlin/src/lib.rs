@@ -4,6 +4,8 @@
 //! and is part of the universe's identity: same seed → same gremlins. Plans
 //! are plain data so the shrinker (Phase 2) can delete injections and replay.
 
+#![forbid(unsafe_code)]
+
 use vh_core::Xoshiro256pp;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

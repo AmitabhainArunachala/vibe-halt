@@ -24,15 +24,34 @@ jobs:
         run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Tests
         run: cargo test --workspace
-      - name: Divergence gate — 200 universes, each run twice, hash-compared
+      - name: Doctor — frozen Tier-1 compatibility identity
+        run: cargo run -q -p vh-cli -- doctor
+      - name: Divergence gate — 200 universes, each run twice, full-observable-compared
         run: cargo run -q -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
-      - name: Seeded-bug gate — the rig must still catch demo-buggy
+      - name: Seeded-bug gate — exact exit 1 + FINDINGS verdict required
         run: |
-          if cargo run -q -p vh-cli -- run --workload demo-buggy --universes 50 > /dev/null; then
-            echo "demo-buggy passed: the rig no longer finds the seeded bug"; exit 1
+          set +e
+          out=$(cargo run -q -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 50)
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ] || ! printf '%s' "$out" | grep -q "verdict: FINDINGS"; then
+            echo "demo-buggy: expected exit 1 + 'verdict: FINDINGS', got exit $code"; exit 1
           fi
-      - name: Detector gate — demo-nondet must be flagged divergent
+      - name: Detector gate — exact exit 1 + DIVERGENT required
         run: |
-          if cargo run -q -p vh-cli -- run --workload demo-nondet --universes 5 > /dev/null; then
-            echo "demo-nondet passed: divergence detector is blind"; exit 1
+          set +e
+          out=$(cargo run -q -p vh-cli -- run --workload demo-nondet --seed 0xD1CE --universes 5)
+          code=$?
+          set -e
+          if [ "$code" -ne 1 ] || ! printf '%s' "$out" | grep -q "DIVERGENT universe"; then
+            echo "demo-nondet: expected exit 1 + DIVERGENT, got exit $code"; exit 1
+          fi
+      - name: Zero-work gate — universes 0 rejected with exit 2
+        run: |
+          set +e
+          cargo run -q -p vh-cli -- run --workload demo --universes 0 > /dev/null 2>&1
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ]; then
+            echo "--universes 0: expected rejection with exit 2, got exit $code"; exit 1
           fi

@@ -31,8 +31,8 @@ impl Workload for KvDemo {
     }
 
     fn run(&self, ctx: &mut UniverseCtx) {
-        ctx.props.declare_sometimes("crash_injected");
-        ctx.props.declare_sometimes("crash_with_dirty_wal");
+        ctx.declare_sometimes("crash_injected");
+        ctx.declare_sometimes("crash_with_dirty_wal");
 
         let mut ops = ctx.stream("ops");
         let mut gremlin = ctx.stream("gremlin");
@@ -57,9 +57,9 @@ impl Workload for KvDemo {
             for fault in faults {
                 ctx.record("fault", fault.label());
                 if fault == FaultKind::CrashRestart {
-                    ctx.props.sometimes("crash_injected");
+                    ctx.sometimes("crash_injected");
                     if !wal.is_empty() {
-                        ctx.props.sometimes("crash_with_dirty_wal");
+                        ctx.sometimes("crash_with_dirty_wal");
                         // In the buggy variant every dirty-wal entry was
                         // already acknowledged, so this crash loses acked
                         // writes.
@@ -107,7 +107,7 @@ impl Workload for KvDemo {
 
         for (key, value) in &acked {
             let stored = committed.get(key);
-            ctx.props.always("durability", stored == Some(value), || {
+            ctx.always("durability", stored == Some(value), || {
                 format!(
                     "acknowledged write {key}={value} missing after crash (committed={:?})",
                     stored

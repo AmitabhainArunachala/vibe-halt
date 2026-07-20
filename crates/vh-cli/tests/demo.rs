@@ -2,6 +2,8 @@
 //! durability bug is FOUND with a reproducible failing universe, and the
 //! finding replays bit-identically.
 
+use std::num::NonZeroU64;
+
 use vh_cli::workloads::by_name;
 use vh_multiverse::{run_multiverse, run_universe, MultiverseConfig};
 
@@ -13,7 +15,7 @@ fn correct_demo_is_clean() {
     let report = run_multiverse(
         &MultiverseConfig {
             root_seed: SEED,
-            universes: 100,
+            universes: NonZeroU64::new(100).unwrap(),
             check_divergence: true,
         },
         w.as_ref(),
@@ -39,7 +41,7 @@ fn buggy_demo_is_caught_with_reproducible_universe() {
     let report = run_multiverse(
         &MultiverseConfig {
             root_seed: SEED,
-            universes: 100,
+            universes: NonZeroU64::new(100).unwrap(),
             check_divergence: true,
         },
         w.as_ref(),

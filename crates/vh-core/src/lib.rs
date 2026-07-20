@@ -4,6 +4,8 @@
 //! randomness, no hash-order iteration, no threads, no I/O. The deny-list is
 //! enforced mechanically by `scripts/check_determinism_denylist.py` (CI gate).
 
+#![forbid(unsafe_code)]
+
 pub mod clock;
 pub mod rng;
 pub mod sched;

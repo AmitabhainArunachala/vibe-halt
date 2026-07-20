@@ -15,6 +15,8 @@
 //! containing the separator bytes could forge event boundaries; found in
 //! PR #1 review and repaired pre-release.)
 
+#![forbid(unsafe_code)]
+
 const FNV128_OFFSET: u128 = 0x6c62_272e_07bb_0142_62b8_2175_6295_c58d;
 const FNV128_PRIME: u128 = 0x0000_0000_0100_0000_0000_0000_0000_013B;
 

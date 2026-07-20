@@ -2,6 +2,7 @@
 //! a deterministic workload replays bit-identically, and a workload with
 //! smuggled-in nondeterminism is caught, not silently blessed.
 
+use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use vh_gremlin::FaultPlan;
@@ -76,7 +77,7 @@ fn multiverse_replays_across_many_runs() {
     let w = DeterministicDemo;
     let cfg = MultiverseConfig {
         root_seed: 42,
-        universes: 25,
+        universes: NonZeroU64::new(25).unwrap(),
         check_divergence: true,
     };
     let report = run_multiverse(&cfg, &w);
@@ -152,7 +153,7 @@ impl Workload for VerdictFlipDemo {
     fn run(&self, ctx: &mut UniverseCtx) {
         let n = VERDICT_FLIPPER.fetch_add(1, Ordering::SeqCst);
         ctx.record("op", "constant"); // identical trace on every replay
-        ctx.props.always("stable_verdict", n.is_multiple_of(2), || {
+        ctx.always("stable_verdict", n.is_multiple_of(2), || {
             format!("flip #{n}")
         });
     }
@@ -163,7 +164,7 @@ fn detector_flags_verdict_flips_with_identical_traces() {
     let w = VerdictFlipDemo;
     let cfg = MultiverseConfig {
         root_seed: 42,
-        universes: 3,
+        universes: NonZeroU64::new(3).unwrap(),
         check_divergence: true,
     };
     let report = run_multiverse(&cfg, &w);
@@ -181,7 +182,7 @@ fn detector_flags_nondeterminism_instead_of_blessing_it() {
     let w = NondeterministicDemo;
     let cfg = MultiverseConfig {
         root_seed: 42,
-        universes: 5,
+        universes: NonZeroU64::new(5).unwrap(),
         check_divergence: true,
     };
     let report = run_multiverse(&cfg, &w);
@@ -191,4 +192,42 @@ fn detector_flags_nondeterminism_instead_of_blessing_it() {
         "every universe of the leaky workload must be flagged divergent"
     );
     assert!(!report.is_clean());
+}
+
+/// Skips a PASSING invariant on every second replay while keeping the trace
+/// identical. The assertion transcript must make this divergent — a passing
+/// check that stops being evaluated is a change in observable behavior
+/// (PR #1 hardening-loop BLOCKER).
+static CHECK_SKIPPER: AtomicU64 = AtomicU64::new(0);
+
+struct SkippedCheckDemo;
+
+impl Workload for SkippedCheckDemo {
+    fn name(&self) -> &str {
+        "skipped-check-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) {
+        let n = CHECK_SKIPPER.fetch_add(1, Ordering::SeqCst);
+        ctx.record("op", "constant"); // identical trace on every replay
+        if n.is_multiple_of(2) {
+            ctx.always("present_sometimes", true, || unreachable!());
+        }
+    }
+}
+
+#[test]
+fn detector_flags_skipped_passing_invariants() {
+    let w = SkippedCheckDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: NonZeroU64::new(3).unwrap(),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert_eq!(
+        report.divergent_universes.len(),
+        3,
+        "skipping a passing invariant with an identical trace must be flagged"
+    );
 }

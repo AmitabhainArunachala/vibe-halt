@@ -28,14 +28,17 @@ merge approval, or proof any acceptance criterion holds.
 
 ## The Determinism Deny-List (this repo's #1 law)
 
-Kernel crates (`vh-core`, `vh-trace`, `vh-gremlin`, `vh-props`,
-`vh-multiverse`) must be pure: no wall clock, no OS randomness, no
-HashMap/HashSet iteration, no threads, no I/O, no env access. Enforced
-mechanically by `scripts/check_determinism_denylist.py` (CI gate 0).
-`vh-cli` is the boundary crate and is exempt. If a legitimate need
-collides with the deny-list, the answer is a design change or a
-deny-list amendment in the same PR with rationale — never a quiet
-workaround.
+Every crate under `crates/` is kernel-grade unless listed as a boundary
+crate (fail-closed classification; today only `vh-cli`). Kernel crates
+must be pure: no wall clock, no OS randomness, no hash-order iteration,
+no threads, no I/O, no env access, no global mutable state, no unsafe
+code. Enforcement is layered (`scripts/check_determinism_denylist.py`,
+CI gate 0): `#![forbid(unsafe_code)]` + hermetic-manifest checks are the
+semantic layer; the line-regex scan is defense-in-depth, not semantic
+proof. Exemptions are per-file AND per-pattern, never whole-file. If a
+legitimate need collides with the deny-list, the answer is a design
+change or a deny-list amendment in the same PR with rationale — never a
+quiet workaround.
 
 Two frozen surfaces whose change invalidates every recorded trace hash:
 the PRNG output (`crates/vh-core/src/rng.rs` — see

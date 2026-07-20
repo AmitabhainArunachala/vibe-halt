@@ -12,6 +12,8 @@
 //! Uses BTreeMap everywhere — never a hash-ordered map: iteration order is
 //! part of the deterministic surface.
 
+#![forbid(unsafe_code)]
+
 use std::collections::BTreeMap;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,8 +22,19 @@ pub struct AlwaysFailure {
     pub detail: String,
 }
 
+/// One entry in the assertion transcript: every `always` evaluation is
+/// recorded, PASSING ones included, in invocation order. Without this, a
+/// replay that silently skips a passing invariant is observably equal to
+/// one that evaluated it (PR #1 hardening-loop BLOCKER).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlwaysCheck {
+    pub name: String,
+    pub passed: bool,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Properties {
+    always_checks: Vec<AlwaysCheck>,
     always_failures: Vec<AlwaysFailure>,
     sometimes: BTreeMap<String, bool>,
 }
@@ -31,14 +44,24 @@ impl Properties {
         Self::default()
     }
 
-    /// Check an invariant. `detail` is only rendered on failure.
+    /// Check an invariant. `detail` is only rendered on failure. Every
+    /// evaluation — pass or fail — enters the assertion transcript.
     pub fn always<F: FnOnce() -> String>(&mut self, name: &str, condition: bool, detail: F) {
+        self.always_checks.push(AlwaysCheck {
+            name: name.to_string(),
+            passed: condition,
+        });
         if !condition {
             self.always_failures.push(AlwaysFailure {
                 name: name.to_string(),
                 detail: detail(),
             });
         }
+    }
+
+    /// The full assertion transcript in invocation order.
+    pub fn always_checks(&self) -> &[AlwaysCheck] {
+        &self.always_checks
     }
 
     /// Declare a sometimes-assertion without hitting it. Declare every
@@ -94,12 +117,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn always_records_failures_only() {
+    fn always_records_failures_and_full_transcript() {
         let mut p = Properties::new();
         p.always("ok", true, || unreachable!("detail must be lazy"));
         p.always("broken", false, || "x was 3".to_string());
         assert_eq!(p.always_failures().len(), 1);
         assert_eq!(p.always_failures()[0].name, "broken");
+        // The transcript records BOTH evaluations, in order.
+        assert_eq!(p.always_checks().len(), 2);
+        assert_eq!(p.always_checks()[0].name, "ok");
+        assert!(p.always_checks()[0].passed);
+        assert_eq!(p.always_checks()[1].name, "broken");
+        assert!(!p.always_checks()[1].passed);
     }
 
     #[test]

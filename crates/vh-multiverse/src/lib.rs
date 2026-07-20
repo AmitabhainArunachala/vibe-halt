@@ -2,29 +2,38 @@
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
 //! TWICE and the complete observable results — trace hash, event count,
-//! always-failures, and sometimes map — must match exactly. A mismatch
-//! means nondeterminism leaked into the kernel or the workload, and the
-//! report says so loudly instead of pretending the run was reproducible.
-//! (Comparing trace hashes alone was a PR #1 review BLOCKER: a workload
-//! could flip its property verdict between replays without recording a
-//! trace event, and the flip would have been blessed.)
+//! assertion transcript, always-failures, and sometimes map — must match
+//! exactly. A mismatch means nondeterminism leaked into the kernel or the
+//! workload, and the report says so loudly instead of pretending the run
+//! was reproducible.
+//!
+//! Evidence integrity: workloads interact with the evidence ledger ONLY
+//! through capability methods (`record`, `always`, `sometimes`, ...) —
+//! the trace, properties, clock, and identity fields are private, so a
+//! safe-Rust workload cannot erase, replace, or re-attribute evidence
+//! (PR #1 hardening-loop BLOCKER). This is an API guarantee for safe code
+//! in-process, not a sandbox: untrusted code belongs in Tier-2 subprocess
+//! universes, never linked into the runner.
+
+#![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+use std::num::NonZeroU64;
 
 use vh_core::{SeedTree, VirtualClock, VirtualTime, Xoshiro256pp};
 use vh_gremlin::FaultPlan;
-use vh_props::{AlwaysFailure, MergedProperties, Properties};
+use vh_props::{AlwaysCheck, AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
 /// Everything a workload may touch inside one universe. All randomness comes
 /// from named streams; all time comes from the virtual clock; all observable
-/// behavior goes into the trace.
+/// behavior goes into the trace — through capability methods only.
 pub struct UniverseCtx {
-    pub universe_id: u64,
+    universe_id: u64,
     seed_tree: SeedTree,
-    pub clock: VirtualClock,
-    pub trace: Trace,
-    pub props: Properties,
+    clock: VirtualClock,
+    trace: Trace,
+    props: Properties,
     fault_plan_override: Option<FaultPlan>,
 }
 
@@ -38,6 +47,16 @@ impl UniverseCtx {
             props: Properties::new(),
             fault_plan_override,
         }
+    }
+
+    /// This universe's identity (read-only).
+    pub fn universe_id(&self) -> u64 {
+        self.universe_id
+    }
+
+    /// Current virtual time in nanos (read-only).
+    pub fn now_nanos(&self) -> u64 {
+        self.clock.now().nanos()
     }
 
     /// The fault plan for this universe: the externally supplied override
@@ -63,8 +82,24 @@ impl UniverseCtx {
         self.trace.record(at, kind, data);
     }
 
+    /// Advance virtual time (monotonic; panics on backwards time).
     pub fn advance_to(&mut self, nanos: u64) {
         self.clock.advance_to(VirtualTime(nanos));
+    }
+
+    /// Check an invariant; every evaluation enters the assertion transcript.
+    pub fn always<F: FnOnce() -> String>(&mut self, name: &str, condition: bool, detail: F) {
+        self.props.always(name, condition, detail);
+    }
+
+    /// Declare a sometimes-assertion up front (unreached ⇒ finding).
+    pub fn declare_sometimes(&mut self, name: &str) {
+        self.props.declare_sometimes(name);
+    }
+
+    /// Mark a sometimes-assertion as reached in this universe.
+    pub fn sometimes(&mut self, name: &str) {
+        self.props.sometimes(name);
     }
 }
 
@@ -78,6 +113,10 @@ pub struct UniverseResult {
     pub universe_id: u64,
     pub trace_hash: String,
     pub trace_events: usize,
+    /// Full assertion transcript in invocation order — passing checks
+    /// included, so a replay that skips a passing invariant is observably
+    /// different (PR #1 hardening-loop BLOCKER).
+    pub always_checks: Vec<AlwaysCheck>,
     pub always_failures: Vec<AlwaysFailure>,
     pub sometimes: BTreeMap<String, bool>,
 }
@@ -118,9 +157,10 @@ fn run_universe_inner(
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
     workload.run(&mut ctx);
     UniverseResult {
-        universe_id,
+        universe_id: ctx.universe_id,
         trace_hash: ctx.trace.hash_hex(),
         trace_events: ctx.trace.len(),
+        always_checks: ctx.props.always_checks().to_vec(),
         always_failures: ctx.props.always_failures().to_vec(),
         sometimes: ctx.props.sometimes_map().clone(),
     }
@@ -129,18 +169,34 @@ fn run_universe_inner(
 #[derive(Debug, Clone)]
 pub struct MultiverseConfig {
     pub root_seed: u64,
-    pub universes: u64,
-    /// Run every universe twice and compare trace hashes.
+    /// Typed nonzero: an empty multiverse cannot be constructed, so zero
+    /// work can never be certified (PR #1 hardening-loop BLOCKER).
+    pub universes: NonZeroU64,
+    /// Run every universe twice and compare complete observable results.
+    /// When false the report's verdict is UNCHECKED, never CLEAN.
     pub check_divergence: bool,
+}
+
+/// The report's tri-state verdict. `Unchecked` exists so that a run with
+/// divergence detection disabled can never share the CLEAN verdict path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Divergence-checked and finding-free.
+    Clean,
+    /// At least one always-failure, divergence, or unreached sometimes.
+    Findings,
+    /// Finding-free but divergence detection was disabled: inconclusive.
+    Unchecked,
 }
 
 #[derive(Debug, Clone)]
 pub struct MultiverseReport {
     pub root_seed: u64,
     pub workload: String,
+    /// Whether every universe was replayed and compared.
+    pub divergence_checked: bool,
     pub results: Vec<UniverseResult>,
-    /// Universe ids whose two runs produced different observable results
-    /// (trace hash, event count, always-failures, or sometimes map).
+    /// Universe ids whose two runs produced different observable results.
     pub divergent_universes: Vec<u64>,
     pub merged: MergedProperties,
 }
@@ -155,12 +211,26 @@ impl MultiverseReport {
             .collect()
     }
 
-    /// The run is clean iff: no always-failure, no divergence, and every
-    /// declared sometimes was reached somewhere in the multiverse.
+    fn has_findings(&self) -> bool {
+        !self.failing_universes().is_empty()
+            || !self.divergent_universes.is_empty()
+            || !self.merged.unreached_sometimes().is_empty()
+    }
+
+    /// Tri-state verdict; CLEAN requires divergence checking to have run.
+    pub fn verdict(&self) -> Verdict {
+        if self.has_findings() {
+            Verdict::Findings
+        } else if self.divergence_checked {
+            Verdict::Clean
+        } else {
+            Verdict::Unchecked
+        }
+    }
+
+    /// True only for a divergence-checked, finding-free run.
     pub fn is_clean(&self) -> bool {
-        self.failing_universes().is_empty()
-            && self.divergent_universes.is_empty()
-            && self.merged.unreached_sometimes().is_empty()
+        self.verdict() == Verdict::Clean
     }
 }
 
@@ -168,11 +238,12 @@ impl MultiverseReport {
 /// sequential baseline is also the reference implementation the parallel
 /// runner must match hash-for-hash.
 pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> MultiverseReport {
-    let mut results = Vec::with_capacity(cfg.universes as usize);
+    let universes = cfg.universes.get();
+    let mut results = Vec::with_capacity(universes as usize);
     let mut divergent = Vec::new();
     let mut merged = MergedProperties::default();
 
-    for universe_id in 0..cfg.universes {
+    for universe_id in 0..universes {
         let first = run_universe(cfg.root_seed, universe_id, workload);
         if cfg.check_divergence {
             let second = run_universe(cfg.root_seed, universe_id, workload);
@@ -187,6 +258,7 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
     MultiverseReport {
         root_seed: cfg.root_seed,
         workload: workload.name().to_string(),
+        divergence_checked: cfg.check_divergence,
         results,
         divergent_universes: divergent,
         merged,

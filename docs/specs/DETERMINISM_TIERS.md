@@ -36,6 +36,23 @@ property layers are substrate-agnostic so a hypervisor (or rr-based
 record-replay) backend can slot underneath later without touching the
 property system.
 
+## Crosswalk to the D-grade vocabulary (DESIGN.md)
+
+The merged master spec (`DESIGN.md` §2, landed on main 2026-07-20) uses
+determinism grades D0/D1/D2 for *campaign and evidence claims*. The tiers
+in this file are the *engine implementation doctrine*. One taxonomy does
+not replace the other; this crosswalk is the canonical mapping:
+
+| DESIGN.md grade | This doc | Meaning |
+|---|---|---|
+| D0 Closed Simulation | Tier 1 | engine-owned actors on the simulated runtime; bit-identical replay |
+| D1 Cooperative/Hermetic | Tier 2 (strong) | instrumented target, controlled effects replayed exactly, unmanaged entropy tainted |
+| D2 Opaque Process | Tier 2 (weak) | repeatable workload + fault plan only; chaos testing, never certified deterministic |
+| — (no D-grade) | Tier 3 | hypervisor substrate; explicit non-goal, see above |
+
+Evidence bundles cite the D-grade; engine code and receipts cite the
+tier; either alone is incomplete for a cross-boundary claim.
+
 ## The rule
 
 Every report, receipt, and PR that cites a vibe-halt result names the

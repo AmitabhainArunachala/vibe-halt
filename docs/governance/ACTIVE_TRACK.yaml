@@ -7,6 +7,14 @@ version: 1
 wip_warn: 2
 wip_max: 3
 
+# Surfaces every track may touch under an append-only protocol; the
+# onboard ownership-overlap gate ignores these.
+shared_surfaces:
+  - Cargo.toml
+  - Cargo.lock
+  - docs/governance/ACTIVE_TRACK.yaml
+  - scripts/check_determinism_denylist.py
+
 spine_objectives:
   - id: deterministic-truth
     summary: >
@@ -23,15 +31,26 @@ tracks:
     status: ACTIVE
     serves: deterministic-truth
     opened: 2026-07-20
+    # Narrowed 2026-07-20 (hardening-loop GAP): exact surfaces, no broad
+    # globs that swallow sibling tracks' crates and workflows.
     owned_surfaces:
-      - Cargo.toml
       - rust-toolchain.toml
-      - crates/**
+      - crates/vh-core/**
+      - crates/vh-trace/**
+      - crates/vh-gremlin/**
+      - crates/vh-props/**
+      - crates/vh-multiverse/**
+      - crates/vh-cli/**
       - clients/**
-      - scripts/**
-      - docs/**
+      - scripts/onboard.py
+      - scripts/check_determinism_denylist.py
+      - docs/specs/**
+      - docs/plans/**
+      - docs/prompts/**
       - Makefile
-      - .github/**
+      - .github/workflows/ci.yml
+      - CLAUDE.md
+      - README.md
     acceptance:
       # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
       - "Tier 1: same seed => bit-identical trace hash across 1000 runs and two machines"

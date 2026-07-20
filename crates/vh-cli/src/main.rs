@@ -4,11 +4,21 @@
 //! process exit code, and nothing inside the kernel crates may. Arg parsing
 //! is manual to keep the workspace zero-dependency.
 
+use std::num::NonZeroU64;
+
 use vh_cli::workloads;
-use vh_multiverse::{run_multiverse, run_universe, MultiverseConfig};
+use vh_multiverse::{run_multiverse, run_universe, MultiverseConfig, Verdict};
 
 const DEFAULT_SEED: u64 = 0xD1CE;
 const DEFAULT_UNIVERSES: u64 = 100;
+
+/// Frozen Tier-1 compatibility identity for `vh doctor`: demo workload,
+/// seed 0xD1CE, universe 0. Semantic drift (PRNG, trace framing, demo
+/// behavior) fails doctor instead of printing OK. Changing these literals
+/// is a compatibility decision, not a refactor — see
+/// docs/specs/TRACE_FORMAT_V0.md § Changelog.
+const DOCTOR_EXPECTED_HASH: &str = "9ce6199f133f4d3c9dd0da0075e352d2";
+const DOCTOR_EXPECTED_EVENTS: usize = 45;
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,8 +46,10 @@ WORKLOADS:
     demo-buggy   ack-before-flush durability bug (rig must find it)
     demo-nondet  leaks global state (divergence detector must flag it)
 
-`vh run` exits 0 only if the multiverse is clean: no always-failure,
-no divergence, every declared sometimes reached.
+`vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
+always-failure, no divergence, every declared sometimes reached. With
+--no-divergence-check a finding-free run is UNCHECKED (exit 3), never
+CLEAN. --universes must be nonzero: zero work is never certified.
 ";
 
 struct RunArgs {
@@ -131,9 +143,18 @@ fn cmd_run(args: &[String]) -> i32 {
         };
     }
 
+    let universes = match NonZeroU64::new(run.universes) {
+        Some(n) => n,
+        None => {
+            eprintln!(
+                "error: --universes must be nonzero — zero work is never certified\n\n{USAGE}"
+            );
+            return 2;
+        }
+    };
     let cfg = MultiverseConfig {
         root_seed: run.seed,
-        universes: run.universes,
+        universes,
         check_divergence: run.check_divergence,
     };
     let report = run_multiverse(&cfg, workload.as_ref());
@@ -170,25 +191,49 @@ fn cmd_run(args: &[String]) -> i32 {
         println!("  SOMETIMES-UNREACHED: {name} (dead path across the whole multiverse)");
     }
 
-    if report.is_clean() {
-        println!("  verdict: CLEAN");
-        0
-    } else {
-        println!("  verdict: FINDINGS (see above)");
-        1
+    match report.verdict() {
+        Verdict::Clean => {
+            println!("  verdict: CLEAN");
+            0
+        }
+        Verdict::Findings => {
+            println!("  verdict: FINDINGS (see above)");
+            1
+        }
+        Verdict::Unchecked => {
+            println!("  verdict: UNCHECKED (no findings, but divergence detection was disabled — inconclusive)");
+            3
+        }
     }
 }
 
 fn cmd_doctor() -> i32 {
-    println!("vh {} — determinism self-check", env!("CARGO_PKG_VERSION"));
+    println!(
+        "vh {} — determinism self-check [Tier 1]",
+        env!("CARGO_PKG_VERSION")
+    );
     let workload = workloads::by_name("demo").expect("demo workload exists");
     let a = run_universe(DEFAULT_SEED, 0, workload.as_ref());
     let b = run_universe(DEFAULT_SEED, 0, workload.as_ref());
-    if a.trace_hash == b.trace_hash {
-        println!("  replay check: OK (universe 0 hash {})", a.trace_hash);
-        0
-    } else {
-        println!("  replay check: FAILED — kernel nondeterminism, do not trust results");
-        1
+
+    // Self-consistency: two replays must agree on EVERY observable, not
+    // just the trace hash.
+    if !a.observably_equal(&b) {
+        println!("  replay check: FAILED — replays observably differ, do not trust results");
+        return 1;
     }
+    // Frozen compatibility identity: semantic drift (PRNG, framing, demo
+    // behavior) must fail doctor rather than print OK.
+    if a.trace_hash != DOCTOR_EXPECTED_HASH || a.trace_events != DOCTOR_EXPECTED_EVENTS {
+        println!(
+            "  replay check: FAILED — frozen identity mismatch (got hash {} events {}, expected hash {DOCTOR_EXPECTED_HASH} events {DOCTOR_EXPECTED_EVENTS}); this build is not replay-compatible with the recorded corpus",
+            a.trace_hash, a.trace_events
+        );
+        return 1;
+    }
+    println!(
+        "  replay check: OK (universe 0 hash {} events {})",
+        a.trace_hash, a.trace_events
+    );
+    0
 }
