@@ -32,18 +32,32 @@ const VERIFY_ROUNDS: u64 = 2;
 pub struct WalDemo {
     /// true = acknowledge at flush, before fsync/verify (the seeded bug).
     pub ack_at_flush: bool,
+    /// true = corpus-fsync-lie (VB-005): the CORRECT paranoid client
+    /// under a lying-hardware palette (FsyncLie + CrashRestart). The
+    /// verify-after-fsync reads the OS cache, so the lie is invisible to
+    /// even correct application code — a later crash erases data an Ok
+    /// fsync claimed durable. The rig must find the hole no app logic
+    /// can close.
+    pub lie_palette: bool,
 }
 
 impl WalDemo {
-    fn plan(rng: &mut vh_core::Xoshiro256pp) -> FaultPlan {
+    fn plan(&self, rng: &mut vh_core::Xoshiro256pp) -> FaultPlan {
         let count = 2 + rng.next_below(3); // 2..=4
         let injections = (0..count)
             .map(|_| {
                 let at_nanos = rng.next_below(HORIZON_NANOS);
-                let fault = match rng.next_below(3) {
-                    0 => FaultKind::DiskWriteFail,
-                    1 => FaultKind::TornWrite,
-                    _ => FaultKind::CrashRestart,
+                let fault = if self.lie_palette {
+                    match rng.next_below(2) {
+                        0 => FaultKind::FsyncLie,
+                        _ => FaultKind::CrashRestart,
+                    }
+                } else {
+                    match rng.next_below(3) {
+                        0 => FaultKind::DiskWriteFail,
+                        1 => FaultKind::TornWrite,
+                        _ => FaultKind::CrashRestart,
+                    }
                 };
                 FaultInjection { at_nanos, fault }
             })
@@ -189,7 +203,9 @@ impl WalClient {
 
 impl Workload for WalDemo {
     fn name(&self) -> &str {
-        if self.ack_at_flush {
+        if self.lie_palette {
+            "corpus-fsync-lie"
+        } else if self.ack_at_flush {
             "demo-disk-buggy"
         } else {
             "demo-disk"
@@ -197,7 +213,7 @@ impl Workload for WalDemo {
     }
 
     fn property_contract(&self) -> PropertyContract {
-        if self.ack_at_flush {
+        if self.ack_at_flush || self.lie_palette {
             PropertyContract::new(&[], &[]).with_oracles(&["wal_durability"])
         } else {
             PropertyContract::new(
@@ -220,18 +236,19 @@ impl Workload for WalDemo {
     }
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
-        if !self.ack_at_flush {
+        let mark_coverage = !self.ack_at_flush && !self.lie_palette;
+        if mark_coverage {
             ctx.declare_sometimes("write_failed_and_retried");
             ctx.declare_sometimes("torn_write_detected");
             ctx.declare_sometimes("crash_recovered");
         }
         let mut values = ctx.stream("values");
         let mut gremlin = ctx.stream("gremlin");
-        let mut rt = ctx.runtime(|| Self::plan(&mut gremlin));
+        let mut rt = ctx.runtime(|| self.plan(&mut gremlin));
 
         let mut client = WalClient {
             ack_at_flush: self.ack_at_flush,
-            mark_coverage: !self.ack_at_flush,
+            mark_coverage,
             pending: BTreeMap::new(),
             acked: BTreeMap::new(),
         };
@@ -252,7 +269,7 @@ impl Workload for WalDemo {
                     }
                 }
                 StepEvent::Crashed => {
-                    if !self.ack_at_flush {
+                    if mark_coverage {
                         rt.sometimes("crash_recovered");
                     }
                     client.recover(&mut rt);

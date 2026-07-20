@@ -49,6 +49,9 @@ WORKLOADS:
     demo-net-buggy   fire-and-forget echo — the network-is-reliable fallacy
     demo-disk        paranoid WAL on SimDisk: fsync+verify before ack (CLEAN)
     demo-disk-buggy  acks at flush — the flushed-is-not-fsynced fallacy
+    corpus-*         seeded vibe-bug corpus classes (corpus/entries/):
+                     lost-update, retry-double-apply, dirty-read,
+                     crash-toctou, fsync-lie
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every

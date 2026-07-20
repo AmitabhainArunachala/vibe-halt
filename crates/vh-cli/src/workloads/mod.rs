@@ -6,11 +6,13 @@
 //! acknowledged writes and the `durability` always-property fires with a
 //! one-command repro.
 
+mod corpus;
 mod disk;
 mod net;
 
 use std::collections::BTreeMap;
 
+pub use corpus::{CrashToctou, DirtyRead, LostUpdate, RetryDoubleApply};
 pub use disk::WalDemo;
 pub use net::EchoDemo;
 use vh_gremlin::{FaultKind, FaultPlan};
@@ -208,8 +210,20 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
         "demo-net-buggy" => Some(Box::new(EchoDemo { no_retry: true })),
         "demo-disk" => Some(Box::new(WalDemo {
             ack_at_flush: false,
+            lie_palette: false,
         })),
-        "demo-disk-buggy" => Some(Box::new(WalDemo { ack_at_flush: true })),
+        "demo-disk-buggy" => Some(Box::new(WalDemo {
+            ack_at_flush: true,
+            lie_palette: false,
+        })),
+        "corpus-lost-update" => Some(Box::new(LostUpdate)),
+        "corpus-retry-double-apply" => Some(Box::new(RetryDoubleApply)),
+        "corpus-dirty-read" => Some(Box::new(DirtyRead)),
+        "corpus-crash-toctou" => Some(Box::new(CrashToctou)),
+        "corpus-fsync-lie" => Some(Box::new(WalDemo {
+            ack_at_flush: false,
+            lie_palette: true,
+        })),
         _ => None,
     }
 }
