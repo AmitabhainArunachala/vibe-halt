@@ -74,7 +74,11 @@ set +e
 err=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo --universes 0 2>&1 >/dev/null)
 code=$?
 set -e
-if [ "$code" -ne 2 ] || ! printf '%s' "$err" | grep -q -- '--universes must be nonzero — zero work is never certified'; then
+# Here-string, not a pipeline: under `set -o pipefail`, BSD grep -q
+# exits at first match and the writer can take SIGPIPE (exit 141), false-
+# failing the gate on a MATCHING diagnostic (reproduced on macOS
+# 2026-07-21: `printf | grep -q` returned 141 with the pattern present).
+if [ "$code" -ne 2 ] || ! grep -q -- '--universes must be nonzero — zero work is never certified' <<< "$err"; then
   echo "GATE FAIL: --universes 0 must be rejected with exit 2 + the typed diagnostic, got exit $code"
   exit 1
 fi
@@ -85,7 +89,7 @@ set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-nondet --universe 0)
 code=$?
 set -e
-if [ "$code" -ne 3 ] || ! printf '%s\n' "$out" | grep -q '^  replay verdict: UNCHECKED'; then
+if [ "$code" -ne 3 ] || ! grep -q '^  replay verdict: UNCHECKED' <<< "$out"; then
   echo "GATE FAIL: single-universe replay must be UNCHECKED exit 3, got exit $code"
   exit 1
 fi
