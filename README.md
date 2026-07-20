@@ -53,9 +53,14 @@ offline, bit-stable builds on the pinned toolchain
 1. **Determinism deny-list** — kernel crates use no wall clock, no OS
    randomness, no hash-order iteration, no threads, no I/O. Enforced
    mechanically in CI (`scripts/check_determinism_denylist.py`).
-2. **Divergence honesty** — every universe runs twice; trace hashes must
-   match bit-for-bit or the report says DIVERGENT. The rig never blesses
-   a run it cannot reproduce.
+2. **Divergence honesty** — every universe runs twice, in two
+   non-adjacent passes; complete observable results must match or the
+   report says DIVERGENT. That replay pair is a **sampled falsifier**:
+   agreement is evidence, never proof of determinism (a workload keyed to
+   the execution schedule can agree with itself), so the report names its
+   evidence "pairwise replay agreement" and the deterministic-substrate
+   claim rests on the D0 boundary — gate 0 plus the frozen reference
+   vectors — not on the sample.
 
 ## Integration with Dharma Swarm
 

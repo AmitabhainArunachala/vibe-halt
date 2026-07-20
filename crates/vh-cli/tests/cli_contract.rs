@@ -147,8 +147,8 @@ fn no_divergence_check_is_unchecked_exit_3() {
     assert_eq!(code, 3, "{stdout}");
     assert!(stdout.contains("verdict: UNCHECKED"), "{stdout}");
     assert!(
-        stdout.contains("Tier 1 claimed (divergence check disabled)"),
-        "the evidence line must state the unchecked tier claim:\n{stdout}"
+        stdout.contains("single execution (no replay agreement — divergence check disabled)"),
+        "the evidence line must state that no replay agreement was sampled:\n{stdout}"
     );
 }
 
@@ -166,5 +166,8 @@ fn clean_campaign_exits_0_with_checked_evidence() {
     ]);
     assert_eq!(code, 0, "{stdout}");
     assert!(stdout.contains("verdict: CLEAN"), "{stdout}");
-    assert!(stdout.contains("Tier 1 (divergence-checked)"), "{stdout}");
+    assert!(
+        stdout.contains("pairwise replay agreement (sampled falsifier"),
+        "the evidence line must name the sampled falsifier, not a tier proof:\n{stdout}"
+    );
 }

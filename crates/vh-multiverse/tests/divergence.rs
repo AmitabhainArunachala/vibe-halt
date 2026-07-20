@@ -452,6 +452,88 @@ impl Workload for ReorderedChecksDemo {
     }
 }
 
+/// Hardening-loop-4 BLOCKER 2, reproduced: `GLOBAL.fetch_add(1) / 2`
+/// yields the pair-local values A,A then B,B, so ADJACENT pairing
+/// reported systematic nondeterminism as divergence-free. Non-adjacent
+/// two-pass pairing separates the executions and must flag every
+/// universe.
+static PAIR_LOCAL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct PairLocalCounterDemo;
+
+impl Workload for PairLocalCounterDemo {
+    fn name(&self) -> &str {
+        "pair-local-counter-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let v = PAIR_LOCAL_COUNTER.fetch_add(1, Ordering::SeqCst) / 2;
+        ctx.record("leak", &format!("half={v}"));
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn pair_local_counter_nondeterminism_is_caught_by_nonadjacent_replay() {
+    let w = PairLocalCounterDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: count(4),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert_eq!(
+        report.divergent_universes().len(),
+        4,
+        "the adjacent-pair-blessed counter workload must be flagged in every universe"
+    );
+    assert!(!report.is_clean());
+}
+
+/// The honest limit that keeps the evidence named "agreement", never
+/// "proof" (hardening-loop-4 BLOCKER 2): a workload keyed to the full
+/// execution schedule — counter modulo the per-pass invocation count —
+/// produces identical observations in both passes and is blessed by ANY
+/// finite fixed-schedule replay sample. This regression pins the
+/// limitation so the naming cannot quietly re-inflate; refuting this
+/// class needs controlled-effect closure (the D0 boundary), not more
+/// samples.
+static SCHEDULE_KEYED_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct ScheduleKeyedDemo;
+
+impl Workload for ScheduleKeyedDemo {
+    fn name(&self) -> &str {
+        "schedule-keyed-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        // 4 universes per pass: invocation i and i+4 collapse to the same
+        // recorded value, so the two passes agree observation-for-
+        // observation despite the process-global state.
+        let v = SCHEDULE_KEYED_COUNTER.fetch_add(1, Ordering::SeqCst) % 4;
+        ctx.record("leak", &format!("keyed={v}"));
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn schedule_keyed_nondeterminism_still_evades_sampled_replay_agreement() {
+    let w = ScheduleKeyedDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: count(4),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert!(
+        report.divergent_universes().is_empty(),
+        "this workload is CONSTRUCTED to evade the sampled falsifier; if it \
+         is now caught, the pairing schedule changed — update the \
+         construction AND re-verify the ReplayEvidence naming stays honest"
+    );
+}
+
 #[test]
 fn detector_flags_reordered_passing_check_transcripts() {
     let w = ReorderedChecksDemo;

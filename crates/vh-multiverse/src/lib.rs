@@ -1,11 +1,16 @@
 //! vh-multiverse — runs workloads across universes and detects divergence.
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
-//! TWICE and the complete observable results — trace hash, event count,
-//! assertion transcript, always-failures, sometimes map, and runner
-//! lifecycle evidence — must match exactly. A mismatch means nondeterminism
-//! leaked into the kernel or the workload, and the report says so loudly
-//! instead of pretending the run was reproducible.
+//! TWICE — in two non-adjacent passes — and the complete observable results
+//! — trace hash, event count, assertion transcript, always-failures,
+//! sometimes map, and runner lifecycle evidence — must match exactly. A
+//! mismatch means nondeterminism leaked into the kernel or the workload,
+//! and the report says so loudly instead of pretending the run was
+//! reproducible. Agreement is the SAMPLED-FALSIFIER evidence class
+//! ([`ReplayEvidence::PairwiseReplayAgreement`]): it can refute
+//! determinism, never prove it — the deterministic-substrate claim rests
+//! on the D0 boundary (gate 0), not on this sample
+//! (hardening-loop-4 BLOCKER 2).
 //!
 //! Evidence integrity: workloads interact with the evidence ledger ONLY
 //! through capability methods (`record`, `always`, `sometimes`, ...) —
@@ -404,25 +409,38 @@ pub enum Verdict {
 }
 
 /// Typed replay-evidence quality, orthogonal to finding status
-/// (hardening-loop-2 GAP): the tier claim and whether it was mechanically
-/// checked travel with the report instead of living in prose.
+/// (hardening-loop-2 GAP), named as the exact fact it is
+/// (hardening-loop-4 BLOCKER 2): a finite replay sample is a
+/// FALSIFIER of determinism, never a proof. The old name
+/// (`Tier1DivergenceChecked`) promoted pairwise agreement into a tier
+/// claim; the Tier-1 claim actually rests on the separately enforced D0
+/// boundary (gate 0: deny-list + rustc lints; docs/specs/
+/// DETERMINISM_TIERS.md), and this evidence only reports whether that
+/// claim survived a sampled falsification attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayEvidence {
-    /// Every universe ran twice and complete observations were compared:
-    /// the Tier-1 claim is mechanically checked (divergences, if any, are
-    /// findings — checked ≠ clean).
-    Tier1DivergenceChecked,
-    /// Single executions only: Tier 1 claimed by the simulated-runtime
-    /// substrate (docs/specs/DETERMINISM_TIERS.md) but not verified in
+    /// Every universe ran twice — in two NON-ADJACENT passes, see
+    /// [`run_multiverse`] — and complete observations agreed pairwise.
+    /// Agreement is evidence, not proof: a workload keyed to the
+    /// execution schedule can agree with itself while being
+    /// nondeterministic (regression-documented in
+    /// `tests/divergence.rs`). Divergences, if any, are findings —
+    /// sampled ≠ clean.
+    PairwiseReplayAgreement,
+    /// Single executions only: no replay agreement was even sampled in
     /// this run.
-    Tier1Unchecked,
+    SingleRunUnchecked,
 }
 
 impl ReplayEvidence {
     pub fn label(self) -> &'static str {
         match self {
-            ReplayEvidence::Tier1DivergenceChecked => "Tier 1 (divergence-checked)",
-            ReplayEvidence::Tier1Unchecked => "Tier 1 claimed (divergence check disabled)",
+            ReplayEvidence::PairwiseReplayAgreement => {
+                "pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)"
+            }
+            ReplayEvidence::SingleRunUnchecked => {
+                "single execution (no replay agreement — divergence check disabled)"
+            }
         }
     }
 }
@@ -497,9 +515,9 @@ impl MultiverseReport {
     /// Typed replay-evidence quality (orthogonal to findings).
     pub fn replay_evidence(&self) -> ReplayEvidence {
         if self.divergence_checked {
-            ReplayEvidence::Tier1DivergenceChecked
+            ReplayEvidence::PairwiseReplayAgreement
         } else {
-            ReplayEvidence::Tier1Unchecked
+            ReplayEvidence::SingleRunUnchecked
         }
     }
 
@@ -540,6 +558,17 @@ impl MultiverseReport {
 /// v0 runs universes sequentially; Phase 3 fans out across cores. The
 /// sequential baseline is also the reference implementation the parallel
 /// runner must match hash-for-hash.
+///
+/// Replay pairing is NON-ADJACENT (hardening-loop-4 BLOCKER 2): pass 1
+/// runs every universe once, pass 2 replays them all. The old adjacent
+/// pairing let a process-global counter divided by 2 agree with itself
+/// inside every pair (`A,A` then `B,B`) and be reported divergence-free;
+/// separating the passes catches that exact class. It remains a SAMPLED
+/// falsifier: a workload keyed to the full execution schedule can still
+/// agree with itself (documented by
+/// `schedule_keyed_nondeterminism_still_evades_sampled_replay_agreement`
+/// in `tests/divergence.rs`), which is why the evidence is named
+/// [`ReplayEvidence::PairwiseReplayAgreement`], never "proof".
 pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> MultiverseReport {
     let universes = cfg.universes.get();
     // UniverseCount::MAX bounds this preallocation; the typed constructor
@@ -550,14 +579,16 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
 
     for universe_id in 0..universes {
         let first = run_universe(cfg.root_seed, universe_id, workload);
-        if cfg.check_divergence {
+        merged.absorb(universe_id, &props_of(&first));
+        results.push(first);
+    }
+    if cfg.check_divergence {
+        for universe_id in 0..universes {
             let second = run_universe(cfg.root_seed, universe_id, workload);
-            if !second.observably_equal(&first) {
+            if !second.observably_equal(&results[universe_id as usize]) {
                 divergent.push(universe_id);
             }
         }
-        merged.absorb(universe_id, &props_of(&first));
-        results.push(first);
     }
 
     MultiverseReport {

@@ -13,8 +13,14 @@ Code that runs against the simulated runtime: virtual clock
 (`crates/vh-core/src/sched.rs`), simulated network/disk (Phase 1).
 
 Guarantee: same root seed ⇒ bit-identical trace hash, forever, on any
-machine with the pinned toolchain. Enforced by the frozen PRNG reference
-vector test and the CI divergence gate.
+machine with the pinned toolchain. The guarantee is enforced by
+CONSTRUCTION at the D0 boundary (gate 0: the deny-list's structural
+manifest checks plus rustc-enforced lints) and FALSIFIED BY SAMPLING:
+the frozen PRNG reference vectors, the frozen doctor identity, and the
+pairwise replay-agreement gate. A finite replay sample can refute the
+claim, never prove it — reports therefore carry the evidence name
+"pairwise replay agreement", not a tier proof (hardening-loop-4
+BLOCKER 2).
 
 ## Tier 2 — Hermetic reproducibility (Phase 1-2)
 

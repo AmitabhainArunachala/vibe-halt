@@ -134,7 +134,7 @@ fn cmd_run(args: &[String]) -> i32 {
     if let Some(universe_id) = run.single_universe {
         let result = run_universe(run.seed, universe_id, workload.as_ref());
         println!(
-            "universe {universe_id} (seed 0x{:x}, workload {}): hash {} events {} [Tier 1 claimed — single replay, divergence unchecked]",
+            "universe {universe_id} (seed 0x{:x}, workload {}): hash {} events {} [single execution — no replay agreement sampled]",
             run.seed,
             workload.name(),
             result.trace_hash(),
