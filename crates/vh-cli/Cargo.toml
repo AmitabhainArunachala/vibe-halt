@@ -1,0 +1,18 @@
+[package]
+name = "vh-cli"
+description = "vibe-halt command-line interface"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "vh"
+path = "src/main.rs"
+
+[dependencies]
+vh-core = { path = "../vh-core" }
+vh-trace = { path = "../vh-trace" }
+vh-gremlin = { path = "../vh-gremlin" }
+vh-props = { path = "../vh-props" }
+vh-multiverse = { path = "../vh-multiverse" }

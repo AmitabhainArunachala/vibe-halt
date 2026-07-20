@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # rust-toolchain.toml pins the compiler; rustup on the runner honors it.
+      - name: Toolchain
+        run: rustup show
+      - name: Determinism deny-list (gate 0)
+        run: python3 scripts/check_determinism_denylist.py
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Tests
+        run: cargo test --workspace
+      - name: Divergence gate — 200 universes, each run twice, hash-compared
+        run: cargo run -q -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
+      - name: Seeded-bug gate — the rig must still catch demo-buggy
+        run: |
+          if cargo run -q -p vh-cli -- run --workload demo-buggy --universes 50 > /dev/null; then
+            echo "demo-buggy passed: the rig no longer finds the seeded bug"; exit 1
+          fi
+      - name: Detector gate — demo-nondet must be flagged divergent
+        run: |
+          if cargo run -q -p vh-cli -- run --workload demo-nondet --universes 5 > /dev/null; then
+            echo "demo-nondet passed: divergence detector is blind"; exit 1
+          fi

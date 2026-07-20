@@ -1,0 +1,52 @@
+# vibe-halt active track portfolio.
+# Lean import of the dharma_swarm governance model: 1..N co-equal tracks,
+# WIP-limited, surface-owned, each serving a spine objective.
+# `make onboard` renders this; never answer runtime questions from prose.
+
+version: 1
+wip_warn: 2
+wip_max: 3
+
+spine_objectives:
+  - id: deterministic-truth
+    summary: >
+      Every verdict vibe-halt emits is mechanically reproducible: same seed,
+      same trace hash, same finding — or the rig says loudly that it is not.
+  - id: real-bugs-found
+    summary: >
+      The rig earns its keep by finding real defects in real (vibe-coded)
+      code, with one-command repros, not by passing its own demos.
+
+tracks:
+  - id: vibe-halt-core-2026-07
+    title: "vibe-halt core — deterministic multiverse engine (Phases 0-4)"
+    status: ACTIVE
+    serves: deterministic-truth
+    opened: 2026-07-20
+    owned_surfaces:
+      - Cargo.toml
+      - rust-toolchain.toml
+      - crates/**
+      - clients/**
+      - scripts/**
+      - docs/**
+      - Makefile
+      - .github/**
+    acceptance:
+      # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
+      - "Tier 1: same seed => bit-identical trace hash across 1000 runs and two machines"
+      - "Tier 2: divergence rate measured and published, never hidden (<5% target on reference workloads)"
+      - ">=80% recall on a seeded vibe-bug corpus of >=25 real bugs"
+      - ">=3 previously unknown, human-confirmed bugs in real code"
+      - "every failure ships a one-command deterministic repro; median shrink >=90% events removed"
+      - ">=1000 Tier-1 universes/hour/reference-workload on the build box"
+      - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
+    next:
+      - "Phase 0 (wk 1-2): trace format freeze, seed-tree hardening, divergence gate in CI (DONE at scaffold)"
+      - "Phase 1 (wk 3-5): Tier-1 sim runtime (net/disk/process gremlins on the scheduler); Tier-2 hermetic subprocess sandbox + LLM cassette layer"
+      - "Phase 2 (wk 6-8): end-state oracles, fault-plan shrinker, vibe-bug corpus >=25"
+      - "Phase 3 (wk 9-10): parallel fan-out matching sequential hashes; bandit seed scheduling; failure fingerprint dedup"
+      - "Phase 4 (wk 11-12): gRPC surface, Python client, dharma_swarm gate adapter, live-fire demo"
+    non_goals:
+      - "Tier 3 (deterministic hypervisor) — out of scope for the 12-week build; trace/oracle layer stays substrate-agnostic so a backend can slot in later"
+      - "replacing dharma_swarm governance — this repo imports the lean subset only"

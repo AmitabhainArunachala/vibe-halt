@@ -1,0 +1,9 @@
+[package]
+name = "vh-props"
+description = "vibe-halt property system: always-invariants and sometimes-reachability assertions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]

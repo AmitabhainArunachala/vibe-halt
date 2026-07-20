@@ -1,0 +1,17 @@
+# Rust
+/target/
+crates/*/target/
+
+# Python client
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+
+# Secrets — never committed
+.env
+.env.*
+!.env.example
+
+# Runtime receipts live under ~/.vibe-halt/, never in git
+reports/runtime/
