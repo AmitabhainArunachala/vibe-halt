@@ -281,12 +281,15 @@ fn cmd_run(args: &[String]) -> i32 {
 /// fresh trace and hash it: one canonical fingerprint over every
 /// observable field, reusing the frozen trace-hash machinery
 /// (docs/specs/TRACE_FORMAT_V0.md). Schema versioned: renderer changes
-/// are compatibility decisions. v2 (hardening-loop-4 GAP 5): adds the
-/// fault-plan digest observable and renders the renamed retrieval
-/// lifecycle — an explicit migration from v1
-/// (`462e803383be1b24594e76d5f9301be8`), recorded here; the underlying
-/// TRACE hash identity is unchanged.
-const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v2";
+/// are compatibility decisions. v3 (Phase-1 sim runtime, 2026-07-21):
+/// adds the runner-owned semantic fault-lifecycle evidence observable
+/// (`UniverseResult::runtime_evidence`) — an explicit migration from v2
+/// (`cdb049391ddbacc06eb3faf3ea1cb43a`), recorded in
+/// docs/specs/TRACE_FORMAT_V0.md § Changelog; the underlying TRACE hash
+/// identity is unchanged. v2 (hardening-loop-4 GAP 5) added the
+/// fault-plan digest and retrieval-honest lifecycle over v1
+/// (`462e803383be1b24594e76d5f9301be8`).
+const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v3";
 
 fn observable_fingerprint(result: &UniverseResult) -> String {
     let mut t = vh_trace::Trace::new();
@@ -309,16 +312,24 @@ fn observable_fingerprint(result: &UniverseResult) -> String {
         "fault-plan-digest",
         result.fault_plan_digest().unwrap_or("none"),
     );
+    match result.runtime_evidence() {
+        None => t.record(0, "runtime-evidence", "none"),
+        Some(ev) => {
+            for inj in ev.injections() {
+                t.record(0, "runtime-injection", &inj.canonical());
+            }
+        }
+    }
     t.hash_hex()
 }
 
 /// Frozen fingerprint of the complete doctor observation (demo workload,
-/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v2`. Unlike the
+/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v3`. Unlike the
 /// trace hash alone, this pins the assertion transcript, failures,
-/// sometimes states, lifecycle, and fault-plan digest — a regression in
-/// any observable fails doctor even when the trace hash survives
-/// (hardening-loop-2 GAP).
-const DOCTOR_EXPECTED_FINGERPRINT: &str = "cdb049391ddbacc06eb3faf3ea1cb43a";
+/// sometimes states, lifecycle, fault-plan digest, and runtime evidence
+/// — a regression in any observable fails doctor even when the trace
+/// hash survives (hardening-loop-2 GAP).
+const DOCTOR_EXPECTED_FINGERPRINT: &str = "25f5fa4126e8390f2b4fd61df4874f9f";
 
 /// Frozen semantic expectations for the doctor universe (demo, seed
 /// 0xD1CE, universe 0), asserted individually so a drift names the
@@ -382,6 +393,13 @@ fn cmd_doctor() -> i32 {
         semantic_failures.push(
             "fault-plan digest missing: the demo workload retrieves a plan, so its \
              replay-input identity must be bound into the result"
+                .to_string(),
+        );
+    }
+    if a.runtime_evidence().is_some() {
+        semantic_failures.push(
+            "runtime evidence present: the frozen demo universe runs the LEGACY \
+             workload-drained path and must never silently migrate onto the sim runtime"
                 .to_string(),
         );
     }

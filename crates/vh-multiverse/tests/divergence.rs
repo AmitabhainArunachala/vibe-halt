@@ -674,6 +674,7 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
         sometimes,
         lifecycle,
         fault_plan_digest,
+        runtime_evidence,
     } = r.observation();
     assert_eq!(universe_id, r.universe_id());
     assert_eq!(trace_hash, r.trace_hash());
@@ -683,4 +684,10 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
     assert_eq!(sometimes, r.sometimes());
     assert_eq!(lifecycle, r.lifecycle());
     assert_eq!(fault_plan_digest, r.fault_plan_digest());
+    assert_eq!(
+        runtime_evidence.is_some(),
+        r.runtime_evidence().is_some(),
+        "runtime evidence exposure must match the getter surface"
+    );
+    assert_eq!(runtime_evidence, r.runtime_evidence());
 }

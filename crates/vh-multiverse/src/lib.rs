@@ -27,6 +27,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod evidence;
+pub mod runtime;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -36,15 +39,23 @@ use vh_gremlin::FaultPlan;
 use vh_props::{AlwaysCheck, AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
+pub use evidence::{InjectionOutcome, RuntimeEvidence};
+pub use runtime::{DeliveryNote, DiskError, NodeId, SimRuntime, StepEvent};
+
 /// Everything a workload may touch inside one universe. All randomness comes
 /// from named streams; all time comes from the virtual clock; all observable
 /// behavior goes into the trace — through capability methods only.
 pub struct UniverseCtx {
     universe_id: u64,
     seed_tree: SeedTree,
-    clock: VirtualClock,
-    trace: Trace,
-    props: Properties,
+    // pub(crate): the sim runtime (`runtime.rs`) records deliveries, IO,
+    // and lifecycle transitions itself. Crate-internal visibility keeps
+    // the evidence-integrity guarantee against DOWNSTREAM safe code
+    // intact — external workloads still reach these only through
+    // capability methods.
+    pub(crate) clock: VirtualClock,
+    pub(crate) trace: Trace,
+    pub(crate) props: Properties,
     fault_plan_override: Option<FaultPlan>,
     /// Runner-owned ledger: how many times the workload RETRIEVED its
     /// fault plan through [`UniverseCtx::fault_plan_or`]. Finalized into
@@ -57,6 +68,10 @@ pub struct UniverseCtx {
     /// retrieval order, under [`FAULT_PLAN_DIGEST_SCHEMA`]. Bound into
     /// [`UniverseResult`] so replay evidence carries its input identity.
     plan_digest_trace: Trace,
+    /// Runner-owned semantic fault-lifecycle ledger, finalized by the
+    /// Phase-1 sim runtime ([`UniverseCtx::runtime`]); `None` for
+    /// universes that never constructed the runtime.
+    pub(crate) runtime_evidence: Option<RuntimeEvidence>,
 }
 
 impl UniverseCtx {
@@ -72,6 +87,7 @@ impl UniverseCtx {
             fault_plan_override,
             fault_plan_retrievals: 0,
             plan_digest_trace,
+            runtime_evidence: None,
         }
     }
 
@@ -325,6 +341,7 @@ pub struct UniverseResult {
     sometimes: BTreeMap<String, bool>,
     lifecycle: UniverseLifecycle,
     fault_plan_digest: Option<String>,
+    runtime_evidence: Option<RuntimeEvidence>,
 }
 
 impl UniverseResult {
@@ -374,6 +391,16 @@ impl UniverseResult {
         self.fault_plan_digest.as_deref()
     }
 
+    /// Runner-owned semantic fault-lifecycle evidence from the Phase-1
+    /// sim runtime (Offered → Armed → Injected → Manifested → Recovered
+    /// per injection; see `evidence.rs` for the measured-stage doctrine).
+    /// `None` iff this universe never constructed the runtime — the
+    /// legacy workload-drained path, whose lifecycle claims remain
+    /// retrieval-only. In observable equality.
+    pub fn runtime_evidence(&self) -> Option<&RuntimeEvidence> {
+        self.runtime_evidence.as_ref()
+    }
+
     /// Two replays are the same run iff EVERY observable agrees. Struct
     /// equality is the definition on purpose: adding an observable field
     /// automatically strengthens the divergence check.
@@ -402,6 +429,7 @@ impl UniverseResult {
             sometimes,
             lifecycle,
             fault_plan_digest,
+            runtime_evidence,
         } = self;
         UniverseObservation {
             universe_id: *universe_id,
@@ -412,6 +440,7 @@ impl UniverseResult {
             sometimes,
             lifecycle,
             fault_plan_digest: fault_plan_digest.as_deref(),
+            runtime_evidence: runtime_evidence.as_ref(),
         }
     }
 }
@@ -429,6 +458,7 @@ pub struct UniverseObservation<'a> {
     pub sometimes: &'a BTreeMap<String, bool>,
     pub lifecycle: &'a UniverseLifecycle,
     pub fault_plan_digest: Option<&'a str>,
+    pub runtime_evidence: Option<&'a RuntimeEvidence>,
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
@@ -489,6 +519,7 @@ fn run_universe_inner(
             fault_plan,
         },
         fault_plan_digest,
+        runtime_evidence: ctx.runtime_evidence,
     }
 }
 

@@ -42,10 +42,16 @@ Two universe runs are **identical** iff their COMPLETE public
 5. ordered always-failures with details
 6. declared sometimes properties and their reached state
 7. runner lifecycle evidence (typed completion outcome and fault-plan
-   RETRIEVAL discipline — retrieval is all the ledger claims; semantic
-   fault manifestation lands with the Phase-1 runtime)
+   RETRIEVAL discipline — retrieval is all THAT ledger claims; the
+   semantic ladder is item 9)
 8. the canonical fault-plan digest (`vh-fault-plan-v1`) binding the
    replay input's identity into the result (hardening-loop-4 GAP)
+9. the runner-owned semantic fault-lifecycle evidence (Phase-1 sim
+   runtime): per planned injection, the measured
+   `Offered → Armed → Injected → Manifested → Recovered` timestamps
+   (`crates/vh-multiverse/src/evidence.rs` documents exactly what each
+   stage measures). `None` for universes that never constructed the
+   runtime — absence vs. presence is itself observable.
 
 The trace hash alone is NOT identity: a replay can skip or reorder a
 passing invariant while recording an identical trace (hardening-loop-3
@@ -60,6 +66,24 @@ check; this list must grow with the struct. Enforced by
 
 ### Changelog
 
+- **2026-07-21 (Phase-1 sim runtime):** observable identity grew item 9
+  (runner-owned semantic fault-lifecycle evidence — the runtime, not the
+  workload, owns injection and measures Offered → Armed → Injected →
+  Manifested → Recovered per injection; closes the loop-4 DEFERRED item
+  ~4 weeks ahead of 2026-08-15). The doctor observable fingerprint
+  migrated `vh-doctor-observable-v2` (`cdb049391ddbacc06eb3faf3ea1cb43a`)
+  → `vh-doctor-observable-v3` (`25f5fa4126e8390f2b4fd61df4874f9f`); the
+  v3 renderer records `runtime-evidence: none` for legacy-path universes
+  and one `runtime-injection` line per injection otherwise, and doctor
+  additionally asserts the frozen demo universe stays on the LEGACY path
+  (its runtime evidence must be `None`). The TRACE hash identity
+  (`9ce6199f133f4d3c9dd0da0075e352d2`, 45 events) is unchanged — no
+  recorded trace hash is invalidated. Additive in the same change:
+  `FaultKind` gained TornWrite / FsyncLie / NetworkDuplicate /
+  NetworkReorder (new `vh-fault-plan-v1` canonical strings; every
+  previously recorded digest is over unchanged renderings and remains
+  valid; `FaultPlan::generate`'s palette is untouched and pinned by
+  regression).
 - **2026-07-20 (hardening loop 4):** observable identity grew items 7-8
   (retrieval-honest lifecycle naming, fault-plan digest); the doctor
   observable fingerprint migrated `vh-doctor-observable-v1`
