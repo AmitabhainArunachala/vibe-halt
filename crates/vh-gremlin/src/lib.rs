@@ -20,6 +20,18 @@ pub enum FaultKind {
     DiskWriteFail,
     /// The component's local clock reads skewed by this much.
     ClockSkew { skew_nanos: u64 },
+    /// A single write persists only a prefix of its record while the
+    /// writer still sees success — the tear surfaces through later reads
+    /// or recovery, never through the write's return value.
+    TornWrite,
+    /// A single fsync reports success without making anything durable.
+    FsyncLie,
+    /// The next message is delivered twice.
+    NetworkDuplicate,
+    /// The next message is held and delivered after the message that
+    /// follows it (a pairwise reorder; if no message follows, no swap
+    /// occurs and the fault honestly never advances past Armed).
+    NetworkReorder,
 }
 
 impl FaultKind {
@@ -30,12 +42,19 @@ impl FaultKind {
             FaultKind::NetworkPartition { .. } => "network_partition",
             FaultKind::DiskWriteFail => "disk_write_fail",
             FaultKind::ClockSkew { .. } => "clock_skew",
+            FaultKind::TornWrite => "torn_write",
+            FaultKind::FsyncLie => "fsync_lie",
+            FaultKind::NetworkDuplicate => "network_duplicate",
+            FaultKind::NetworkReorder => "network_reorder",
         }
     }
 
     /// Canonical rendering — label plus every parameter — for versioned
     /// evidence digests (`vh-fault-plan-v1` in vh-multiverse). Changing
-    /// this output is a digest schema bump, never a refactor.
+    /// an EXISTING rendering is a digest schema bump, never a refactor.
+    /// ADDING a variant is additive: new canonical strings appear, every
+    /// previously recorded digest is computed over unchanged renderings
+    /// and remains valid (2026-07-21, Phase-1 runtime faults).
     pub fn canonical(&self) -> String {
         match self {
             FaultKind::CrashRestart => "crash_restart".to_string(),
@@ -45,6 +64,10 @@ impl FaultKind {
             }
             FaultKind::DiskWriteFail => "disk_write_fail".to_string(),
             FaultKind::ClockSkew { skew_nanos } => format!("clock_skew:{skew_nanos}"),
+            FaultKind::TornWrite => "torn_write".to_string(),
+            FaultKind::FsyncLie => "fsync_lie".to_string(),
+            FaultKind::NetworkDuplicate => "network_duplicate".to_string(),
+            FaultKind::NetworkReorder => "network_reorder".to_string(),
         }
     }
 }
@@ -183,6 +206,46 @@ mod tests {
         let (end, rest) = plan.due(cursor, 1_000);
         assert_eq!(rest, &[late]);
         assert_eq!(end, plan.injections().len());
+    }
+
+    /// Frozen-surface regression (2026-07-21): `generate` is part of the
+    /// frozen demo path — the demo workload's plans, and therefore the
+    /// frozen doctor trace identity, depend on this exact palette and
+    /// draw sequence. The Phase-1 fault kinds (torn write, fsync lie,
+    /// duplicate, reorder) must NEVER appear from `generate`; workloads
+    /// that want them construct plans explicitly via `FaultPlan::new`.
+    #[test]
+    fn frozen_generate_palette_excludes_phase1_kinds() {
+        let mut r = Xoshiro256pp::from_seed(0xD1CE);
+        let plan = FaultPlan::generate(&mut r, 1_000_000, 512);
+        for inj in plan.injections() {
+            assert!(
+                matches!(
+                    inj.fault,
+                    FaultKind::CrashRestart
+                        | FaultKind::NetworkDelay { .. }
+                        | FaultKind::NetworkPartition { .. }
+                        | FaultKind::DiskWriteFail
+                        | FaultKind::ClockSkew { .. }
+                ),
+                "generate emitted a non-v0 fault kind: {:?}",
+                inj.fault
+            );
+        }
+    }
+
+    /// The canonical renderings of the Phase-1 additions are frozen from
+    /// birth: these strings enter `vh-fault-plan-v1` digests.
+    #[test]
+    fn phase1_canonical_renderings_are_stable() {
+        assert_eq!(FaultKind::TornWrite.canonical(), "torn_write");
+        assert_eq!(FaultKind::FsyncLie.canonical(), "fsync_lie");
+        assert_eq!(FaultKind::NetworkDuplicate.canonical(), "network_duplicate");
+        assert_eq!(FaultKind::NetworkReorder.canonical(), "network_reorder");
+        assert_eq!(FaultKind::TornWrite.label(), "torn_write");
+        assert_eq!(FaultKind::FsyncLie.label(), "fsync_lie");
+        assert_eq!(FaultKind::NetworkDuplicate.label(), "network_duplicate");
+        assert_eq!(FaultKind::NetworkReorder.label(), "network_reorder");
     }
 
     /// Ties keep caller order (stable sort), deterministically.
