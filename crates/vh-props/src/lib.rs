@@ -71,7 +71,16 @@ impl Properties {
     }
 
     /// Mark a sometimes-assertion as reached in this universe.
+    ///
+    /// Fail-closed declaration discipline: hitting an undeclared name used
+    /// to fabricate a reached property out of thin air, so a typo'd or
+    /// undeclared hit could never surface as an unreached finding (PR #1
+    /// hardening-loop-2 GAP). Declaration must precede the hit.
     pub fn sometimes(&mut self, name: &str) {
+        assert!(
+            self.sometimes.contains_key(name),
+            "sometimes property must be declared before it is hit: {name}"
+        );
         self.sometimes.insert(name.to_string(), true);
     }
 
@@ -153,5 +162,25 @@ mod tests {
         let mut merged = MergedProperties::default();
         merged.absorb(0, &a);
         assert_eq!(merged.unreached_sometimes(), vec!["error_path_taken"]);
+    }
+
+    /// Negative regression (hardening-loop-2 GAP): the pre-repair kernel
+    /// inserted an undeclared hit as `true`, silently fabricating a reached
+    /// property that no declaration ever announced.
+    #[test]
+    #[should_panic(expected = "sometimes property must be declared before it is hit")]
+    fn undeclared_sometimes_hit_fails_closed() {
+        let mut p = Properties::new();
+        p.sometimes("never_declared");
+    }
+
+    /// Redeclaring after a hit must not erase the reached state.
+    #[test]
+    fn redeclaration_does_not_erase_a_hit() {
+        let mut p = Properties::new();
+        p.declare_sometimes("reached");
+        p.sometimes("reached");
+        p.declare_sometimes("reached");
+        assert_eq!(p.sometimes_map().get("reached"), Some(&true));
     }
 }
