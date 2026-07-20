@@ -97,15 +97,76 @@ mod tests {
 
     /// Frozen output vector: if this test ever fails, the PRNG changed and
     /// every recorded trace hash in every corpus is invalidated. Do not
-    /// "fix" the expectation — that is a breaking format change.
+    /// "fix" the expectations — that is a breaking format change.
+    ///
+    /// The literals below were derived independently of this implementation,
+    /// from the official reference algorithms (Vigna's splitmix64.c and
+    /// Blackman/Vigna's xoshiro256plusplus.c), and cross-checked against a
+    /// second independent transcription in the PR #1 review. The original
+    /// version of this test compared the implementation to itself, which
+    /// froze nothing (PR #1 review BLOCKER).
     #[test]
     fn frozen_reference_vector() {
+        // SplitMix64 stream from state 0xD1CE (also the xoshiro seed
+        // expansion, by construction of from_seed).
+        let mut sm = 0xD1CE_u64;
+        let expansion: Vec<u64> = (0..4).map(|_| splitmix64(&mut sm)).collect();
+        assert_eq!(
+            expansion,
+            vec![
+                0x29c2_d060_2618_91fb,
+                0xc042_d56e_fd8a_d139,
+                0x140c_b338_ef93_3c26,
+                0xd159_57dc_1dad_3f38,
+            ]
+        );
+
+        // xoshiro256++ head for seed 0xD1CE.
         let mut r = Xoshiro256pp::from_seed(0xD1CE);
-        let head: Vec<u64> = (0..4).map(|_| r.next_u64()).collect();
-        let again: Vec<u64> = {
-            let mut r2 = Xoshiro256pp::from_seed(0xD1CE);
-            (0..4).map(|_| r2.next_u64()).collect()
-        };
-        assert_eq!(head, again);
+        let head: Vec<u64> = (0..8).map(|_| r.next_u64()).collect();
+        assert_eq!(
+            head,
+            vec![
+                0x47e4_b348_c016_200f,
+                0xb3f4_9dc0_c55a_ccb4,
+                0xa120_3c4b_5476_b7fd,
+                0x283c_1b14_e6c5_25cb,
+                0x52fb_041d_6eae_5eef,
+                0x341f_c15b_f5f6_838b,
+                0x7478_ddf6_01e4_1515,
+                0xa98e_97e4_59b4_71a2,
+            ]
+        );
+    }
+
+    /// Rejection consumption is part of the frozen deterministic surface:
+    /// a rejected draw advances the stream, so how many raw values a
+    /// `next_below` call consumes changes every subsequent draw (PR #1
+    /// review NIT). Literals derive from the frozen head above.
+    #[test]
+    fn next_below_consumption_is_frozen() {
+        // Head words for seed 0xD1CE (see frozen_reference_vector):
+        // [0] 47e4... (< 2^63)  [1] b3f4... (>= 2^63)  [2] a120... (>= 2^63)
+        // [3] 283c... (< 2^63)  [4] 52fb...
+        let mut r = Xoshiro256pp::from_seed(0xD1CE);
+        let _ = r.next_u64(); // consume word 0
+
+        // next_below(2^63): zone = 2^63; words 1 and 2 are rejected,
+        // word 3 accepted. Three raw draws consumed.
+        let v = r.next_below(1u64 << 63);
+        assert_eq!(v, 0x283c_1b14_e6c5_25cb);
+        // The next raw draw must be word 4 — proving exactly 3 draws
+        // were consumed by the call above.
+        assert_eq!(r.next_u64(), 0x52fb_041d_6eae_5eef);
+
+        // n = 1: zone = u64::MAX, word 0 accepted, result always 0.
+        let mut r1 = Xoshiro256pp::from_seed(0xD1CE);
+        assert_eq!(r1.next_below(1), 0);
+        assert_eq!(r1.next_u64(), 0xb3f4_9dc0_c55a_ccb4); // 1 draw consumed
+
+        // n = u64::MAX: only the value u64::MAX is rejected; word 0 accepted.
+        let mut r2 = Xoshiro256pp::from_seed(0xD1CE);
+        assert_eq!(r2.next_below(u64::MAX), 0x47e4_b348_c016_200f);
+        assert_eq!(r2.next_u64(), 0xb3f4_9dc0_c55a_ccb4); // 1 draw consumed
     }
 }

@@ -59,4 +59,16 @@ fn buggy_demo_is_caught_with_reproducible_universe() {
     assert_eq!(solo.trace_hash, original.trace_hash);
     assert_eq!(solo.always_failures, original.always_failures);
     assert!(solo.always_failures.iter().all(|f| f.name == "durability"));
+
+    // The demo's claim is that CRASHES expose the bug: after the final
+    // clean flush, every failing universe must have crashed with a dirty
+    // WAL. A failure without that would mean the oracle fires on
+    // crash-free runs again (PR #1 review GAP regression).
+    for &u in &failing {
+        let r = &report.results[u as usize];
+        assert!(
+            r.sometimes["crash_with_dirty_wal"],
+            "universe {u} failed durability without a dirty-WAL crash"
+        );
+    }
 }

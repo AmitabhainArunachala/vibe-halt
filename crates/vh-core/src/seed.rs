@@ -4,6 +4,15 @@
 //! named stream to a workload must not perturb the values drawn by any
 //! existing stream. This is what keeps old failing seeds replayable across
 //! versions of a workload.
+//!
+//! Qualification (PR #1 review): independence holds modulo derived-key
+//! collisions — stream keys come from FNV-1a 64 over the name, so two
+//! distinct names that collide under FNV-1a 64 receive the same stream.
+//! Under a uniform birthday approximation that probability is ~2.7e-8 at
+//! one million names; realistic workloads use tens of names. FNV is
+//! non-cryptographic: adversarially *chosen* colliding names are feasible,
+//! so stream names must come from the workload author, never from
+//! untrusted input.
 
 use crate::rng::{splitmix64, Xoshiro256pp};
 
@@ -93,5 +102,26 @@ mod tests {
         let mut a = t.stream(1, "ops");
         let mut b = t.stream(2, "ops");
         assert_ne!(a.next_u64(), b.next_u64());
+    }
+
+    /// Correlation smoke (PR #1 review GAP): plain inequality would pass
+    /// even for streams related by `x ^ 1`. The xor-Hamming weight between
+    /// adjacent-universe streams must sit near the 50% expected for
+    /// independent uniform bits. Deterministic: fixed seed, fixed bounds
+    /// (mean 2048 over 64 words; bounds are ±6σ wide, σ = 32).
+    #[test]
+    fn adjacent_universe_streams_are_uncorrelated_smoke() {
+        let t = SeedTree::new(42);
+        for (ua, ub) in [(0u64, 1u64), (1, 2), (7, 8)] {
+            let mut a = t.stream(ua, "ops");
+            let mut b = t.stream(ub, "ops");
+            let hamming: u32 = (0..64)
+                .map(|_| (a.next_u64() ^ b.next_u64()).count_ones())
+                .sum();
+            assert!(
+                (1848..=2248).contains(&hamming),
+                "universes {ua}/{ub}: xor-Hamming {hamming} outside [1848, 2248]"
+            );
+        }
     }
 }

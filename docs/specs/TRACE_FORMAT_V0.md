@@ -20,15 +20,30 @@ history is a different universe.
 Running FNV-1a 128 over every event in order. Per event, absorbed bytes:
 
 ```
-le64(at_nanos) · 0x1F · kind · 0x1F · data · 0x1E
+le64(at_nanos) · le64(len(kind)) · kind · le64(len(data)) · data
 ```
 
-The separators (US `0x1F`, RS `0x1E`) make field and record boundaries
-part of the hash — `("ab","c")` never collides with `("a","bc")` (tested:
-`field_boundaries_matter`).
+Framing is length-prefixed: every field is fixed-width or preceded by its
+little-endian byte length, so the absorbed stream decodes to exactly one
+event sequence for ANY payload content — framing is injective by
+construction (tested: `field_boundaries_matter`,
+`separator_bytes_in_payload_cannot_forge_event_boundaries`,
+`event_count_is_part_of_framing`).
 
-Two universe runs are **identical** iff their final hashes match. That
-definition is the contract the divergence detector enforces.
+Two universe runs are **identical** iff their complete observable results
+match: trace hash, event count, always-failures, and sometimes map. That
+definition is the contract the divergence detector enforces
+(`UniverseResult::observably_equal`).
+
+### Changelog
+
+- **2026-07-20 (pre-release repair):** original v0 framing used US/RS
+  separator bytes (`0x1F`/`0x1E`), which was non-injective — payloads
+  containing separator bytes could forge event boundaries (found by the
+  PR #1 adversarial review, with a byte-identical two-events/one-event
+  collision). No corpus or release existed, so v0 is redefined to
+  length-prefixed framing rather than bumping to v1. All previously
+  quoted reference hashes are invalidated by this repair.
 
 ## Frozen surfaces
 

@@ -37,6 +37,10 @@ impl<E> Ord for Entry<E> {
 pub struct Scheduler<E> {
     heap: BinaryHeap<Reverse<Entry<E>>>,
     seq: u64,
+    /// Time of the most recently popped event. Scheduling before this
+    /// would make the event loop drive `VirtualClock` backwards (which
+    /// panics), so it is rejected here at the source (PR #1 review GAP).
+    watermark: VirtualTime,
 }
 
 impl<E> Scheduler<E> {
@@ -44,18 +48,31 @@ impl<E> Scheduler<E> {
         Self {
             heap: BinaryHeap::new(),
             seq: 0,
+            watermark: VirtualTime::ZERO,
         }
     }
 
+    /// Schedule an event. `at` may equal the watermark (same-time events
+    /// fire in insertion order) but must never precede an already-popped
+    /// event's time — time only moves forward.
     pub fn schedule(&mut self, at: VirtualTime, event: E) {
+        assert!(
+            at >= self.watermark,
+            "scheduled into the past: {} < watermark {}",
+            at.0,
+            self.watermark.0
+        );
         let seq = self.seq;
         self.seq += 1;
         self.heap.push(Reverse(Entry { at, seq, event }));
     }
 
-    /// Pop the next event in deterministic order.
+    /// Pop the next event in deterministic order, advancing the watermark.
     pub fn pop(&mut self) -> Option<(VirtualTime, E)> {
-        self.heap.pop().map(|Reverse(e)| (e.at, e.event))
+        self.heap.pop().map(|Reverse(e)| {
+            self.watermark = e.at;
+            (e.at, e.event)
+        })
     }
 
     pub fn len(&self) -> usize {
@@ -92,5 +109,26 @@ mod tests {
         assert_eq!(s.pop().unwrap().1, "first");
         assert_eq!(s.pop().unwrap().1, "second");
         assert_eq!(s.pop().unwrap().1, "third");
+    }
+
+    #[test]
+    fn interleaved_same_time_scheduling_stays_in_insertion_order() {
+        let mut s = Scheduler::new();
+        s.schedule(VirtualTime(10), "a");
+        assert_eq!(s.pop().unwrap().1, "a");
+        // Equal to the watermark: allowed, fires next.
+        s.schedule(VirtualTime(10), "b");
+        s.schedule(VirtualTime(10), "c");
+        assert_eq!(s.pop().unwrap().1, "b");
+        assert_eq!(s.pop().unwrap().1, "c");
+    }
+
+    #[test]
+    #[should_panic(expected = "scheduled into the past")]
+    fn refuses_scheduling_before_the_watermark() {
+        let mut s = Scheduler::new();
+        s.schedule(VirtualTime(10), "a");
+        let _ = s.pop(); // watermark now 10
+        s.schedule(VirtualTime(5), "past");
     }
 }

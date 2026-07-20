@@ -15,7 +15,9 @@ jobs:
       - name: Toolchain
         run: rustup show
       - name: Determinism deny-list (gate 0)
-        run: python3 scripts/check_determinism_denylist.py
+        run: |
+          python3 scripts/check_determinism_denylist.py --self-test
+          python3 scripts/check_determinism_denylist.py
       - name: Format
         run: cargo fmt --all --check
       - name: Tests

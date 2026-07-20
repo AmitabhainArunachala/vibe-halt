@@ -64,7 +64,12 @@ Checklist (run everything yourself; cite command + output):
    your machine? Any platform-dependent behavior is a finding.
 2. **Cross-machine determinism (acceptance criterion #1).** Run
    `cargo run -p vh-cli -- doctor`. On Claude's machine it prints
-   universe-0 demo hash `7de48a539478aa12bae04f9afca745fc` (seed 0xD1CE).
+   universe-0 demo hash `9ce6199f133f4d3c9dd0da0075e352d2` (seed 0xD1CE).
+   (Updated 2026-07-20: the trace-framing repair from this review's own
+   BLOCKER finding invalidated the original hash
+   `7de48a539478aa12bae04f9afca745fc` — see
+   `docs/specs/TRACE_FORMAT_V0.md` § Changelog. The first exchange
+   MATCHED on the old framing; re-verify on the new one after rebase.)
    If your machine prints anything else, that is the single most important
    finding this review can produce — report it with your exact toolchain.
    Also record hashes for seeds {1, 2, 42, 0xD1CE} × universes {0, 1, 7}

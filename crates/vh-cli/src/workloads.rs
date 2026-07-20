@@ -45,6 +45,7 @@ impl Workload for KvDemo {
         let mut wal: Vec<(String, String)> = Vec::new();
         let mut acked: BTreeMap<String, String> = BTreeMap::new();
 
+        let mut lost_acked_to_crash = false;
         for i in 0..OPS {
             let now = i * OP_SPACING_NANOS;
             ctx.advance_to(now);
@@ -58,6 +59,12 @@ impl Workload for KvDemo {
                     ctx.props.sometimes("crash_injected");
                     if !wal.is_empty() {
                         ctx.props.sometimes("crash_with_dirty_wal");
+                        // In the buggy variant every dirty-wal entry was
+                        // already acknowledged, so this crash loses acked
+                        // writes.
+                        if self.ack_before_flush {
+                            lost_acked_to_crash = true;
+                        }
                     }
                     wal.clear();
                     ctx.record("crash", "wal lost, committed state restored");
@@ -81,11 +88,21 @@ impl Workload for KvDemo {
                     }
                 }
                 ctx.record("flush", "");
-                if self.ack_before_flush {
-                    // buggy variant already acked at put time
-                }
             }
         }
+
+        // Clean shutdown: drain the final WAL before the oracle so that
+        // end-of-run unflushed writes cannot fail durability on their own —
+        // a failure now requires a crash to have dropped acknowledged
+        // writes (PR #1 review GAP: previously the buggy variant failed
+        // even in crash-free universes).
+        for (k, v) in wal.drain(..) {
+            committed.insert(k.clone(), v.clone());
+            if !self.ack_before_flush {
+                acked.insert(k, v);
+            }
+        }
+        ctx.record("flush", "final");
 
         for (key, value) in &acked {
             let stored = committed.get(key);
@@ -96,6 +113,10 @@ impl Workload for KvDemo {
                 )
             });
         }
+        debug_assert!(
+            lost_acked_to_crash || acked.iter().all(|(k, v)| committed.get(k) == Some(v)),
+            "durability can only fail via a crash after the final flush"
+        );
         ctx.record(
             "final",
             &format!("committed={} acked={}", committed.len(), acked.len()),

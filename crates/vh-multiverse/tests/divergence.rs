@@ -106,6 +106,45 @@ fn different_seeds_produce_different_multiverses() {
     assert_ne!(a.trace_hash, b.trace_hash);
 }
 
+/// Flips its always-verdict between replays WITHOUT recording the leaked
+/// value into the trace: trace hashes stay identical, only the property
+/// verdict changes. Regression for the PR #1 review BLOCKER — the detector
+/// must compare full observable results, not trace hashes alone.
+static VERDICT_FLIPPER: AtomicU64 = AtomicU64::new(0);
+
+struct VerdictFlipDemo;
+
+impl Workload for VerdictFlipDemo {
+    fn name(&self) -> &str {
+        "verdict-flip-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) {
+        let n = VERDICT_FLIPPER.fetch_add(1, Ordering::SeqCst);
+        ctx.record("op", "constant"); // identical trace on every replay
+        ctx.props
+            .always("stable_verdict", n % 2 == 0, || format!("flip #{n}"));
+    }
+}
+
+#[test]
+fn detector_flags_verdict_flips_with_identical_traces() {
+    let w = VerdictFlipDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: 3,
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    // Each universe's replay pair sees (even, odd) counter values, so the
+    // verdict flips within every pair while trace hashes stay equal.
+    assert_eq!(
+        report.divergent_universes.len(),
+        3,
+        "verdict flips with identical traces must be flagged divergent"
+    );
+}
+
 #[test]
 fn detector_flags_nondeterminism_instead_of_blessing_it() {
     let w = NondeterministicDemo;

@@ -1,9 +1,13 @@
 //! vh-multiverse — runs workloads across universes and detects divergence.
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
-//! TWICE and the trace hashes must match bit-for-bit. A mismatch means
-//! nondeterminism leaked into the kernel or the workload, and the report
-//! says so loudly instead of pretending the run was reproducible.
+//! TWICE and the complete observable results — trace hash, event count,
+//! always-failures, and sometimes map — must match exactly. A mismatch
+//! means nondeterminism leaked into the kernel or the workload, and the
+//! report says so loudly instead of pretending the run was reproducible.
+//! (Comparing trace hashes alone was a PR #1 review BLOCKER: a workload
+//! could flip its property verdict between replays without recording a
+//! trace event, and the flip would have been blessed.)
 
 use std::collections::BTreeMap;
 
@@ -54,13 +58,22 @@ pub trait Workload {
     fn run(&self, ctx: &mut UniverseCtx);
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UniverseResult {
     pub universe_id: u64,
     pub trace_hash: String,
     pub trace_events: usize,
     pub always_failures: Vec<AlwaysFailure>,
     pub sometimes: BTreeMap<String, bool>,
+}
+
+impl UniverseResult {
+    /// Two replays are the same run iff EVERY observable agrees. Struct
+    /// equality is the definition on purpose: adding an observable field
+    /// automatically strengthens the divergence check.
+    pub fn observably_equal(&self, other: &UniverseResult) -> bool {
+        self == other
+    }
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
@@ -88,7 +101,8 @@ pub struct MultiverseReport {
     pub root_seed: u64,
     pub workload: String,
     pub results: Vec<UniverseResult>,
-    /// Universe ids whose two runs produced different trace hashes.
+    /// Universe ids whose two runs produced different observable results
+    /// (trace hash, event count, always-failures, or sometimes map).
     pub divergent_universes: Vec<u64>,
     pub merged: MergedProperties,
 }
@@ -124,7 +138,7 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
         let first = run_universe(cfg.root_seed, universe_id, workload);
         if cfg.check_divergence {
             let second = run_universe(cfg.root_seed, universe_id, workload);
-            if second.trace_hash != first.trace_hash {
+            if !second.observably_equal(&first) {
                 divergent.push(universe_id);
             }
         }
