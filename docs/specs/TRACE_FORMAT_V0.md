@@ -30,10 +30,30 @@ construction (tested: `field_boundaries_matter`,
 `separator_bytes_in_payload_cannot_forge_event_boundaries`,
 `event_count_is_part_of_framing`).
 
-Two universe runs are **identical** iff their complete observable results
-match: trace hash, event count, always-failures, and sometimes map. That
-definition is the contract the divergence detector enforces
-(`UniverseResult::observably_equal`).
+## Observable identity (Tier-1 doctrine)
+
+Two universe runs are **identical** iff their COMPLETE public
+`UniverseResult` observations match — every field, none privileged:
+
+1. universe ID
+2. trace hash
+3. trace event count
+4. the ordered always-check transcript, **passing checks included**
+5. ordered always-failures with details
+6. declared sometimes properties and their reached state
+7. runner lifecycle evidence (typed completion outcome and fault-plan
+   discipline)
+
+The trace hash alone is NOT identity: a replay can skip or reorder a
+passing invariant while recording an identical trace (hardening-loop-3
+GAP). That is why the transcript of item 4 is ordered and includes
+passes. The kernel comparator is deliberately struct equality
+(`UniverseResult::observably_equal` in `crates/vh-multiverse/src/lib.rs`),
+so adding an observable field automatically strengthens the divergence
+check; this list must grow with the struct. Enforced by
+`detector_flags_skipped_passing_invariants` and
+`detector_flags_reordered_passing_check_transcripts`
+(`crates/vh-multiverse/tests/divergence.rs`).
 
 ### Changelog
 
