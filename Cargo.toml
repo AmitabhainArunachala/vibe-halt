@@ -7,6 +7,8 @@ members = [
     "crates/vh-props",
     "crates/vh-multiverse",
     "crates/vh-cli",
+    "crates/vh-verify",
+    "crates/vh-shrink",
 ]
 
 # Zero external dependencies by design: the determinism kernel builds

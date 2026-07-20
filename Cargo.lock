@@ -39,5 +39,23 @@ name = "vh-props"
 version = "0.1.0"
 
 [[package]]
+name = "vh-shrink"
+version = "0.1.0"
+dependencies = [
+ "vh-gremlin",
+ "vh-multiverse",
+]
+
+[[package]]
 name = "vh-trace"
 version = "0.1.0"
+
+[[package]]
+name = "vh-verify"
+version = "0.1.0"
+dependencies = [
+ "vh-core",
+ "vh-multiverse",
+ "vh-props",
+ "vh-trace",
+]
