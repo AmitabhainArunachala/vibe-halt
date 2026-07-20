@@ -655,3 +655,32 @@ fn detector_flags_reordered_passing_check_transcripts() {
         "reordered passing-check transcripts with identical traces must be flagged"
     );
 }
+
+/// The observation view is the compile-time schema ratchet (PR #2
+/// interface request 5021566209): it must agree with the getter surface
+/// field for field, and because both the kernel implementation and this
+/// destructuring use no `..`, a new result field cannot ship without
+/// extending the view and this test.
+#[test]
+fn observation_view_matches_the_getter_surface_exhaustively() {
+    let w = DeterministicDemo;
+    let r = run_universe(0xD1CE, 3, &w);
+    let vh_multiverse::UniverseObservation {
+        universe_id,
+        trace_hash,
+        trace_events,
+        always_checks,
+        always_failures,
+        sometimes,
+        lifecycle,
+        fault_plan_digest,
+    } = r.observation();
+    assert_eq!(universe_id, r.universe_id());
+    assert_eq!(trace_hash, r.trace_hash());
+    assert_eq!(trace_events, r.trace_events());
+    assert_eq!(always_checks, r.always_checks());
+    assert_eq!(always_failures, r.always_failures());
+    assert_eq!(sometimes, r.sometimes());
+    assert_eq!(lifecycle, r.lifecycle());
+    assert_eq!(fault_plan_digest, r.fault_plan_digest());
+}

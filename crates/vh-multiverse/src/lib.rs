@@ -380,6 +380,55 @@ impl UniverseResult {
     pub fn observably_equal(&self, other: &UniverseResult) -> bool {
         self == other
     }
+
+    /// Borrowed, read-only view of the COMPLETE observation — the
+    /// compile-time schema ratchet requested by the verifier track
+    /// (PR #2 interface request 5021566209). The implementation
+    /// destructures `UniverseResult` WITHOUT `..`, so adding a private
+    /// result field fails compilation here until the observation
+    /// doctrine decides how it is exposed; downstream verifiers
+    /// destructure this view without `..` to inherit the same ratchet.
+    /// Plain borrowed data only: no mutation path and no Track-1-owned
+    /// canonical hash, so independent downstream framings stay
+    /// independent. `observably_equal` remains whole-struct equality of
+    /// `UniverseResult`, never equality of this view.
+    pub fn observation(&self) -> UniverseObservation<'_> {
+        let UniverseResult {
+            universe_id,
+            trace_hash,
+            trace_events,
+            always_checks,
+            always_failures,
+            sometimes,
+            lifecycle,
+            fault_plan_digest,
+        } = self;
+        UniverseObservation {
+            universe_id: *universe_id,
+            trace_hash,
+            trace_events: *trace_events,
+            always_checks,
+            always_failures,
+            sometimes,
+            lifecycle,
+            fault_plan_digest: fault_plan_digest.as_deref(),
+        }
+    }
+}
+
+/// The complete public observation of a [`UniverseResult`], as plain
+/// borrowed data. See [`UniverseResult::observation`] for the ratchet
+/// contract this view carries.
+#[derive(Debug, Clone, Copy)]
+pub struct UniverseObservation<'a> {
+    pub universe_id: u64,
+    pub trace_hash: &'a str,
+    pub trace_events: usize,
+    pub always_checks: &'a [AlwaysCheck],
+    pub always_failures: &'a [AlwaysFailure],
+    pub sometimes: &'a BTreeMap<String, bool>,
+    pub lifecycle: &'a UniverseLifecycle,
+    pub fault_plan_digest: Option<&'a str>,
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
