@@ -42,18 +42,36 @@ pub struct FaultInjection {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FaultPlan {
-    /// Sorted by `at_nanos`; ties keep generation order (stable sort).
-    pub injections: Vec<FaultInjection>,
+    /// Sorted by `at_nanos`; ties keep construction order (stable sort).
+    /// Private: `due()` assumes time order, so a publicly writable vector
+    /// let safe code construct plans that silently skipped injections
+    /// (PR #1 hardening-loop-2 GAP). Construction canonicalizes instead.
+    injections: Vec<FaultInjection>,
 }
 
 impl FaultPlan {
+    /// Build a plan from arbitrary injections. Construction is the
+    /// canonicalization boundary: injections are stable-sorted by
+    /// `at_nanos` (ties keep the caller's order), so every plan `due()`
+    /// ever sees is time-ordered by construction — an unsorted input can
+    /// no longer smuggle injections past the cursor.
+    pub fn new(mut injections: Vec<FaultInjection>) -> Self {
+        injections.sort_by_key(|i| i.at_nanos);
+        Self { injections }
+    }
+
+    /// The canonical (time-ordered) injections, read-only.
+    pub fn injections(&self) -> &[FaultInjection] {
+        &self.injections
+    }
+
     /// Generate `count` injections uniformly over `[0, horizon_nanos)`.
     ///
     /// v0 draws fault kinds uniformly; Phase 1 replaces this with targeted
     /// scheduling biased toward state-transition edges and novel coverage.
     pub fn generate(rng: &mut Xoshiro256pp, horizon_nanos: u64, count: usize) -> Self {
         let horizon = horizon_nanos.max(1);
-        let mut injections: Vec<FaultInjection> = (0..count)
+        let injections: Vec<FaultInjection> = (0..count)
             .map(|_| {
                 let at_nanos = rng.next_below(horizon);
                 let fault = match rng.next_below(5) {
@@ -72,8 +90,7 @@ impl FaultPlan {
                 FaultInjection { at_nanos, fault }
             })
             .collect();
-        injections.sort_by_key(|i| i.at_nanos);
-        Self { injections }
+        Self::new(injections)
     }
 
     /// Injections due at or before `now`, starting from index `cursor`.
@@ -106,7 +123,7 @@ mod tests {
     fn injections_are_time_sorted() {
         let mut r = Xoshiro256pp::from_seed(5);
         let plan = FaultPlan::generate(&mut r, 1_000_000, 32);
-        for w in plan.injections.windows(2) {
+        for w in plan.injections().windows(2) {
             assert!(w[0].at_nanos <= w[1].at_nanos);
         }
     }
@@ -120,9 +137,51 @@ mod tests {
             assert!(inj.at_nanos <= 500);
         }
         let (end, rest) = plan.due(cursor, 1_000);
-        assert_eq!(end, plan.injections.len());
+        assert_eq!(end, plan.injections().len());
         for inj in rest {
             assert!(inj.at_nanos > 500 || first.is_empty());
         }
+    }
+
+    /// Negative regression (hardening-loop-2 GAP): before canonical
+    /// construction, a publicly built unsorted plan made `due()` skip the
+    /// out-of-order injection entirely — the fault never fired and the run
+    /// was blessed with a weaker plan than reported.
+    #[test]
+    fn unsorted_construction_is_canonicalized_so_due_misses_nothing() {
+        let early = FaultInjection {
+            at_nanos: 10,
+            fault: FaultKind::DiskWriteFail,
+        };
+        let late = FaultInjection {
+            at_nanos: 900,
+            fault: FaultKind::CrashRestart,
+        };
+        // Caller supplies out-of-order injections.
+        let plan = FaultPlan::new(vec![late.clone(), early.clone()]);
+        assert_eq!(plan.injections(), &[early.clone(), late.clone()]);
+
+        // Drain in two steps: the early injection MUST surface in the
+        // first window (the pre-repair plan skipped it forever).
+        let (cursor, first) = plan.due(0, 500);
+        assert_eq!(first, &[early]);
+        let (end, rest) = plan.due(cursor, 1_000);
+        assert_eq!(rest, &[late]);
+        assert_eq!(end, plan.injections().len());
+    }
+
+    /// Ties keep caller order (stable sort), deterministically.
+    #[test]
+    fn tied_injections_keep_caller_order() {
+        let a = FaultInjection {
+            at_nanos: 5,
+            fault: FaultKind::DiskWriteFail,
+        };
+        let b = FaultInjection {
+            at_nanos: 5,
+            fault: FaultKind::CrashRestart,
+        };
+        let plan = FaultPlan::new(vec![a.clone(), b.clone()]);
+        assert_eq!(plan.injections(), &[a, b]);
     }
 }
