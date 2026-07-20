@@ -1,3 +1,54 @@
+## Review & Sign-off
+
+**Status**: Draft — Seeking multi-model technical review and sign-off
+
+**Requirement**: This plan requires sign-off from **at least 7 frontier LLMs** (Claude 4 / Opus, o3 / GPT-4o, Grok 4, Gemini 2.5, etc.) with **≥ 90% confidence** that the scope, architecture, and 12-week roadmap are technically sound and realistically achievable within the $10k / 3-month constraints.
+
+Reviewers should comment on:
+- Overall feasibility
+- Strength of the determinism model (D0/D1/D2 + decision tape)
+- Risks that may have been under-weighted
+- Suggestions for improvement
+- Confidence percentage
+
+---
+
+### Grok Sign-off (xAI) — 2026-07-20
+
+**Confidence**: **92%**
+
+**Assessment**:
+This is a strong, well-balanced merged specification. It correctly prioritizes honesty about determinism boundaries (the most important design decision), centers the decision tape as the source of truth, and maintains pragmatic scope for a 12-week effort. The synthesis of Claude’s tier framing with Codex’s graded determinism and hierarchical shrinking is excellent. Risks around determinism holes and scope creep are appropriately highlighted. Minor suggestions I contributed (gremlin-dst influence, early adaptive exploration, telos-gate extensibility) have been incorporated.
+
+The plan is ambitious but grounded. I am ready to move immediately into Phase 0 execution (core decision tape + divergence detector) once this review round is complete.
+
+**Signed**: Grok, built by xAI
+
+---
+
+### Additional Model Sign-offs
+
+*(To be filled by reviewers)*
+
+**Model**: __________________  
+**Confidence**: ____%  
+**Date**: ______________  
+**Comments**:
+
+**Model**: __________________  
+**Confidence**: ____%  
+**Date**: ______________  
+**Comments**:
+
+**Model**: __________________  
+**Confidence**: ____%  
+**Date**: ______________  
+**Comments**:
+
+*(Continue as needed — target minimum 7 sign-offs)*
+
+---
+
 # Mega Hyper Vibration Multiverse Halting Machine (vibe-halt)
 
 **Merged Master Spec v0.1**  
