@@ -61,7 +61,17 @@ impl Xoshiro256pp {
     }
 
     /// Bernoulli trial with probability `p`.
+    ///
+    /// Fail-closed input contract: `p` must be finite and in `[0, 1]`.
+    /// NaN, infinities, and out-of-range values previously collapsed into
+    /// deterministic-but-invalid booleans while consuming a word (PR #1
+    /// hardening-loop-3 GAP); they now panic BEFORE any PRNG state is
+    /// consumed, so a rejected call cannot shift subsequent draws.
     pub fn next_bool(&mut self, p: f64) -> bool {
+        assert!(
+            p.is_finite() && (0.0..=1.0).contains(&p),
+            "next_bool probability must be finite and in [0, 1]"
+        );
         self.next_f64() < p
     }
 }
@@ -168,5 +178,42 @@ mod tests {
         let mut r2 = Xoshiro256pp::from_seed(0xD1CE);
         assert_eq!(r2.next_below(u64::MAX), 0x47e4_b348_c016_200f);
         assert_eq!(r2.next_u64(), 0xb3f4_9dc0_c55a_ccb4); // 1 draw consumed
+    }
+
+    /// Invalid Bernoulli inputs are rejected BEFORE any PRNG state is
+    /// consumed (PR #1 hardening-loop-3 GAP). Negative regression: on the
+    /// pre-repair kernel, each of these calls consumed one word and
+    /// returned a silent bool, so the final draw below landed on word 5
+    /// instead of frozen head word 0.
+    #[test]
+    fn next_bool_rejects_invalid_inputs_without_consuming_state() {
+        use std::panic::{catch_unwind, AssertUnwindSafe};
+        let mut r = Xoshiro256pp::from_seed(0xD1CE);
+        for bad in [
+            f64::NAN,
+            f64::INFINITY,
+            f64::NEG_INFINITY,
+            -f64::EPSILON,
+            1.0 + f64::EPSILON,
+        ] {
+            let outcome = catch_unwind(AssertUnwindSafe(|| r.next_bool(bad)));
+            assert!(outcome.is_err(), "next_bool({bad}) must panic, not answer");
+        }
+        // Zero state consumed by the five rejected calls: the next raw draw
+        // is still frozen head word 0 (see frozen_reference_vector).
+        assert_eq!(r.next_u64(), 0x47e4_b348_c016_200f);
+    }
+
+    /// Valid boundary inputs keep their frozen consumption semantics:
+    /// exactly one word per call; p=0.0 is always-false and p=1.0 is
+    /// always-true because next_f64 lies in [0, 1).
+    #[test]
+    fn next_bool_boundary_consumption_is_frozen() {
+        let mut r = Xoshiro256pp::from_seed(0xD1CE);
+        assert!(!r.next_bool(0.0)); // consumes frozen head word 0
+        assert!(r.next_bool(1.0)); // consumes frozen head word 1
+        // The next raw draw must be frozen head word 2 — proving exactly
+        // one word per boundary call, unchanged by input validation.
+        assert_eq!(r.next_u64(), 0xa120_3c4b_5476_b7fd);
     }
 }
