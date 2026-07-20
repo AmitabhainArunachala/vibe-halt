@@ -11,3 +11,6 @@ vh-core = { path = "../vh-core" }
 vh-trace = { path = "../vh-trace" }
 vh-gremlin = { path = "../vh-gremlin" }
 vh-props = { path = "../vh-props" }
+
+[lints]
+workspace = true

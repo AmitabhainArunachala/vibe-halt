@@ -8,3 +8,6 @@ repository.workspace = true
 
 [dependencies]
 vh-core = { path = "../vh-core" }
+
+[lints]
+workspace = true
