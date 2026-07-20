@@ -42,9 +42,13 @@ USAGE:
     vh doctor
 
 WORKLOADS:
-    demo         correct toy KV service (should pass)
-    demo-buggy   ack-before-flush durability bug (rig must find it)
-    demo-nondet  leaks global state (divergence detector must flag it)
+    demo             correct toy KV service (should pass)
+    demo-buggy       ack-before-flush durability bug (rig must find it)
+    demo-nondet      leaks global state (divergence detector must flag it)
+    demo-net         retry-over-partition echo pair on the sim runtime (CLEAN)
+    demo-net-buggy   fire-and-forget echo — the network-is-reliable fallacy
+    demo-disk        paranoid WAL on SimDisk: fsync+verify before ack (CLEAN)
+    demo-disk-buggy  acks at flush — the flushed-is-not-fsynced fallacy
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every

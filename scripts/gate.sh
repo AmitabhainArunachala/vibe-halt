@@ -44,6 +44,56 @@ cargo run -q --locked --offline -p vh-cli -- doctor
 echo "== divergence gate: 200 universes, each run twice, full-observable-compared =="
 cargo run -q --locked --offline -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
 
+echo "== live gate: demo-net — sim-runtime echo pair must be CLEAN (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-net --seed 0xD1CE --universes 200)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN')
+if [ "$code" -ne 0 ] || [ "$verdicts" -ne 1 ]; then
+  echo "GATE FAIL: demo-net expected exit 0 + one anchored CLEAN verdict, got exit $code / $verdicts"
+  exit 1
+fi
+echo "gate: demo-net CLEAN on the sim runtime (exit 0)"
+
+echo "== negative gate: demo-net-buggy — fire-and-forget must be FOUND (exact exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-net-buggy --seed 0xD1CE --universes 100)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:echo_acked')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
+  echo "GATE FAIL: demo-net-buggy expected exit 1 + FINDINGS + anchored oracle:echo_acked failure, got exit $code / $verdicts / $fails"
+  exit 1
+fi
+echo "gate: demo-net-buggy correctly caught (exit 1, oracle:echo_acked)"
+
+echo "== live gate: demo-disk — paranoid WAL on SimDisk must be CLEAN (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-disk --seed 0xD1CE --universes 200)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN')
+if [ "$code" -ne 0 ] || [ "$verdicts" -ne 1 ]; then
+  echo "GATE FAIL: demo-disk expected exit 0 + one anchored CLEAN verdict, got exit $code / $verdicts"
+  exit 1
+fi
+echo "gate: demo-disk CLEAN on the sim runtime (exit 0)"
+
+echo "== negative gate: demo-disk-buggy — flush-ack must be FOUND (exact exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-disk-buggy --seed 0xD1CE --universes 100)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:wal_durability')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
+  echo "GATE FAIL: demo-disk-buggy expected exit 1 + FINDINGS + anchored oracle:wal_durability failure, got exit $code / $verdicts / $fails"
+  exit 1
+fi
+echo "gate: demo-disk-buggy correctly caught (exit 1, oracle:wal_durability)"
+
 echo "== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 50)

@@ -6,8 +6,13 @@
 //! acknowledged writes and the `durability` always-property fires with a
 //! one-command repro.
 
+mod disk;
+mod net;
+
 use std::collections::BTreeMap;
 
+pub use disk::WalDemo;
+pub use net::EchoDemo;
 use vh_gremlin::{FaultKind, FaultPlan};
 use vh_multiverse::{
     EndState, EndStateOracle, PropertyContract, RunOutcome, UniverseCtx, Workload,
@@ -199,6 +204,12 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
             ack_before_flush: true,
         })),
         "demo-nondet" => Some(Box::new(NondetDemo)),
+        "demo-net" => Some(Box::new(EchoDemo { no_retry: false })),
+        "demo-net-buggy" => Some(Box::new(EchoDemo { no_retry: true })),
+        "demo-disk" => Some(Box::new(WalDemo {
+            ack_at_flush: false,
+        })),
+        "demo-disk-buggy" => Some(Box::new(WalDemo { ack_at_flush: true })),
         _ => None,
     }
 }

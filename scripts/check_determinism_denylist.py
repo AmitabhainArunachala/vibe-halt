@@ -84,7 +84,7 @@ ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\
 #   itself here explicitly.
 EXEMPT: dict[str, set[str]] = {
     "crates/vh-verify/src/main.rs": {r"std::time", r"Instant::now"},
-    "crates/vh-cli/src/workloads.rs": {ATOMIC_PATTERN},
+    "crates/vh-cli/src/workloads/mod.rs": {ATOMIC_PATTERN},
     "crates/vh-multiverse/tests/divergence.rs": {ATOMIC_PATTERN},
 }
 
@@ -700,8 +700,14 @@ def self_test() -> int:
         ("crates/vh-verify/src/main.rs", "Instant::now()", False),
         ("crates/vh-verify/src/lib.rs", "Instant::now()", True),
         ("crates/vh-verify/tests/replay.rs", "Instant::now()", True),
-        ("crates/vh-cli/src/workloads.rs", "static L: AtomicU64 = AtomicU64::new(0);", False),
-        ("crates/vh-cli/src/workloads.rs", "Instant::now()", True),
+        # workloads.rs became workloads/mod.rs when the Phase-1 sim-runtime
+        # workloads split the module (2026-07-21); the exemption moved with
+        # it and the OLD path must now hit the full pattern set.
+        ("crates/vh-cli/src/workloads/mod.rs", "static L: AtomicU64 = AtomicU64::new(0);", False),
+        ("crates/vh-cli/src/workloads/mod.rs", "Instant::now()", True),
+        ("crates/vh-cli/src/workloads.rs", "static L: AtomicU64 = AtomicU64::new(0);", True),
+        ("crates/vh-cli/src/workloads/net.rs", "static L: AtomicU64 = AtomicU64::new(0);", True),
+        ("crates/vh-cli/src/workloads/disk.rs", "static L: AtomicU64 = AtomicU64::new(0);", True),
         # The reproduced mutant: a production `src/tests/` module with a
         # process-global atomic used to pass under the blanket heuristic.
         ("crates/vh-core/src/tests/mod.rs", "static L: AtomicU64 = AtomicU64::new(0);", True),
