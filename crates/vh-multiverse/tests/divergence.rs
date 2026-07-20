@@ -152,8 +152,9 @@ impl Workload for VerdictFlipDemo {
     fn run(&self, ctx: &mut UniverseCtx) {
         let n = VERDICT_FLIPPER.fetch_add(1, Ordering::SeqCst);
         ctx.record("op", "constant"); // identical trace on every replay
-        ctx.props
-            .always("stable_verdict", n.is_multiple_of(2), || format!("flip #{n}"));
+        ctx.props.always("stable_verdict", n.is_multiple_of(2), || {
+            format!("flip #{n}")
+        });
     }
 }
 
