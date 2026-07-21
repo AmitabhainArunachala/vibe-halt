@@ -91,6 +91,29 @@ EXEMPT: dict[str, set[str]] = {
     # (registered during the operator-authorized restack; the fixture
     # predates the per-file exemption regime).
     "crates/vh-verify/tests/divergence.rs": {ATOMIC_PATTERN},
+    # Tier-2 sandbox boundary crate (crates/vh-sandbox): it OWNS subprocess
+    # execution, host filesystem I/O, and boundary wall-time telemetry that
+    # never enters any identity digest. Exempted per-pattern rather than
+    # whole-file (Lane-B review advisory 2026-07-22): every OTHER denied
+    # pattern — HashMap/HashSet, threads, pointer-format, OS randomness,
+    # net, os escape hatches — is still enforced on this crate, so an
+    # accidental nondeterminism source that is NOT part of the declared
+    # boundary is still caught.
+    "crates/vh-sandbox/src/lib.rs": {
+        r"std::process",
+        r"std::time",
+        r"Instant::now",
+        r"std::io",
+        r"std::fs",
+    },
+    # Sandbox unit tests: host tempdirs plus a process-global counter that
+    # hands each test a unique workspace (adversarial-fixture style; the
+    # atomic is the point). Clock/net/process rules still apply.
+    "crates/vh-sandbox/src/tests.rs": {r"std::env", ATOMIC_PATTERN},
+    # CLI sandbox-demo boundary: host tempdir setup for the run-twice smoke
+    # campaign only. It spawns nothing directly (the crate does) and stays
+    # under the full pattern set for everything else.
+    "crates/vh-cli/src/sandbox_demo.rs": {r"std::env", r"std::fs"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.
@@ -725,6 +748,19 @@ def self_test() -> int:
         ("crates/vh-multiverse/tests/divergence.rs", "Instant::now()", True),
         # An unregistered integration-test file fails closed.
         ("crates/vh-core/tests/adversarial.rs", "static L: AtomicU64 = AtomicU64::new(0);", True),
+        # Tier-2 sandbox boundary crate: the DECLARED boundary patterns are
+        # exempt, but every other denied pattern stays enforced — the
+        # exemption is per-pattern, not whole-file (Lane-B advisory).
+        ("crates/vh-sandbox/src/lib.rs", "let mut c = Command::new(&argv[0]);", False),
+        ("crates/vh-sandbox/src/lib.rs", "let started = Instant::now();", False),
+        ("crates/vh-sandbox/src/lib.rs", "let bytes = std::fs::read(&path)?;", False),
+        ("crates/vh-sandbox/src/lib.rs", "let m: HashMap<u8, u8> = HashMap::new();", True),
+        ("crates/vh-sandbox/src/lib.rs", "thread::spawn(|| {});", True),
+        ("crates/vh-sandbox/src/tests.rs", "std::env::temp_dir()", False),
+        ("crates/vh-sandbox/src/tests.rs", "static N: AtomicU64 = AtomicU64::new(0);", False),
+        ("crates/vh-sandbox/src/tests.rs", "Instant::now()", True),
+        ("crates/vh-cli/src/sandbox_demo.rs", "std::fs::create_dir_all(&p)?;", False),
+        ("crates/vh-cli/src/sandbox_demo.rs", "let m: HashMap<u8, u8> = HashMap::new();", True),
     ]
     for rel, sample, expected in boundary_cases:
         hit = any(re.search(p, sample) for p in patterns_for(rel))

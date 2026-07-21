@@ -44,6 +44,49 @@ cargo run -q --locked --offline -p vh-cli -- doctor
 echo "== divergence gate: 200 universes, each run twice, full-observable-compared =="
 cargo run -q --locked --offline -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
 
+echo "== Tier-2 sandbox gate: clean replay must be CLEAN (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode clean)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN')
+evidence=$(printf '%s\n' "$out" | grep -c '^  tier=Tier-2 d-grade=D2 divergence-rate=0.000 evidence=run-twice agreement')
+if [ "$code" -ne 0 ] || [ "$verdicts" -ne 1 ] || [ "$evidence" -ne 1 ]; then
+  echo "GATE FAIL: sandbox clean expected exit 0 + CLEAN + Tier-2/D2 run-twice evidence, got exit $code / $verdicts / $evidence"
+  echo "$out"
+  exit 1
+fi
+echo "gate: sandbox clean replay is D2-honest and CLEAN (exit 0)"
+
+echo "== Tier-2 sandbox negative gate: cassette miss must fail closed (exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode cassette-miss)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS (fail-closed cassette miss)')
+misses=$(printf '%s\n' "$out" | grep -c '^  FAIL cassette: miss digest=')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$misses" -ne 1 ]; then
+  echo "GATE FAIL: sandbox cassette miss expected exit 1 + anchored miss finding, got exit $code / $verdicts / $misses"
+  echo "$out"
+  exit 1
+fi
+echo "gate: sandbox cassette miss fails closed (exit 1)"
+
+echo "== Tier-2 sandbox negative gate: subprocess nondeterminism must be divergent (exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode nondet)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+divergent=$(printf '%s\n' "$out" | grep -c '^  DIVERGENT sandbox subprocess observable records differ')
+rate=$(printf '%s\n' "$out" | grep -c '^  tier=Tier-2 d-grade=D2 divergence-rate=1.000 evidence=run-twice agreement')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$divergent" -ne 1 ] || [ "$rate" -ne 1 ]; then
+  echo "GATE FAIL: sandbox nondet expected exit 1 + DIVERGENT + divergence-rate=1.000, got exit $code / $verdicts / $divergent / $rate"
+  echo "$out"
+  exit 1
+fi
+echo "gate: sandbox subprocess nondeterminism is caught by run-twice (exit 1)"
+
 echo "== live gate: demo-net — sim-runtime echo pair must be CLEAN (exit 0) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-net --seed 0xD1CE --universes 200)

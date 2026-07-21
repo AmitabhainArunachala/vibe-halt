@@ -1,0 +1,13 @@
+[package]
+name = "vh-sandbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Tier-2/D1 subprocess sandbox MVP for vibe-halt"
+
+[dependencies]
+vh-trace = { path = "../vh-trace" }
+
+[lints]
+workspace = true
