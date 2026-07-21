@@ -86,6 +86,11 @@ EXEMPT: dict[str, set[str]] = {
     "crates/vh-verify/src/main.rs": {r"std::time", r"Instant::now"},
     "crates/vh-cli/src/workloads/mod.rs": {ATOMIC_PATTERN},
     "crates/vh-multiverse/tests/divergence.rs": {ATOMIC_PATTERN},
+    # vh-verify's independent skip-vs-passing-invariant divergence
+    # regressions simulate nondeterminism with global atomics on purpose
+    # (registered during the operator-authorized restack; the fixture
+    # predates the per-file exemption regime).
+    "crates/vh-verify/tests/divergence.rs": {ATOMIC_PATTERN},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.
