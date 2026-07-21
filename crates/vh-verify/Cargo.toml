@@ -1,0 +1,21 @@
+[package]
+name = "vh-verify"
+description = "Independent deterministic reference probes and replay verification"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+default = []
+ci-soak-200 = []
+
+[dependencies]
+vh-core = { path = "../vh-core" }
+vh-gremlin = { path = "../vh-gremlin" }
+vh-multiverse = { path = "../vh-multiverse" }
+vh-props = { path = "../vh-props" }
+vh-trace = { path = "../vh-trace" }
+
+[lints]
+workspace = true

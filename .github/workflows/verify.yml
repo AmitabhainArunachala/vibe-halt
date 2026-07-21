@@ -1,0 +1,212 @@
+name: verifier
+
+# Hosted Actions are evidence infrastructure, not a security boundary. A green
+# job means the named command exited 0 on the exact source SHA and runner label;
+# Tier-1 claims remain scoped to the closed deterministic substrate.
+on:
+  push:
+    branches: [codex/vibe-halt-verify]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: verifier-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate-and-publication:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Onboard first
+        run: make onboard
+      - name: Exact source and toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          echo "source-commit=$(git rev-parse HEAD)"
+          echo "source-tree=$(git rev-parse 'HEAD^{tree}')"
+          rustup show
+          rustc -vV
+      - name: Gate battery (law)
+        run: bash scripts/gate.sh
+      - name: Tier-1 verifier soak receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --offline -q -p vh-verify --features ci-soak-200 --bin vh-verify \
+            | tee "$RUNNER_TEMP/verifier-soak.txt"
+          grep -Fq 'verdict=PASS determinism-tier=Tier-1 evidence-grade=D0' \
+            "$RUNNER_TEMP/verifier-soak.txt"
+          grep -Fq 'observable-schema=vh-verify-observable-v3' \
+            "$RUNNER_TEMP/verifier-soak.txt"
+          grep -Fq 'observable-fingerprint=bf78c94b6f72ae77ad0a00a86e36c2e9' \
+            "$RUNNER_TEMP/verifier-soak.txt"
+      - name: Independent SimRuntime vectors
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo test --locked --offline -q -p vh-verify --test sim_runtime -- --nocapture \
+            | tee "$RUNNER_TEMP/sim-runtime.txt"
+          test "$(grep -c 'verify-vector:' "$RUNNER_TEMP/sim-runtime.txt")" -eq 10
+          grep -Fq 'determinism-tier=Tier-1 observable-schema=vh-verify-observable-v3' \
+            "$RUNNER_TEMP/sim-runtime.txt"
+      - name: Corpus shrink evidence manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_tree="$(git rev-parse 'HEAD^{tree}')"
+          release="$(rustc -vV | sed -n 's/^release: //p')"
+          compiler_commit="$(rustc -vV | sed -n 's/^commit-hash: //p')"
+          host="$(rustc -vV | sed -n 's/^host: //p')"
+          test "$release" = '1.94.1'
+          test "${compiler_commit#e408947bf}" != "$compiler_commit"
+          test "$host" = 'x86_64-unknown-linux-gnu'
+          cargo test --locked --offline -q -p vh-shrink --test corpus_shrink -- --nocapture \
+            | tee "$RUNNER_TEMP/shrink-evidence.txt"
+          test "$(grep -c 'shrink-evidence:' "$RUNNER_TEMP/shrink-evidence.txt")" -eq 2
+          grep -Fq 'source-commit=6760e9902fc7cab35de4728e82102a3a7c594612' \
+            "$RUNNER_TEMP/shrink-evidence.txt"
+          grep -Fq 'source-tree=7ee68b1301f61999070e91099995d0769f06e333' \
+            "$RUNNER_TEMP/shrink-evidence.txt"
+          grep -Fq 'build=rustc-1.94.1-e408947bf-x86_64-unknown-linux-gnu%3Bprofile%3Dtest%3Blocked-offline' \
+            "$RUNNER_TEMP/shrink-evidence.txt"
+          binding="shrink-execution-binding: harness-commit=$GITHUB_SHA harness-tree=$source_tree rustc-release=$release rustc-commit=$compiler_commit host=$host"
+          printf '%s\n' "$binding" | tee "$RUNNER_TEMP/shrink-binding.txt"
+          grep -Fq 'workload=corpus-retry-double-apply' "$RUNNER_TEMP/shrink-evidence.txt"
+          grep -Fq 'workload=corpus-fsync-lie' "$RUNNER_TEMP/shrink-evidence.txt"
+      - name: Publication summary
+        shell: bash
+        run: |
+          {
+            echo '## Verifier publication evidence'
+            echo
+            printf -- '- exact head: `%s`\n' "$(git rev-parse HEAD)"
+            printf -- '- exact tree: `%s`\n' "$(git rev-parse 'HEAD^{tree}')"
+            echo '- gate: `bash scripts/gate.sh` PASS on `ubuntu-24.04`'
+            echo
+            echo '```text'
+            cat "$RUNNER_TEMP/verifier-soak.txt"
+            grep 'verify-vector:' "$RUNNER_TEMP/sim-runtime.txt"
+            grep 'shrink-evidence:' "$RUNNER_TEMP/shrink-evidence.txt"
+            cat "$RUNNER_TEMP/shrink-binding.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  cross-machine-doctor:
+    name: cross-machine-doctor (${{ matrix.runner }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, macos-14]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Onboard first
+        run: make onboard
+      - name: Exact source and toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          echo "source-commit=$(git rev-parse HEAD)"
+          echo "source-tree=$(git rev-parse 'HEAD^{tree}')"
+          rustup show
+          rustc -vV
+      - name: Frozen Track-1 doctor identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --offline -q -p vh-cli --bin vh -- doctor \
+            | tee "$RUNNER_TEMP/doctor.txt"
+          grep -Fq 'replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)' \
+            "$RUNNER_TEMP/doctor.txt"
+          grep -Fq 'observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)' \
+            "$RUNNER_TEMP/doctor.txt"
+      - name: Independent verifier identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --locked --offline -q -p vh-verify --features ci-soak-200 --bin vh-verify \
+            | tee "$RUNNER_TEMP/verifier-soak.txt"
+          grep -Fq 'hash=eafa30e8a7a6c82939ea3f755bc866ab events=33' \
+            "$RUNNER_TEMP/verifier-soak.txt"
+          grep -Fq 'observable-fingerprint=bf78c94b6f72ae77ad0a00a86e36c2e9' \
+            "$RUNNER_TEMP/verifier-soak.txt"
+      - name: Machine receipt
+        shell: bash
+        run: |
+          {
+            echo "## ${{ matrix.runner }} receipt"
+            echo
+            printf -- '- exact head: `%s`\n' "$(git rev-parse HEAD)"
+            printf -- '- exact tree: `%s`\n' "$(git rev-parse 'HEAD^{tree}')"
+            echo '```text'
+            cat "$RUNNER_TEMP/doctor.txt"
+            cat "$RUNNER_TEMP/verifier-soak.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  loop5-adversarial-reproductions:
+    needs: gate-and-publication
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Onboard first
+        run: make onboard
+      - name: Isolated exact-source receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test -z "$(git status --porcelain)"
+          echo "isolated-source-commit=$(git rev-parse HEAD)"
+          echo "isolated-source-tree=$(git rev-parse 'HEAD^{tree}')"
+      - name: Compile loop-5 audit target
+        run: cargo test --locked --offline -p vh-verify --test loop5_audit --no-run
+      - name: Reproduce Track-1 loop-5 findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          reproduce() {
+            local test_name="$1"
+            local marker="$2"
+            local output
+            local code
+            set +e
+            output="$(cargo test --locked --offline -p vh-verify --test loop5_audit \
+              "$test_name" -- --exact --ignored --nocapture 2>&1)"
+            code=$?
+            set -e
+            printf '%s\n' "$output"
+            if [ "$code" -eq 0 ]; then
+              echo "expected loop-5 repro unexpectedly passed: $test_name" >&2
+              exit 1
+            fi
+            grep -Fq "$marker" <<<"$output"
+            echo "loop5-reproduced: test=$test_name marker=$marker source=$GITHUB_SHA"
+          }
+
+          reproduce stacked_reorders_do_not_silently_lose_messages \
+            LOOP5_REPRO_STACKED_REORDER
+          reproduce torn_write_lifecycle_never_recovers_before_manifesting \
+            LOOP5_REPRO_TORN_LADDER
+          reproduce corpus_recall_gates_hold_the_exact_pinned_counts \
+            LOOP5_REPRO_CORPUS_RECALL
+          reproduce workload_cannot_emit_runner_reserved_lifecycle_trace_kinds \
+            LOOP5_REPRO_LIFECYCLE_SPOOF
