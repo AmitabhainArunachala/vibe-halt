@@ -1,0 +1,15 @@
+=== replay failing universe 2 ===
+$ cargo run -q -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universe 2
+universe 2 (seed 0xd1ce, workload demo-buggy): hash 8f1db0c973707726a14e106ee912f9e8 events 46 [single execution — no replay agreement sampled]
+  fault-plan digest: 5f09a6244bec8d48ed3124b55b186834 (vh-fault-plan-v1)
+  ALWAYS-FAIL oracle:durability: acknowledged write k8=v172 missing after crash (committed=None); acknowledged write k9=v989 missing after crash (committed=None)
+  sometimes crash_injected: hit
+  sometimes crash_with_dirty_wal: hit
+  replay verdict: FINDINGS
+EXIT=1
+
+=== determinism: same command twice, separate processes ===
+runA EXIT=1
+runB EXIT=1
+$ diff /tmp/vh-runA.txt /tmp/vh-runB.txt
+DIFF EXIT=0

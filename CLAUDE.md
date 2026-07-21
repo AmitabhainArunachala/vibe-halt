@@ -60,7 +60,9 @@ Declared intent lives in `docs/governance/ACTIVE_TRACK.yaml` (rendered by
   scheduler. `crates/vh-trace` — chain-hashed append-only trace.
   `crates/vh-gremlin` — fault plans. `crates/vh-props` — always/sometimes
   properties. `crates/vh-multiverse` — universe runner + divergence
-  detector. `crates/vh-cli` — the `vh` binary and demo workloads.
+  detector. `crates/vh-shrink` — deterministic fault-plan minimization.
+  `crates/vh-verify` — independent replay-soak verification. `crates/vh-cli`
+  — the `vh` binary and demo workloads.
 - `clients/python/` — future integration client (dharma_swarm et al.).
   Currently a stub; the Rust core is the only engine.
 - Determinism doctrine: `docs/specs/DETERMINISM_TIERS.md`. Build plan:

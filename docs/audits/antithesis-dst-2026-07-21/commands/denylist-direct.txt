@@ -1,0 +1,15 @@
+$ python3.11 scripts/check_determinism_denylist.py --self-test && scan (system python3 is 3.9.6 and fails — see make-onboard.txt)
+denylist self-test: PASS (18 regex samples x src/tests, 21 manifest fixtures, 7 root fixtures, 12 boundary cases)
+determinism deny-list: PASS (8 crates, 30 files scanned, 2 declared boundary files skipped; manifests tomllib-validated hermetic with name+version-bound deps and crate-confined build/target paths, members bound to crates/, no [patch]/[replace]/.cargo-config, lockfile name+version-bound source-free, workspace unsafe_code = "forbid" inherited by every crate)
+EXIT=0
+
+$ grep -c "^name" Cargo.lock (external deps check)
+8
+name = "vh-cli"
+name = "vh-core"
+name = "vh-gremlin"
+name = "vh-multiverse"
+name = "vh-props"
+name = "vh-shrink"
+name = "vh-trace"
+name = "vh-verify"

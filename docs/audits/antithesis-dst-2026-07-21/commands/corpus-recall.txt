@@ -1,0 +1,41 @@
+== corpus-lost-update ==
+  always-failures: 29 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  verdict: FINDINGS (see above)
+EXIT=0
+== corpus-retry-double-apply ==
+  always-failures: 76 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  verdict: FINDINGS (see above)
+EXIT=0
+== corpus-dirty-read ==
+  always-failures: 83 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  verdict: FINDINGS (see above)
+EXIT=0
+== corpus-crash-toctou ==
+  always-failures: 21 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  verdict: FINDINGS (see above)
+EXIT=0
+== corpus-fsync-lie ==
+  always-failures: 21 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  verdict: FINDINGS (see above)
+EXIT=0
+NOTE: EXIT lines above are grep's pipeline exit, not vh's. vh exit codes for these workloads are pinned at 1 by gate.sh negative gates (see make-gate.txt).
+
+=== entry repro commands ===
+$ vh run --workload corpus-lost-update --seed 0xD1CE --universe 1
+universe 1 (seed 0xd1ce, workload corpus-lost-update): hash fd2724cd11b071f3aa26c0c5060bcc36 events 61 [single execution — no replay agreement sampled]
+  fault-plan digest: acdfc32a59a4ca95dc431b848c08e5de (vh-fault-plan-v1)
+  ALWAYS-FAIL oracle:no_lost_updates: final counter 4 != 6 requested increments — update(s) lost to read-modify-write overlap
+  replay verdict: FINDINGS
+EXIT=1
+$ vh run --workload corpus-crash-toctou --seed 0xD1CE --universe 9
+universe 9 (seed 0xd1ce, workload corpus-crash-toctou): hash e1664370769b7189d72fb9ca05c08408 events 73 [single execution — no replay agreement sampled]
+  fault-plan digest: 8970b7cdd44582e9005aa3a8ba334f93 (vh-fault-plan-v1)
+  ALWAYS-FAIL oracle:act_epoch_matches_check: check-then-act crossed a crash window: action 1 acted in epoch Some("2") on a check from epoch Some("1")
+  replay verdict: FINDINGS
+EXIT=1
+$ vh run --workload corpus-fsync-lie --seed 0xD1CE --universe 5
+universe 5 (seed 0xd1ce, workload corpus-fsync-lie): hash 548fddeeb89390518ee61648a2b89571 events 132 [single execution — no replay agreement sampled]
+  fault-plan digest: 198d20e8ffc6717b5a4bb402a752cd1c (vh-fault-plan-v1)
+  ALWAYS-FAIL oracle:wal_durability: acknowledged record r0=121 not intact in final durable state (found None); acknowledged record r1=690 not intact in final durable state (found None); acknowledged record r2=299 not intact in final durable state (found None); acknowledged record r3=980 not intact in final durable state (found None)
+  replay verdict: FINDINGS
+EXIT=1

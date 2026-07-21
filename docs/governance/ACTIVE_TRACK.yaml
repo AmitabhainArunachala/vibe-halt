@@ -28,7 +28,7 @@ spine_objectives:
 tracks:
   - id: vibe-halt-core-2026-07
     title: "vibe-halt core — deterministic multiverse engine (Phases 0-4)"
-    status: ACTIVE
+    status: PAUSED
     serves: deterministic-truth
     opened: 2026-07-20
     # Narrowed 2026-07-20 (hardening-loop GAP): exact surfaces, no broad
@@ -61,6 +61,7 @@ tracks:
       - ">=1000 Tier-1 universes/hour/reference-workload on the build box"
       - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
     next:
+      - "PAUSED 2026-07-22 under wip_max law while Track 2 occupies audited core exploration surfaces; resume only after Track 2 ships or narrows ownership"
       - "Phase 0 (wk 1-2): trace format freeze, seed-tree hardening, divergence gate in CI (DONE at scaffold)"
       - "Phase 1 (wk 3-5): Tier-1 sim runtime (net/disk/process gremlins on the scheduler); Tier-2 hermetic subprocess sandbox + LLM cassette layer"
       - "Phase 2 (wk 6-8): end-state oracles, fault-plan shrinker, vibe-bug corpus >=25"
@@ -118,3 +119,35 @@ tracks:
       - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
       - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
       - "no third active track beyond this portfolio without operator lifecycle authorization"
+
+  - id: vibe-halt-1000x-exploration
+    title: "Track 2 — 1000x guided exploration and finding depth"
+    status: ACTIVE
+    serves: real-bugs-found
+    opened: 2026-07-22
+    owned_surfaces:
+      - LICENSE
+      - crates/vh-core/**
+      - crates/vh-trace/**
+      - crates/vh-gremlin/**
+      - crates/vh-cli/**
+      - scripts/onboard.py
+      - docs/audits/**
+      - docs/prompts/TRACK2_1000X_INSTANTIATION_2026-07-21.md
+      - CLAUDE.md
+    acceptance:
+      - "W0/R0: LICENSE proposed; Python <3.11 fails fast or onboard exits 0; CLAUDE.md crate map names vh-shrink/vh-verify"
+      - "W1/R2: opt-in swarm palette beats v0 on the pinned corpus bakeoff before any default flip"
+      - "W2/RFC-003: decision tape records scheduler choice points without moving frozen doctor identities"
+      - "W4/D6: ClockSkew is implemented as observable virtual-clock divergence or removed from generated offers"
+      - "W5/R1: shrink wiring remains an INTERFACE REQUEST only unless ownership is reassigned"
+    next:
+      - "W0: ship housekeeping first, citing INTEGRATION_ROADMAP.md R0 acceptance and kill criterion"
+      - "W1: first code touch is crates/vh-gremlin; keep --palette v0 default and bit-identical"
+      - "W2/W3: add tape before PCT; preserve doctor hash 9ce6199f133f4d3c9dd0da0075e352d2 and fingerprint 1684e7c347e645f43a80a30abc46adb7"
+      - "W4: prefer the smaller honest ClockSkew fix that stops phantom budget spending"
+      - "W5: post INTERFACE REQUEST for vh-shrink/vh-verify-owned surfaces, do not edit them"
+    non_goals:
+      - "no edits to crates/vh-verify/** or crates/vh-shrink/** without explicit ownership reassignment"
+      - "no edits to crates/vh-multiverse/src/runtime.rs while the Track-1 sandbox surface is live without an interface request"
+      - "no hypervisor, RL exploration, eval dashboard, dependency import, merge to main, or self-approval"

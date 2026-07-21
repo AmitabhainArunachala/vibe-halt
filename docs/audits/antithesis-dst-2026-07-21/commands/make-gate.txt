@@ -1,0 +1,389 @@
+$ make gate
+bash scripts/gate.sh
+== gate 0: determinism deny-list ==
+denylist self-test: PASS (18 regex samples x src/tests, 21 manifest fixtures, 7 root fixtures, 12 boundary cases)
+determinism deny-list: PASS (8 crates, 30 files scanned, 2 declared boundary files skipped; manifests tomllib-validated hermetic with name+version-bound deps and crate-confined build/target paths, members bound to crates/, no [patch]/[replace]/.cargo-config, lockfile name+version-bound source-free, workspace unsafe_code = "forbid" inherited by every crate)
+== gate G: governance admission (strict schema, ownership, WIP) ==
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+governance: PASS (3 tracks, 3 ACTIVE, strict schema, canonical ownership, WIP within limit)
+== format ==
+== clippy (strict) ==
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.04s
+== tests ==
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.03s
+     Running unittests src/lib.rs (target/debug/deps/vh_cli-028bb2d1181d9205)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/vh-6799b4946c5534d0)
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/cli_contract.rs (target/debug/deps/cli_contract-e48023bc4c5bf51b)
+
+running 7 tests
+test single_universe_replay_is_unchecked_exit_3 ... ok
+test absurd_universe_count_rejected_with_typed_diagnostic ... ok
+test zero_universes_rejected_with_typed_diagnostic ... ok
+test single_universe_replay_with_findings_exits_1 ... ok
+test clean_campaign_exits_0_with_checked_evidence ... ok
+test conflicting_universe_flags_are_rejected ... ok
+test no_divergence_check_is_unchecked_exit_3 ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.17s
+
+     Running tests/demo.rs (target/debug/deps/demo-6f62f7439eb07893)
+
+running 3 tests
+test demo_trace_identity_survives_the_oracle_reexpression ... ok
+test correct_demo_is_clean ... ok
+test buggy_demo_is_caught_with_reproducible_universe ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_core-f716c64f9e7cca98)
+
+running 18 tests
+test seed::tests::universes_get_distinct_seeds ... ok
+test rng::tests::next_below_in_range ... ok
+test clock::tests::advances_monotonically ... ok
+test rng::tests::different_seeds_diverge ... ok
+test rng::tests::frozen_reference_vector ... ok
+test clock::tests::refuses_backwards_time - should panic ... ok
+test rng::tests::next_bool_boundary_consumption_is_frozen ... ok
+test rng::tests::same_seed_same_sequence ... ok
+test rng::tests::next_below_consumption_is_frozen ... ok
+test sched::tests::fires_in_time_order ... ok
+test rng::tests::next_bool_rejects_invalid_inputs_without_consuming_state ... ok
+test sched::tests::same_time_events_fire_in_insertion_order ... ok
+test sched::tests::interleaved_same_time_scheduling_stays_in_insertion_order ... ok
+test sched::tests::refuses_scheduling_before_the_watermark - should panic ... ok
+test seed::tests::adjacent_universe_streams_are_uncorrelated_smoke ... ok
+test seed::tests::same_name_different_universe_differs ... ok
+test seed::tests::streams_are_independent_by_name ... ok
+test seed::tests::streams_are_reproducible ... ok
+
+test result: ok. 18 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_gremlin-8f232dbef79253fd)
+
+running 7 tests
+test tests::due_drains_in_order ... ok
+test tests::injections_are_time_sorted ... ok
+test tests::unsorted_construction_is_canonicalized_so_due_misses_nothing ... ok
+test tests::phase1_canonical_renderings_are_stable ... ok
+test tests::generation_is_deterministic ... ok
+test tests::tied_injections_keep_caller_order ... ok
+test tests::frozen_generate_palette_excludes_phase1_kinds ... ok
+
+test result: ok. 7 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_multiverse-52f219d4b08dcaa7)
+
+running 4 tests
+test evidence::tests::ladder_advances_monotonically_and_renders_absent_stages ... ok
+test evidence::tests::manifestation_requires_injection - should panic ... ok
+test evidence::tests::recovery_without_injection_is_legal_for_healed_idle_faults ... ok
+test evidence::tests::out_of_order_injection_is_a_kernel_bug - should panic ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/divergence.rs (target/debug/deps/divergence-e1a26671b6ab508d)
+
+running 22 tests
+test execution_error_outcome_is_never_clean ... ok
+test detector_flags_nondeterminism_instead_of_blessing_it ... ok
+test detector_flags_reordered_passing_check_transcripts ... ok
+test detector_flags_skipped_passing_invariants ... ok
+test detector_flags_verdict_flips_with_identical_traces ... ok
+test different_seeds_produce_different_multiverses ... ok
+test ignored_override_is_never_a_valid_completion ... ok
+test invalid_assumption_outcome_is_never_clean ... ok
+test no_op_completed_workload_with_no_contract_is_never_clean ... ok
+test schedule_keyed_nondeterminism_still_evades_sampled_replay_agreement ... ok
+test universe_count_rejects_zero_and_absurd_sizes ... ok
+test observation_view_matches_the_getter_surface_exhaustively ... ok
+test oracle_judgment_enters_the_observable_transcript ... ok
+test fault_plan_digest_binds_replay_input_identity ... ok
+test overconsumed_override_is_never_a_valid_completion ... ok
+test override_preserves_generator_stream_effects ... ok
+test pair_local_counter_nondeterminism_is_caught_by_nonadjacent_replay ... ok
+test required_oracle_missing_or_failing_fails_closed ... ok
+test fault_plan_override_replays_deterministically ... ok
+test unmet_property_contract_is_a_finding ... ok
+test same_universe_replays_bit_identically ... ok
+test multiverse_replays_across_many_runs ... ok
+
+test result: ok. 22 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/runtime.rs (target/debug/deps/runtime-8b6ee5042f679d37)
+
+running 13 tests
+test partition_drops_inject_manifest_and_heal_recovers ... ok
+test crash_wipes_volatile_keeps_durable_and_cancels_inflight ... ok
+test duplicate_delivers_twice_and_reorder_swaps_next_two ... ok
+test fsync_lie_manifests_only_through_actual_loss ... ok
+test idle_partition_heals_without_injection ... ok
+test runtime_evidence_divergence_is_caught_by_the_detector ... ok
+test override_replay_flows_through_the_runtime_identically ... ok
+test runtime_records_delivery_and_io_trace_events_itself ... ok
+test runtime_replay_is_bit_identical ... ok
+test torn_write_manifests_on_read_back_and_recovers_on_intact_write ... ok
+test second_runtime_construction_fails_closed - should panic ... ok
+test unconsumed_arm_stays_armed_and_unreached_offer_stays_unoffered ... ok
+test unpaired_reorder_expires_undelivered_and_stays_armed ... ok
+
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_props-db9805e38be67270)
+
+running 5 tests
+test tests::redeclaration_does_not_erase_a_hit ... ok
+test tests::sometimes_merges_across_universes ... ok
+test tests::always_records_failures_and_full_transcript ... ok
+test tests::unreached_sometimes_is_a_finding ... ok
+test tests::undeclared_sometimes_hit_fails_closed - should panic ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_shrink-e401a66cf8ba1a04)
+
+running 5 tests
+test tests::a_non_subsequence_fails_closed_instead_of_aliasing ... ok
+test tests::duplicate_injections_have_one_canonical_structural_key ... ok
+test tests::duplicate_rich_subsequence_keys_are_equal_iff_plans_are_equal ... ok
+test tests::every_fault_variant_and_payload_has_a_distinct_exact_key ... ok
+test tests::large_plan_keys_are_compact_fixed_width_bitsets ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/multiverse_integration.rs (target/debug/deps/multiverse_integration-693551c5be782358)
+
+running 4 tests
+test expected_failure_with_invalid_replay_lifecycle_is_not_a_reproducer ... ok
+test full_observable_divergence_is_not_a_reproducer_even_when_fingerprint_matches ... ok
+test same_property_name_with_different_detail_is_not_the_expected_fingerprint ... ok
+test shrinker_minimizes_through_the_public_fault_plan_replay_hook ... ok
+
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/shrink.rs (target/debug/deps/shrink-03ff8d5466eb7669)
+
+running 29 tests
+test cache_weight_budget_below_one_key_refuses_before_any_oracle_call ... ok
+test checked_api_rejects_a_nonfailing_input ... ok
+test broad_any_failure_oracle_can_switch_causes_but_exact_fingerprint_preserves_original ... ok
+test cache_weight_budget_fails_before_an_unrecordable_oracle_call ... ok
+test checked_default_is_paired_and_resource_bounded ... ok
+test paired_oracle_budget_one_refuses_before_any_call ... ok
+test oracle_panic_preserves_typed_candidate_and_best_reproducer_lineage ... ok
+test paired_oracle_budget_three_never_starts_an_incomplete_pair ... ok
+test paired_verdict_check_fails_closed_on_a_flaky_oracle ... ok
+test paired_verdict_receipt_distinguishes_calls_from_candidates ... ok
+test compatibility_api_fails_closed_for_a_nonfailing_input - should panic ... ok
+test empty_input_is_queried_once ... ok
+test preserves_an_interacting_pair_in_original_order ... ok
+test identical_candidates_are_never_replayed_within_one_shrink ... ok
+test mid_run_failure_preserves_the_best_smaller_reproducer ... ok
+test removes_every_fault_except_the_single_cause ... ok
+test initial_oracle_panic_accounting_is_frozen_for_either_paired_call ... ok
+test report_binds_the_exact_original_plan_lineage ... ok
+test oracle_budget_is_enforced_before_starting_the_next_candidate ... ok
+test oversized_input_fails_before_the_oracle_and_preserves_retry_lineage ... ok
+test oracle_call_order_and_result_are_repeatable ... ok
+test preserves_a_failing_singleton ... ok
+test preserves_required_duplicate_injections ... ok
+test public_errors_have_stable_human_readable_categories ... ok
+test returns_empty_when_the_empty_plan_still_fails ... ok
+test upstream_plan_canonicalization_is_preserved_in_shrink_lineage ... ok
+test all_faults_required_has_a_linear_distinct_call_bound ... ok
+test exhaustive_four_fault_oracles_produce_one_minimal_ordered_subsequences ... ok
+test dense_required_subset_stays_within_an_honest_quadratic_call_budget ... ok
+
+test result: ok. 29 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.12s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_trace-7ffc94efb431baec)
+
+running 6 tests
+test tests::field_boundaries_matter ... ok
+test tests::same_events_same_hash ... ok
+test tests::empty_trace_has_stable_hash ... ok
+test tests::different_events_different_hash ... ok
+test tests::event_count_is_part_of_framing ... ok
+test tests::separator_bytes_in_payload_cannot_forge_event_boundaries ... ok
+
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/lib.rs (target/debug/deps/vh_verify-44b8ce74d04ab4c0)
+
+running 8 tests
+test tests::frozen_fingerprint_is_independent_of_runtime_property_constants ... ok
+test tests::observable_fingerprint_schema_has_a_full_frozen_vector ... ok
+test tests::observable_comparison_detects_property_only_drift ... ok
+test tests::every_structured_drift_receipt_has_a_frozen_shape ... ok
+test tests::authentic_runner_lifecycle_variants_are_part_of_independent_identity ... ok
+test tests::authentic_runner_results_cover_non_lifecycle_observable_drift ... ok
+test tests::verifier_owned_model_rejects_every_observable_mutant ... ok
+test tests::library_panic_boundary_records_the_zero_based_replay_ordinal ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running unittests src/main.rs (target/debug/deps/vh_verify-9f8402c48599d96a)
+
+running 1 test
+test tests::panic_is_converted_to_a_frozen_error_receipt ... ok
+
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/divergence.rs (target/debug/deps/divergence-157e37e6f4cd28c6)
+
+running 2 tests
+test skipping_a_passing_invariant_must_be_reported ... ok
+test property_only_nondeterminism_must_be_reported ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/prng_reference.rs (target/debug/deps/prng_reference-5408df6458875532)
+
+running 8 tests
+test boolean_boundary_draws_consume_exactly_one_word ... ok
+test floating_draw_bits_and_consumption_are_frozen ... ok
+test rejection_sampling_consumption_matches_literal_reference_words ... ok
+test splitmix64_matches_official_literal_vector ... ok
+test xoshiro256pp_matches_official_literal_vector ... ok
+test zero_and_max_seed_boundaries_match_independent_vectors ... ok
+test rejection_sampling_rejects_an_empty_domain - should panic ... ok
+test invalid_boolean_probabilities_panic_before_consuming_state ... ok
+
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/replay_soak.rs (target/debug/deps/replay_soak-ecbba1496ba54633)
+
+running 2 tests
+test zero_run_soak_is_rejected ... ok
+test fixed_reference_replays_to_one_tier_1_hash ... ok
+
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/scheduler.rs (target/debug/deps/scheduler-fedc0377b540fdb9)
+
+running 5 tests
+test production_rejects_scheduling_before_the_raw_time_watermark ... ok
+test every_mixed_time_permutation_matches_the_time_then_insertion_model ... ok
+test every_equal_time_permutation_fires_in_insertion_order ... ok
+test every_equal_time_permutation_survives_schedule_pop_interleaving ... ok
+test every_legal_schedule_pop_trace_matches_an_independent_queue_model ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+
+     Running tests/seed_tree.rs (target/debug/deps/seed_tree-2cfa54ceaccf1065)
+
+running 3 tests
+test seed_tree_composition_has_literal_independent_vectors ... ok
+test target_stream_is_independent_of_stream_set_and_draw_order ... ok
+test adjacent_universes_pass_fixed_integer_correlation_smoke ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+     Running tests/trace_framing.rs (target/debug/deps/trace_framing-d6b03f2c277b94ad)
+
+running 5 tests
+test distinct_event_sequences_must_not_share_framing ... ok
+test empty_fields_have_a_literal_stable_baseline ... ok
+test separator_and_nul_bytes_are_retained_deterministically ... ok
+test production_hash_matches_an_independent_prefix_model ... ok
+test long_payload_is_deterministic_and_content_sensitive ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_cli
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_core
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_gremlin
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_multiverse
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_props
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_shrink
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_trace
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+   Doc-tests vh_verify
+
+running 0 tests
+
+test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+== doctor: frozen Tier-1 complete-observable identity ==
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+== divergence gate: 200 universes, each run twice, full-observable-compared ==
+vibe-halt: workload=demo seed=0xd1ce universes=200 divergence-check=true
+  always-failures: 0 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  evidence: pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)
+  verdict: CLEAN
+== live gate: demo-net — sim-runtime echo pair must be CLEAN (exit 0) ==
+gate: demo-net CLEAN on the sim runtime (exit 0)
+== negative gate: demo-net-buggy — fire-and-forget must be FOUND (exact exit 1) ==
+gate: demo-net-buggy correctly caught (exit 1, oracle:echo_acked)
+== live gate: demo-disk — paranoid WAL on SimDisk must be CLEAN (exit 0) ==
+gate: demo-disk CLEAN on the sim runtime (exit 0)
+== negative gate: demo-disk-buggy — flush-ack must be FOUND (exact exit 1) ==
+gate: demo-disk-buggy correctly caught (exit 1, oracle:wal_durability)
+== corpus recall gate: corpus-lost-update must be FOUND (exact exit 1) ==
+gate: corpus-lost-update recalled (exit 1, oracle:no_lost_updates)
+== corpus recall gate: corpus-retry-double-apply must be FOUND (exact exit 1) ==
+gate: corpus-retry-double-apply recalled (exit 1, oracle:exactly_once)
+== corpus recall gate: corpus-dirty-read must be FOUND (exact exit 1) ==
+gate: corpus-dirty-read recalled (exit 1, oracle:published_implies_durable)
+== corpus recall gate: corpus-crash-toctou must be FOUND (exact exit 1) ==
+gate: corpus-crash-toctou recalled (exit 1, oracle:act_epoch_matches_check)
+== corpus recall gate: corpus-fsync-lie must be FOUND (exact exit 1) ==
+gate: corpus-fsync-lie recalled (exit 1, oracle:wal_durability)
+== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) ==
+gate: demo-buggy correctly caught (exit 1, FINDINGS)
+== negative gate: nondeterminism detector (exact exit 1 + anchored DIVERGENT) ==
+gate: demo-nondet correctly flagged divergent (exit 1, DIVERGENT)
+== negative gate: zero universes rejected (exit 2 + typed diagnostic) ==
+gate: zero universes correctly rejected (exit 2, typed diagnostic)
+== negative gate: finding-free single replay is UNCHECKED exit 3, never 0 ==
+gate: single-universe replay correctly UNCHECKED (exit 3)
+== negative gate: Python client quarantine holds (no manufactured success) ==
+gate: python client quarantine holds (runner refuses, cli exit 2)
+== gate battery: ALL PASS ==
+EXIT=0
