@@ -1,0 +1,18 @@
+[package]
+name = "vh-shrink"
+description = "Deterministic fault-plan delta debugger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vh-gremlin = { path = "../vh-gremlin" }
+
+[dev-dependencies]
+vh-cli = { path = "../vh-cli" }
+vh-multiverse = { path = "../vh-multiverse" }
+vh-verify = { path = "../vh-verify" }
+
+[lints]
+workspace = true

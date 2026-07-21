@@ -93,3 +93,27 @@ tracks:
       - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
       - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
       - "no third active track beyond this portfolio without operator lifecycle authorization"
+
+  - id: vibe-halt-verifier-2026-07
+    title: "vibe-halt verifier — independent replay, shrink, and publication evidence"
+    status: ACTIVE
+    serves: deterministic-truth
+    opened: 2026-07-20
+    owned_surfaces:
+      - AGENTS.md
+      - crates/vh-shrink/**
+      - crates/vh-verify/**
+      - .github/workflows/verify.yml
+    acceptance:
+      - "make onboard runs before verifier work and bash scripts/gate.sh is the only claimed gate battery"
+      - "Tier-1 complete-observable projection destructures UniverseObservation without a rest pattern and carries a verifier-owned versioned fingerprint"
+      - "shrunk corpus reproducers bind source/build, workload, seed/universe, oracle identity, and captured failure fingerprint in a publication manifest"
+      - "cross-machine doctor and verifier receipts match on the exact PR head"
+      - "hardening-loop-5 findings are reproduced from an isolated checkout and posted without modifying core-owned surfaces"
+    next:
+      - "rebase PR #2 on the current Track-1 tip and publish exact-SHA receipts"
+      - "maintain the independent runtime edge, lifecycle, and corpus-shrink battery"
+    non_goals:
+      - "no edits to core, trace, gremlin, props, multiverse, cli, corpus, scripts, Makefile, ci.yml, specs, or plans"
+      - "no Track-1 fingerprint reuse; every verifier identity is independently framed"
+      - "no merge, self-approval, or merge-policy decision by the verifier track"
