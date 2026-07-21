@@ -7,6 +7,7 @@ members = [
     "crates/vh-props",
     "crates/vh-multiverse",
     "crates/vh-cli",
+    "crates/vh-sandbox",
     "crates/vh-verify",
     "crates/vh-shrink",
 ]

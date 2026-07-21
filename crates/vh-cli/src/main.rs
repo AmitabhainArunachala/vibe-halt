@@ -4,6 +4,8 @@
 //! process exit code, and nothing inside the kernel crates may. Arg parsing
 //! is manual to keep the workspace zero-dependency.
 
+mod sandbox_demo;
+
 use vh_cli::workloads;
 use vh_multiverse::{
     run_multiverse, run_universe, MultiverseConfig, UniverseCount, UniverseResult, Verdict,
@@ -24,6 +26,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
+        Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
         Some("doctor") => cmd_doctor(),
         _ => {
             eprint!("{}", USAGE);
@@ -39,6 +42,7 @@ vh — Mega Hyper Vibration Multiverse Halting Machine
 USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
            [--no-divergence-check]
+    vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh doctor
 
 WORKLOADS:
@@ -62,6 +66,10 @@ is UNCHECKED (exit 3), never CLEAN. A single-universe replay (--universe)
 is likewise UNCHECKED (exit 3) when finding-free — one execution proves
 nothing about reproducibility. --universes must be nonzero and within the
 v0 resource bound; --universes conflicts with --universe.
+
+`vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
+universes with env scrubbing, pinned Python env, fixture cassette replay,
+run-twice divergence reporting, and an explicit unmanaged-channel ledger.
 ";
 
 struct RunArgs {

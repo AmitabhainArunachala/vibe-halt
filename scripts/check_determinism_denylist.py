@@ -67,6 +67,12 @@ REPO = Path(__file__).resolve().parent.parent
 BOUNDARY_FILES = {
     "crates/vh-cli/src/main.rs",
     "crates/vh-cli/tests/cli_contract.rs",
+    # Tier-2 boundary crate: owns subprocess execution, host I/O, env scrubbing,
+    # cassette fixture replay, and boundary telemetry. Manifest validation still
+    # applies; this exemption is only the line-regex layer.
+    "crates/vh-sandbox/src/lib.rs",
+    "crates/vh-sandbox/src/tests.rs",
+    "crates/vh-cli/src/sandbox_demo.rs",
 }
 
 ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\b"
