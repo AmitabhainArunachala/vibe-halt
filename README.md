@@ -1,33 +1,78 @@
-# Mega Hyper Vibration Multiverse Halting Machine
+# vibe-halt
 
-**The ultimate stress-testing shaker for vibe-coded repositories.**
+**Mega Hyper Vibration Multiverse Halting Machine** — a deterministic
+simulation testing (DST) rig for vibe-coded (AI-generated) repositories
+and agent systems. An electrodynamic shaker table + HALT rig + multiverse
+explorer for code: run it across thousands of reproducible universes,
+inject targeted gremlins, enforce integrity properties, and emit findings
+with one-command deterministic repros.
 
-`vibe-halt` is a deterministic, high-stress testing system that subjects AI-generated ("vibe-coded") code, diffs, agent systems, and entire repositories to *extremely high controlled vibration*.
+Vision: [`VISION.md`](VISION.md) · 12-week plan:
+[`docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`](docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md)
+· Determinism doctrine:
+[`docs/specs/DETERMINISM_TIERS.md`](docs/specs/DETERMINISM_TIERS.md)
 
-Think of it as an **electrodynamic shaker table meets HALT rig meets multiverse simulator** — purpose-built to expose hallucinations, fragile state, security slop, non-determinism, and integrity failures that normal tests completely miss.
+## Quickstart
 
-## Core Philosophy
-- Vibe-coded code is high-variance material. We vibrate it violently across thousands of reproducible universes.
-- Deterministic multiverse exploration with seeded execution and intelligent fault injection.
-- Strong, extensible property-based invariants (designed to integrate with Dharma Swarm telos gates).
-- Built to plug directly into Darwin Engine, adversarial review, and evidence pipelines.
-
-## Current Status
-**Phase 1** — Lightweight Multiverse Harness (foundation pushed)
-
-See `VISION.md` for the full roadmap and Phase 1 spec.
-
-## Quick Start
 ```bash
-# After installation
-python -m vibe_halt run --target ./example-vibe-code --universes 1000 --seed 42
+make onboard                 # session status — run first
+make test                    # full workspace test suite
+make gate                    # the whole gate battery
+make demo                    # watch the rig catch a seeded durability bug
+
+cargo run -p vh-cli -- run --workload demo --universes 200        # clean
+cargo run -p vh-cli -- run --workload demo-buggy --universes 100  # findings + repros
+cargo run -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universe 0  # replay one universe
+cargo run -p vh-cli -- doctor
 ```
 
+`vh run` exits 0 only if the multiverse is clean: no always-failure, no
+divergence between the two runs of each universe, and every declared
+sometimes-assertion reached.
+
+## Layout
+
+| path | what |
+|------|------|
+| `crates/vh-core` | determinism kernel: seed tree, PRNG streams, virtual clock, deterministic scheduler |
+| `crates/vh-trace` | append-only, chain-hashed event trace ([format spec](docs/specs/TRACE_FORMAT_V0.md)) |
+| `crates/vh-gremlin` | fault model: gremlin kinds + deterministic fault plans |
+| `crates/vh-props` | always-invariants + sometimes-reachability assertions |
+| `crates/vh-multiverse` | universe runner, multiverse fan-out, divergence detector |
+| `crates/vh-cli` | the `vh` binary + demo workloads |
+| `clients/python` | integration client stub (dharma_swarm et al., Phase 4) |
+| `docs/governance` | active track portfolio (lean dharma_swarm governance import) |
+| `scripts` | onboard + determinism deny-list gate |
+
+The workspace has **zero external dependencies** by design: hermetic,
+offline, bit-stable builds on the pinned toolchain
+([`rust-toolchain.toml`](rust-toolchain.toml)).
+
+## The two laws
+
+1. **Determinism deny-list** — kernel crates use no wall clock, no OS
+   randomness, no hash-order iteration, no threads, no I/O. Enforced
+   mechanically in CI (`scripts/check_determinism_denylist.py`).
+2. **Divergence honesty** — every universe runs twice; trace hashes must
+   match bit-for-bit or the report says DIVERGENT. The rig never blesses
+   a run it cannot reproduce.
+
 ## Integration with Dharma Swarm
-Designed to be called from `DarwinEngine`, quality gates, and experiment logging. Produces rich `EvidenceReport` with reproducibility scores, violations, and failure signatures.
+
+Phase 4 wires vibe-halt into dharma_swarm as a `VibeHaltSandbox`
+(implementing the swarm's `Sandbox` ABC) and a diff-verdict gate beside
+its build/diff pipeline, emitting tier-labeled receipts. The
+`clients/python/` package is that adapter's home.
+
+## Governance
+
+Lean import of [dharma_swarm](https://github.com/AmitabhainArunachala/dharma_swarm)
+governance: `make onboard` session status, a WIP-limited surface-owned
+track portfolio (`docs/governance/ACTIVE_TRACK.yaml`), citation-or-silence
+for all claims, and mechanical gates over reviewer vigilance. Agent
+configuration lives in [`CLAUDE.md`](CLAUDE.md).
 
 ## Name
-Full: **Mega Hyper Vibration Multiverse Halting Machine**
-Short: `vibe-halt` / `vibe-shaker`
 
-Built with the same anti-slop, verifiable, dharmically coherent principles as the rest of the swarm.
+Full: **Mega Hyper Vibration Multiverse Halting Machine**.
+Short: `vibe-halt`. The binary is `vh`.

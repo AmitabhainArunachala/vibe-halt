@@ -1,0 +1,4 @@
+[toolchain]
+# Pinned: every machine (dev, CI, future fleet) builds with the same compiler.
+channel = "1.94.1"
+components = ["rustfmt", "clippy"]

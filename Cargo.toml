@@ -1,0 +1,35 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/vh-core",
+    "crates/vh-trace",
+    "crates/vh-gremlin",
+    "crates/vh-props",
+    "crates/vh-multiverse",
+    "crates/vh-cli",
+    "crates/vh-verify",
+    "crates/vh-shrink",
+]
+
+# Zero external dependencies by design: the determinism kernel builds
+# offline, hermetically, on any machine with the pinned toolchain.
+# Adding a dependency to a kernel crate requires a determinism review
+# (see CLAUDE.md — Determinism Deny-List).
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/AmitabhainArunachala/vibe-halt"
+
+# The semantic unsafe-code layer (PR #1 hardening loop 2): rustc enforces
+# this on EVERY lib/bin/test target of every crate that inherits it via
+# `[lints] workspace = true` — gate 0 mechanically verifies both sides,
+# so a comment mentioning forbid(unsafe_code) can no longer satisfy the
+# check.
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[profile.release]
+# Reproducibility over raw speed for now; revisit in Phase 3.
+codegen-units = 1

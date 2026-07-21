@@ -1,0 +1,86 @@
+name: ci
+
+# Hosted CI is evidence infrastructure, not a security sandbox: it proves
+# the gate battery ran at this SHA on a pinned image/toolchain; it does
+# not contain malicious code (D0 claim, see DESIGN.md §2).
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gate:
+    # Pinned image, not ubuntu-latest: the runner is part of the evidence.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      # actions/checkout v4.2.2, pinned to its immutable commit SHA.
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      # rust-toolchain.toml pins the compiler; rustup on the runner honors it.
+      - name: Toolchain
+        run: rustup show
+      - name: Determinism deny-list (gate 0)
+        run: |
+          python3 scripts/check_determinism_denylist.py --self-test
+          python3 scripts/check_determinism_denylist.py
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy (strict)
+        run: cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+      - name: Tests
+        run: cargo test --workspace --locked --offline
+      - name: Doctor — frozen Tier-1 complete-observable identity
+        run: cargo run -q --locked --offline -p vh-cli -- doctor
+      - name: Divergence gate — 200 universes, each run twice, full-observable-compared
+        run: cargo run -q --locked --offline -p vh-cli -- run --workload demo --seed 0xD1CE --universes 200
+      - name: Seeded-bug gate — exact exit 1 + one anchored FINDINGS verdict
+        run: |
+          set +e
+          out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 50)
+          code=$?
+          set -e
+          verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+          if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ]; then
+            echo "demo-buggy: expected exit 1 + exactly one anchored FINDINGS verdict, got exit $code / $verdicts"; exit 1
+          fi
+      - name: Detector gate — exact exit 1 + anchored DIVERGENT + one FINDINGS verdict
+        run: |
+          set +e
+          out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-nondet --seed 0xD1CE --universes 5)
+          code=$?
+          set -e
+          verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+          divergent=$(printf '%s\n' "$out" | grep -c '^  DIVERGENT universe')
+          if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$divergent" -lt 1 ]; then
+            echo "demo-nondet: expected exit 1 + one FINDINGS verdict + anchored DIVERGENT, got exit $code / $verdicts / $divergent"; exit 1
+          fi
+      - name: Zero-work gate — universes 0 rejected with exit 2 + typed diagnostic
+        run: |
+          set +e
+          err=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo --universes 0 2>&1 >/dev/null)
+          code=$?
+          set -e
+          if [ "$code" -ne 2 ] || ! printf '%s' "$err" | grep -q -- '--universes must be nonzero — zero work is never certified'; then
+            echo "--universes 0: expected exit 2 + the exact zero-work diagnostic, got exit $code"; exit 1
+          fi
+      - name: Replay gate — finding-free single universe is UNCHECKED exit 3, never 0
+        run: |
+          set +e
+          out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-nondet --universe 0)
+          code=$?
+          set -e
+          if [ "$code" -ne 3 ] || ! printf '%s\n' "$out" | grep -q '^  replay verdict: UNCHECKED'; then
+            echo "--universe replay: expected exit 3 + anchored UNCHECKED replay verdict, got exit $code"; exit 1
+          fi

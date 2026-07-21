@@ -1,0 +1,12 @@
+[package]
+name = "vh-trace"
+description = "vibe-halt append-only, chain-hashed event trace ledger"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

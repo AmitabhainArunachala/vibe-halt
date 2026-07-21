@@ -1,0 +1,16 @@
+[package]
+name = "vh-multiverse"
+description = "vibe-halt universe runner, multiverse fan-out, and divergence detector"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+vh-core = { path = "../vh-core" }
+vh-trace = { path = "../vh-trace" }
+vh-gremlin = { path = "../vh-gremlin" }
+vh-props = { path = "../vh-props" }
+
+[lints]
+workspace = true

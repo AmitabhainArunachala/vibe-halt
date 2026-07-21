@@ -1,0 +1,12 @@
+[package]
+name = "vh-core"
+description = "vibe-halt determinism kernel: seed tree, PRNG streams, virtual clock, deterministic scheduler"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
