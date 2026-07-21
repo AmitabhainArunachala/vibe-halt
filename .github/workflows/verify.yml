@@ -12,6 +12,9 @@ on:
 permissions:
   contents: read
 
+env:
+  EXPECTED_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+
 concurrency:
   group: verifier-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -24,13 +27,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          ref: ${{ github.head_ref || github.ref_name }}
       - name: Onboard first
         run: make onboard
       - name: Exact source and toolchain receipt
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           test -z "$(git status --porcelain)"
           echo "source-commit=$(git rev-parse HEAD)"
           echo "source-tree=$(git rev-parse 'HEAD^{tree}')"
@@ -79,7 +83,7 @@ jobs:
             "$RUNNER_TEMP/shrink-evidence.txt"
           grep -Fq 'build=rustc-1.94.1-e408947bf-x86_64-unknown-linux-gnu%3Bprofile%3Dtest%3Blocked-offline' \
             "$RUNNER_TEMP/shrink-evidence.txt"
-          binding="shrink-execution-binding: harness-commit=$GITHUB_SHA harness-tree=$source_tree rustc-release=$release rustc-commit=$compiler_commit host=$host"
+          binding="shrink-execution-binding: harness-commit=$EXPECTED_HEAD_SHA harness-tree=$source_tree rustc-release=$release rustc-commit=$compiler_commit host=$host"
           printf '%s\n' "$binding" | tee "$RUNNER_TEMP/shrink-binding.txt"
           grep -Fq 'workload=corpus-retry-double-apply' "$RUNNER_TEMP/shrink-evidence.txt"
           grep -Fq 'workload=corpus-fsync-lie' "$RUNNER_TEMP/shrink-evidence.txt"
@@ -113,13 +117,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          ref: ${{ github.head_ref || github.ref_name }}
       - name: Onboard first
         run: make onboard
       - name: Exact source and toolchain receipt
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           test -z "$(git status --porcelain)"
           echo "source-commit=$(git rev-parse HEAD)"
           echo "source-tree=$(git rev-parse 'HEAD^{tree}')"
@@ -167,13 +172,14 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          ref: ${{ github.head_ref || github.ref_name }}
       - name: Onboard first
         run: make onboard
       - name: Isolated exact-source receipt
         shell: bash
         run: |
           set -euo pipefail
-          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git rev-parse HEAD)" = "$EXPECTED_HEAD_SHA"
           test -z "$(git status --porcelain)"
           echo "isolated-source-commit=$(git rev-parse HEAD)"
           echo "isolated-source-tree=$(git rev-parse 'HEAD^{tree}')"
@@ -199,7 +205,7 @@ jobs:
               exit 1
             fi
             grep -Fq "$marker" <<<"$output"
-            echo "loop5-reproduced: test=$test_name marker=$marker source=$GITHUB_SHA"
+            echo "loop5-reproduced: test=$test_name marker=$marker source=$EXPECTED_HEAD_SHA"
           }
 
           reproduce stacked_reorders_do_not_silently_lose_messages \
