@@ -70,6 +70,31 @@ tracks:
       - "Tier 3 (deterministic hypervisor) — out of scope for the 12-week build; trace/oracle layer stays substrate-agnostic so a backend can slot in later"
       - "replacing dharma_swarm governance — this repo imports the lean subset only"
 
+  - id: vibe-halt-verify-2026-07
+    title: "vibe-halt Tier-1 verification battery and fault-plan shrinker"
+    status: ACTIVE
+    serves: deterministic-truth
+    opened: 2026-07-20
+    owned_surfaces:
+      - crates/vh-verify/**
+      - crates/vh-shrink/**
+      - .github/workflows/verify.yml
+      - AGENTS.md
+      - docs/governance/ACTIVE_TRACK.yaml  # append-only
+      - Cargo.toml  # append-only workspace members
+      - Cargo.lock  # append-only local package entries
+      - scripts/check_determinism_denylist.py  # shared scanner contract; crates auto-discovered
+    acceptance:
+      - "D1: independent PRNG, seed-tree, trace, scheduler, and Tier-1 replay-soak verification"
+      - "D2: Tier-1 deterministic ddmin fault-plan shrinker with synthetic-oracle tests"
+      - "D3: independent verify workflow runs the battery and a 200-replay soak"
+      - "D4: root AGENTS.md remains a thin pointer to the governance SSOT"
+    next:
+      - "keep the PR #1 trace-framing and full-observable divergence regressions green after every rebase"
+      - "keep vh-verify fully deny-listed except its telemetry-only binary boundary"
+      - "ratchet every discovered false-confidence path into an independent model, frozen vector, or negative regression before closing it"
+      - "retain typed shrink failure/report receipts and cross-OS frozen Tier-1 verification as future implementations evolve"
+
   - id: vibe-bug-corpus-2026-07
     title: "vibe-bug corpus — seeded real-bug classes with pinned recall gates"
     status: ACTIVE

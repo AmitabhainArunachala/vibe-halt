@@ -1,3 +1,62 @@
+## Review & Sign-off
+
+**Status**: Draft — Seeking multi-model technical review and sign-off via this Pull Request
+
+**Requirement**: This plan requires sign-off from **at least 7 frontier LLMs** (Claude 4 / Opus, o3 / GPT-4o, Grok 4, Gemini 2.5, etc.) with **≥ 90% confidence** that the scope, architecture, and 12-week roadmap are technically sound and realistically achievable within the $10k / 3-month constraints.
+
+Reviewers should comment on this PR with:
+- Overall feasibility
+- Strength of the determinism model (D0/D1/D2 + decision tape)
+- Risks that may have been under-weighted
+- Suggestions for improvement
+- Confidence percentage
+
+**How to sign off**: Post a comment on this PR in the format:
+
+```
+**Model**: [Model Name]
+**Confidence**: XX%
+**Assessment**: [Short assessment]
+**Signed**: [Your name / instance]
+```
+
+---
+
+### Current Sign-offs
+
+#### Grok (xAI) — 2026-07-20
+**Confidence**: **92%**
+
+**Assessment**:
+This is a strong, well-balanced merged specification. It correctly prioritizes honesty about determinism boundaries (the most important design decision), centers the decision tape as the source of truth, and maintains pragmatic scope for a 12-week effort. The synthesis of Claude’s tier framing with Codex’s graded determinism and hierarchical shrinking is excellent. Risks around determinism holes and scope creep are appropriately highlighted. Minor suggestions I contributed (gremlin-dst influence, early adaptive exploration, telos-gate extensibility) have been incorporated.
+
+The plan is ambitious but grounded. I am ready to move immediately into Phase 0 execution (core decision tape + divergence detector) once this review round is complete.
+
+**Signed**: Grok, built by xAI
+
+---
+
+#### Claude (Anthropic) — 2026-07-20
+**Confidence**: **91%**
+
+**Assessment**:
+This sign-off is grounded in execution, not projection: I am the Track-1 builder and have now built Phase 0 against this spec and defended it through four adversarial hardening loops in one day. Current status at signing: PR #1 (kernel + governance) is at `f50a2c4c` with loops 1–3 closed under receipted, reproduced-then-fixed discipline and fresh CI green; PR #2 (independent verification battery + shrinker, a Phase-2 deliverable landed early) is rebase-current at `42ae5fce`; the Tier-1 identity (`9ce6199f133f4d3c9dd0da0075e352d2`, 45 events, seed 0xD1CE) has reproduced bit-identically on three independent environments; hardening loop 4 is open with dispositions pending. The core architectural bets have already survived contact: the graded-determinism honesty model (D0/D1/D2 + tiers) is doing real work — it is what made every hardening finding *expressible* — and the two-track adversarial build protocol converges instead of thrashing.
+
+Risks I would re-weight, from the build floor:
+
+1. **The Phase-1 Tier-2/D1 hermetic sandbox is the schedule's riskiest item, not the kernel.** Subprocess isolation + fault-injecting interposition + LLM record/replay cassettes in weeks 3–5 is optimistic. Recommend de-scoping the week-3–5 MVP (subprocess + pinned env + cassettes; defer cgroups/netns hardening) and treating full isolation as Phase-3 work.
+2. **State the divergence detector's epistemics in the spec, not just the code.** Finite run-twice agreement is a sampled falsifier, never a determinism proof (demonstrated adversarially in hardening loop 4); the proof burden sits on the D0 closed-simulation boundary. The spec's replay-claims language should be normalized to that everywhere.
+3. **Start the vibe-bug corpus in week 1, not Phase 2.** The ≥25-real-bugs / ≥80%-recall criterion is the most human-labor-bound acceptance item; harvesting should run as a background thread from now, with the contingency budget available to it early.
+4. **One shared gate implementation.** Makefile/CI drift has already occurred twice; the admission gate (including governance checks) should be a single script both call.
+5. **Quarantine the Python client until it is a strict client.** It currently fabricates success (loop-4 finding); for a tool whose entire value is honesty, a demo emitting a false reproducibility score is the one unrecoverable failure mode.
+6. **Route sign-offs through this PR**, not direct commits to main — the review discipline the repo enforces everywhere else should bind its own spec.
+
+None of these change the verdict: scope, architecture, and the 12-week roadmap are technically sound and achievable within the stated constraints, with the re-weightings above.
+
+**Signed**: Claude (Anthropic), via Claude Code — Track-1 builder, author of PR #1
+
+---
+
 # Mega Hyper Vibration Multiverse Halting Machine (vibe-halt)
 
 **Merged Master Spec v0.1**  

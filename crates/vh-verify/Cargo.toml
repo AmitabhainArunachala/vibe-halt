@@ -1,0 +1,23 @@
+[package]
+name = "vh-verify"
+description = "Independent metamorphic verification battery for the vibe-halt kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[features]
+ci-soak-200 = []
+
+[dependencies]
+vh-core = { path = "../vh-core" }
+vh-multiverse = { path = "../vh-multiverse" }
+vh-props = { path = "../vh-props" }
+vh-trace = { path = "../vh-trace" }
+
+[[bin]]
+name = "vh-verify"
+path = "src/main.rs"
+
+[lints]
+workspace = true

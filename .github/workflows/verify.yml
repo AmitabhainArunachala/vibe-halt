@@ -1,0 +1,384 @@
+name: verify
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  merge_group:
+    types: [checks_requested]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  VH_EXPECTED_RUSTC_RELEASE: "1.94.1"
+  VH_EVENT_NAME: ${{ github.event_name }}
+  VH_REPOSITORY: ${{ github.repository }}
+  VH_RUN_ID: ${{ github.run_id }}
+  VH_RUN_ATTEMPT: ${{ github.run_attempt }}
+  VH_PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || 'none' }}
+  VH_PR_BASE_SHA: ${{ github.event.pull_request.base.sha || 'none' }}
+  VH_MERGE_GROUP_HEAD_SHA: ${{ github.event.merge_group.head_sha || 'none' }}
+  VH_MERGE_GROUP_BASE_SHA: ${{ github.event.merge_group.base_sha || 'none' }}
+  VH_SOAK_EXPECTED_REGEX: '^soak: receipt-schema=vh-verify-soak-v1 verdict=PASS determinism-tier=Tier-1 evidence-grade=D0 root-seed=0x000000000000d1ce universe=0 workload=vh-verify-reference trace-format=v0 runs=200 hash=eafa30e8a7a6c82939ea3f755bc866ab events=33 observable-schema=vh-verify-observable-v2 observable-fingerprint=39f727ed5d8a949c1f5a1243bd6d1d10 upH=[0-9]+ upH-scope=boundary-telemetry$'
+  VH_SOAK_ERROR_REGEX: '^soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR determinism-tier=Tier-1 evidence-grade=D0 root-seed=0x000000000000d1ce universe=0 workload=vh-verify-reference trace-format=v0 observable-schema=vh-verify-observable-v2 (requested-runs=0 error-code=zero-runs|requested-runs=200 error-code=panic panic-stage=universe-run panic-run=[0-9]+|requested-runs=200 error-code=panic panic-stage=(verifier-boundary|cli-boundary) panic-run=boundary|requested-runs=200 error-code=replay-diverged divergence-run=[0-9]+ expected-observable-fingerprint=[0-9a-f]{32} actual-observable-fingerprint=[0-9a-f]{32}|requested-runs=200 error-code=baseline-drift expected-observable-fingerprint=[0-9a-f]{32} actual-observable-fingerprint=[0-9a-f]{32}|requested-runs=200 error-code=observable-fingerprint-drift expected-observable-fingerprint=[0-9a-f]{32} actual-observable-fingerprint=[0-9a-f]{32}|requested-runs=200 error-code=workload-identity-drift expected-workload=vh-verify-reference actual-workload=[A-Za-z0-9._%:-]+)$'
+
+jobs:
+  metamorphic-battery:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      # Hosted runner images remain mutable infrastructure. The compiler and
+      # runner receipt scopes this D0 evidence; it is not a hostile-code sandbox.
+      - name: Source, runner, and pinned toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
+            printf 'checked-out source %s does not match event source %s\n' "$checked_out_sha" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+          rustc_version="$(rustc -V)"
+          if [[ "$rustc_version" != "rustc $VH_EXPECTED_RUSTC_RELEASE "* ]]; then
+            printf 'unexpected rustc release: %s (expected %s)\n' "$rustc_version" "$VH_EXPECTED_RUSTC_RELEASE" >&2
+            exit 1
+          fi
+          printf 'environment: source-sha=%s github-sha=%s event=%s repository=%s run-id=%s run-attempt=%s pr-head-sha=%s pr-base-sha=%s merge-group-head-sha=%s merge-group-base-sha=%s runner-os=%s runner-arch=%s image-os=%s image-version=%s\n' \
+            "$checked_out_sha" "$GITHUB_SHA" "$VH_EVENT_NAME" "$VH_REPOSITORY" \
+            "$VH_RUN_ID" "$VH_RUN_ATTEMPT" "$VH_PR_HEAD_SHA" "$VH_PR_BASE_SHA" \
+            "$VH_MERGE_GROUP_HEAD_SHA" "$VH_MERGE_GROUP_BASE_SHA" \
+            "$RUNNER_OS" "$RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+      - name: Cross-platform bounded Tier-1 replay evidence (200 runs)
+        id: debug_soak
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_is_clean() {
+            [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
+          }
+          persist_evidence() {
+            local receipt="$1"
+            local evidence_dir
+            local evidence_file
+            evidence_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-debug-evidence.XXXXXXXX")"
+            chmod 700 "$evidence_dir"
+            evidence_file="$evidence_dir/receipt.txt"
+            printf '%s\n%s\n' "$environment" "$receipt" > "$evidence_file"
+            if [[ -n "${raw_stderr:-}" ]] && [[ -s "$raw_stderr" ]]; then
+              cp "$raw_stderr" "$evidence_dir/diagnostic.stderr.untrusted"
+            fi
+            printf 'evidence-path=%s\n' "$evidence_dir" >> "$GITHUB_OUTPUT"
+          }
+          summarize() {
+            local heading="$1"
+            local receipt="$2"
+            {
+              printf '### %s\n\n```text\n' "$heading"
+              printf '%s\n%s\n' "$environment" "$receipt"
+              printf '```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          checked_out_sha="$(git rev-parse HEAD)"
+          rustc_commit="$(rustc -Vv | awk '$1 == "commit-hash:" { print $2 }')"
+          cargo_release="$(cargo -V | awk '{ print $2 }')"
+          active_toolchain="$(rustup show active-toolchain | awk '{ print $1 }')"
+          environment="environment: source-sha=$checked_out_sha github-sha=$GITHUB_SHA event=$VH_EVENT_NAME repository=$VH_REPOSITORY run-id=$VH_RUN_ID run-attempt=$VH_RUN_ATTEMPT pr-head-sha=$VH_PR_HEAD_SHA pr-base-sha=$VH_PR_BASE_SHA merge-group-head-sha=$VH_MERGE_GROUP_HEAD_SHA merge-group-base-sha=$VH_MERGE_GROUP_BASE_SHA runner-os=$RUNNER_OS runner-arch=$RUNNER_ARCH image-os=${ImageOS:-unknown} image-version=${ImageVersion:-unknown} rustc-release=$VH_EXPECTED_RUSTC_RELEASE rustc-commit=$rustc_commit cargo-release=$cargo_release active-toolchain=$active_toolchain"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]] || ! source_is_clean; then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=unclean-source"
+            persist_evidence "$controlled_error"
+            summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+
+          capture_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-debug-capture.XXXXXXXX")"
+          target_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-debug-target.XXXXXXXX")"
+          raw_output="$capture_dir/stdout"
+          raw_stderr="$capture_dir/stderr"
+          set +e
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            CARGO_TARGET_DIR="$target_dir" \
+            cargo run --quiet --locked --offline -p vh-verify --features ci-soak-200 --bin vh-verify \
+            2> >(head -c 4097 > "$raw_stderr") | head -c 4097 > "$raw_output"
+          pipeline_status=("${PIPESTATUS[@]}")
+          wait
+          set -e
+          soak_status="${pipeline_status[0]}"
+          capture_status="${pipeline_status[1]}"
+          captured_bytes="$(wc -c < "$raw_output")"
+          captured_lines="$(wc -l < "$raw_output")"
+          stderr_bytes="$(wc -c < "$raw_stderr")"
+          captured_bytes="${captured_bytes//[[:space:]]/}"
+          captured_lines="${captured_lines//[[:space:]]/}"
+          stderr_bytes="${stderr_bytes//[[:space:]]/}"
+
+          if ! source_is_clean || [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=source-mutated"
+            persist_evidence "$controlled_error"
+            summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+          if (( captured_bytes > 4096 )) || (( stderr_bytes > 4096 )) || (( capture_status != 0 )); then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=oversized-output captured-bytes=$captured_bytes stderr-bytes=$stderr_bytes"
+            persist_evidence "$controlled_error"
+            summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+
+          receipt="$(<"$raw_output")"
+          receipt_bytes="${#receipt}"
+          if (( captured_lines != 1 )) || (( captured_bytes != receipt_bytes + 1 )); then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=invalid-byte-shape captured-bytes=$captured_bytes parsed-bytes=$receipt_bytes captured-lines=$captured_lines"
+            persist_evidence "$controlled_error"
+            summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+          if (( soak_status == 0 )) && [[ "$receipt" =~ $VH_SOAK_EXPECTED_REGEX ]]; then
+            persist_evidence "$receipt"
+            summarize "$RUNNER_OS Tier-1 replay evidence" "$receipt"
+            exit 0
+          fi
+          if (( soak_status != 0 )) && [[ "$receipt" =~ $VH_SOAK_ERROR_REGEX ]]; then
+            persist_evidence "$receipt"
+            summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$receipt"
+            exit 1
+          fi
+
+          controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=invalid-program-receipt program-status=$soak_status captured-bytes=$captured_bytes"
+          persist_evidence "$controlled_error"
+          summarize "$RUNNER_OS Tier-1 replay evidence — ERROR" "$controlled_error"
+          exit 1
+      - name: Persist bounded Tier-1 evidence
+        if: ${{ always() && steps.debug_soak.outputs.evidence-path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vh-tier1-debug-${{ github.sha }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ steps.debug_soak.outputs.evidence-path }}
+          if-no-files-found: error
+          retention-days: 90
+      - name: Locked, unsafe-free owned verification gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_is_clean() {
+            [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
+          }
+          source_is_clean
+          gate_target="$(mktemp -d "$RUNNER_TEMP/vh-owned-gate-target.XXXXXXXX")"
+          stop_token="vh-$VH_RUN_ID-$RANDOM-$RANDOM-$RANDOM-$RANDOM"
+          printf '::stop-commands::%s\n' "$stop_token"
+          restore_and_check() {
+            local status=$?
+            printf '::%s::\n' "$stop_token"
+            if ! source_is_clean || [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+              printf 'owned verification command mutated the checked-out source\n' >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap restore_and_check EXIT
+          export CARGO_TARGET_DIR="$gate_target"
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            cargo metadata --locked --offline --no-deps
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            cargo fmt --all --check
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            cargo clippy --locked --offline -p vh-verify -p vh-shrink --all-targets --all-features -- -D warnings -F unsafe-code
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            cargo test --locked --offline -p vh-verify -p vh-shrink --all-targets --all-features
+
+  fault-plan-shrinker:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Source, runner, and pinned toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
+            printf 'checked-out source %s does not match event source %s\n' "$checked_out_sha" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+          rustc_version="$(rustc -V)"
+          if [[ "$rustc_version" != "rustc $VH_EXPECTED_RUSTC_RELEASE "* ]]; then
+            printf 'unexpected rustc release: %s (expected %s)\n' "$rustc_version" "$VH_EXPECTED_RUSTC_RELEASE" >&2
+            exit 1
+          fi
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+      - name: Tier-1 deterministic release ddmin gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_is_clean() {
+            [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
+          }
+          source_is_clean
+          gate_target="$(mktemp -d "$RUNNER_TEMP/vh-shrink-release-target.XXXXXXXX")"
+          stop_token="vh-$VH_RUN_ID-$RANDOM-$RANDOM-$RANDOM-$RANDOM"
+          printf '::stop-commands::%s\n' "$stop_token"
+          restore_and_check() {
+            local status=$?
+            printf '::%s::\n' "$stop_token"
+            if ! source_is_clean || [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+              printf 'release shrinker gate mutated the checked-out source\n' >&2
+              status=1
+            fi
+            exit "$status"
+          }
+          trap restore_and_check EXIT
+          export CARGO_TARGET_DIR="$gate_target"
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            cargo test --locked --offline --release -p vh-shrink --all-targets --all-features
+
+  replay-soak-200:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Source, runner, and pinned toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
+            printf 'checked-out source %s does not match event source %s\n' "$checked_out_sha" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+          rustc_version="$(rustc -V)"
+          if [[ "$rustc_version" != "rustc $VH_EXPECTED_RUSTC_RELEASE "* ]]; then
+            printf 'unexpected rustc release: %s (expected %s)\n' "$rustc_version" "$VH_EXPECTED_RUSTC_RELEASE" >&2
+            exit 1
+          fi
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+      - name: Bounded Tier-1 release replay evidence (200 runs)
+        id: release_soak
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          source_is_clean() {
+            [[ -z "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]
+          }
+          persist_evidence() {
+            local receipt="$1"
+            local evidence_dir
+            local evidence_file
+            evidence_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-release-evidence.XXXXXXXX")"
+            chmod 700 "$evidence_dir"
+            evidence_file="$evidence_dir/receipt.txt"
+            printf '%s\n%s\n' "$environment" "$receipt" > "$evidence_file"
+            if [[ -n "${raw_stderr:-}" ]] && [[ -s "$raw_stderr" ]]; then
+              cp "$raw_stderr" "$evidence_dir/diagnostic.stderr.untrusted"
+            fi
+            printf 'evidence-path=%s\n' "$evidence_dir" >> "$GITHUB_OUTPUT"
+          }
+          summarize() {
+            local heading="$1"
+            local receipt="$2"
+            {
+              printf '### %s\n\n```text\n' "$heading"
+              printf '%s\n%s\n' "$environment" "$receipt"
+              printf '```\n'
+            } >> "$GITHUB_STEP_SUMMARY"
+          }
+
+          checked_out_sha="$(git rev-parse HEAD)"
+          rustc_commit="$(rustc -Vv | awk '$1 == "commit-hash:" { print $2 }')"
+          cargo_release="$(cargo -V | awk '{ print $2 }')"
+          active_toolchain="$(rustup show active-toolchain | awk '{ print $1 }')"
+          environment="environment: source-sha=$checked_out_sha github-sha=$GITHUB_SHA event=$VH_EVENT_NAME repository=$VH_REPOSITORY run-id=$VH_RUN_ID run-attempt=$VH_RUN_ATTEMPT pr-head-sha=$VH_PR_HEAD_SHA pr-base-sha=$VH_PR_BASE_SHA merge-group-head-sha=$VH_MERGE_GROUP_HEAD_SHA merge-group-base-sha=$VH_MERGE_GROUP_BASE_SHA runner-os=$RUNNER_OS runner-arch=$RUNNER_ARCH image-os=${ImageOS:-unknown} image-version=${ImageVersion:-unknown} rustc-release=$VH_EXPECTED_RUSTC_RELEASE rustc-commit=$rustc_commit cargo-release=$cargo_release active-toolchain=$active_toolchain"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]] || ! source_is_clean; then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=unclean-source"
+            persist_evidence "$controlled_error"
+            summarize "Tier-1 release replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+
+          capture_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-release-capture.XXXXXXXX")"
+          target_dir="$(mktemp -d "$RUNNER_TEMP/vh-tier1-release-target.XXXXXXXX")"
+          raw_output="$capture_dir/stdout"
+          raw_stderr="$capture_dir/stderr"
+          set +e
+          env -u GITHUB_ENV -u GITHUB_OUTPUT -u GITHUB_PATH -u GITHUB_STEP_SUMMARY -u GITHUB_TOKEN \
+            CARGO_TARGET_DIR="$target_dir" \
+            cargo run --quiet --locked --offline --release -p vh-verify --features ci-soak-200 --bin vh-verify \
+            2> >(head -c 4097 > "$raw_stderr") | head -c 4097 > "$raw_output"
+          pipeline_status=("${PIPESTATUS[@]}")
+          wait
+          set -e
+          soak_status="${pipeline_status[0]}"
+          capture_status="${pipeline_status[1]}"
+          captured_bytes="$(wc -c < "$raw_output")"
+          captured_lines="$(wc -l < "$raw_output")"
+          stderr_bytes="$(wc -c < "$raw_stderr")"
+          captured_bytes="${captured_bytes//[[:space:]]/}"
+          captured_lines="${captured_lines//[[:space:]]/}"
+          stderr_bytes="${stderr_bytes//[[:space:]]/}"
+
+          if ! source_is_clean || [[ "$(git rev-parse HEAD)" != "$GITHUB_SHA" ]]; then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=source-mutated"
+            persist_evidence "$controlled_error"
+            summarize "Tier-1 release replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+          if (( captured_bytes > 4096 )) || (( stderr_bytes > 4096 )) || (( capture_status != 0 )); then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=oversized-output captured-bytes=$captured_bytes stderr-bytes=$stderr_bytes"
+            persist_evidence "$controlled_error"
+            summarize "Tier-1 release replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+
+          receipt="$(<"$raw_output")"
+          receipt_bytes="${#receipt}"
+          if (( captured_lines != 1 )) || (( captured_bytes != receipt_bytes + 1 )); then
+            controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=invalid-byte-shape captured-bytes=$captured_bytes parsed-bytes=$receipt_bytes captured-lines=$captured_lines"
+            persist_evidence "$controlled_error"
+            summarize "Tier-1 release replay evidence — ERROR" "$controlled_error"
+            exit 1
+          fi
+          if (( soak_status == 0 )) && [[ "$receipt" =~ $VH_SOAK_EXPECTED_REGEX ]]; then
+            persist_evidence "$receipt"
+            summarize "Tier-1 release replay evidence" "$receipt"
+            exit 0
+          fi
+          if (( soak_status != 0 )) && [[ "$receipt" =~ $VH_SOAK_ERROR_REGEX ]]; then
+            persist_evidence "$receipt"
+            summarize "Tier-1 release replay evidence — ERROR" "$receipt"
+            exit 1
+          fi
+
+          controlled_error="soak: receipt-schema=vh-verify-soak-v1 verdict=ERROR evidence-grade=D0 error-code=invalid-program-receipt program-status=$soak_status captured-bytes=$captured_bytes"
+          persist_evidence "$controlled_error"
+          summarize "Tier-1 release replay evidence — ERROR" "$controlled_error"
+          exit 1
+      - name: Persist bounded release-soak evidence
+        if: ${{ always() && steps.release_soak.outputs.evidence-path != '' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vh-tier1-release-${{ github.sha }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: ${{ steps.release_soak.outputs.evidence-path }}
+          if-no-files-found: error
+          retention-days: 90
