@@ -94,3 +94,27 @@ tracks:
       - "keep vh-verify fully deny-listed except its telemetry-only binary boundary"
       - "ratchet every discovered false-confidence path into an independent model, frozen vector, or negative regression before closing it"
       - "retain typed shrink failure/report receipts and cross-OS frozen Tier-1 verification as future implementations evolve"
+
+  - id: vibe-bug-corpus-2026-07
+    title: "vibe-bug corpus — seeded real-bug classes with pinned recall gates"
+    status: ACTIVE
+    serves: real-bugs-found
+    opened: 2026-07-21
+    # Surfaces: the corpus artifacts only. The seeded-bug WORKLOADS live
+    # under crates/vh-cli (owned by vibe-halt-core-2026-07); this track
+    # owns the entry schema, the harvesting playbook, and the entries
+    # that bind each bug to its pinned recall command.
+    owned_surfaces:
+      - corpus/**
+    acceptance:
+      - ">=25 corpus entries harvested from real (AI-generated) code by end of Phase 2"
+      - ">=80% recall within each entry's pinned universe budget (build-plan Success criterion 3)"
+      - "every entry carries a one-command deterministic repro (vh run --workload ... --seed ... --universe K)"
+      - "recall gates for every seeded entry run in scripts/gate.sh with exact exits and anchored verdicts"
+    next:
+      - "seed the corpus with the five Phase-1 bug classes (lost update, retry double-apply, dirty read, crash-window TOCTOU, fsync-lie hole)"
+      - "harvest real vibe-coded bugs from public AI-generated PRs per the playbook"
+    non_goals:
+      - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
+      - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
+      - "no third active track beyond this portfolio without operator lifecycle authorization"

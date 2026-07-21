@@ -1,6 +1,6 @@
 //! vh-props — the property system.
 //!
-//! Two assertion classes (the third, end-state oracles, lands in Phase 2):
+//! Three assertion classes:
 //!
 //! * `always(name, cond)` — an invariant. One violation in one universe is a
 //!   finding.
@@ -8,6 +8,12 @@
 //!   multiverse: if NO universe ever hits it, the property fails. This is the
 //!   Antithesis-style check that catches vibe-code's signature failure mode —
 //!   error paths that are dead code.
+//! * [`EndStateOracle`] — a typed post-run assertion over the workload's
+//!   DECLARED end state (TigerBeetle-VOPR-style): the runner evaluates each
+//!   oracle once after the workload returns and records exactly one entry
+//!   named `oracle:<name>` into the always transcript. Oracles READ state;
+//!   they never record trace events — a re-expressed check must leave the
+//!   frozen trace identity untouched.
 //!
 //! Uses BTreeMap everywhere — never a hash-ordered map: iteration order is
 //! part of the deterministic surface.
@@ -15,6 +21,23 @@
 #![forbid(unsafe_code)]
 
 use std::collections::BTreeMap;
+
+/// The workload's declared end state: deterministic key/value pairs
+/// accumulated during the run for post-run oracle judgment.
+pub type EndState = BTreeMap<String, String>;
+
+/// A typed post-run assertion over the declared [`EndState`].
+///
+/// `check` returns `Ok(())` (recorded as a PASSING `oracle:<name>`
+/// transcript entry) or `Err(detail)` (an always-failure named
+/// `oracle:<name>` carrying the detail). Plain `fn` pointers keep the
+/// oracle out of data equality — an oracle's identity is its NAME, which
+/// property contracts require by name.
+#[derive(Debug, Clone, Copy)]
+pub struct EndStateOracle {
+    pub name: &'static str,
+    pub check: fn(&EndState) -> Result<(), String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AlwaysFailure {

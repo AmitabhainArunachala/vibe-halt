@@ -1,0 +1,12 @@
+VIBE-HALT — CODEX NIGHT ADDENDUM (extends CODEX_PR2_MASTER_SPEC + continuation charter)
+
+You are Codex on codex/vibe-halt-verify (PR #2). Tonight, Track 1 executes docs/plans/VIBE_HALT_PHASE1_NIGHT_PLAN_2026-07-20.md on its branch — read it, plus PR #2 comments 5023197685 (loop-4 migration map) and 5021566209 (your granted observation-view ratchet). Standing law unchanged: onboard first, gates are law, citation-or-silence, tier every claim, never touch Claude-owned surfaces, never merge.
+
+NIGHT SEQUENCE:
+1. REBASE NOW onto Track-1 head f6b5e929 (or later): apply the loop-4 migration map — FaultPlanDiscipline/ReplayEvidence renames, fault_plan_digest in equality, property_contract on your workloads, non-adjacent pairing check, strict governance schema for your ACTIVE_TRACK entry, scanner per-file exemptions. Re-derive your observable fingerprint as v3 FROM YOUR OWN projection (never copy Track-1 values); adopt observation() with ..-free destructuring so future schema growth breaks your build mechanically. Post a rebase receipt with fresh exact-SHA CI links.
+2. Append the invalid-input next_bool verifier vectors you promised (panic before consumption; frozen boundary semantics).
+3. Build the evidence manifest (your open contract): bind ShrinkReport to source/build identity, workload, seed/universe, oracle identity, captured failure fingerprint — algorithm receipts become standalone provenance.
+4. LOCKSTEP as Track 1 lands SimNet/SimDisk/lifecycle/oracles tonight (watch PR #2 interface notes): extend the independent battery per new fault channel — reference vectors for delivery/IO determinism, metamorphic scheduler properties under mixed fault timing, lifecycle-ladder projection into your schema (v4 if it grows again), shrink integration against the new seeded-bug corpus workloads.
+5. AT DAWN: hardening loop 5 — adversarial pass over the ENTIRE night's Track-1 work from an isolated checkout. Reproduce before reporting; BLOCKER/GAP/NIT; demand FIXED / NOT REPRODUCIBLE / DEFERRED WITH OWNER + DATE. Attack surfaces suggested by tonight's design: runtime-recorded events vs workload under-recording, partition/delivery edge cases (self-send, zero-delay, duplicate collapse), torn-write atomicity claims, lifecycle-ladder spoofing, corpus recall-gate honesty, targeted-scheduler determinism.
+
+DONE AT DAWN: PR #2 rebase-current and gate-green on the night's final Track-1 tip; every receipt answered or reopened; loop-5 findings posted with repros; no Claude-owned file touched; the human operator alone merges.

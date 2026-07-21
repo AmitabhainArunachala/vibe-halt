@@ -398,6 +398,10 @@ fn injection_schema_ratcheted_eq(left: &FaultInjection, right: &FaultInjection) 
             } => left_skew == right_skew,
             _ => false,
         },
+        FaultKind::TornWrite => matches!(right_fault, FaultKind::TornWrite),
+        FaultKind::FsyncLie => matches!(right_fault, FaultKind::FsyncLie),
+        FaultKind::NetworkDuplicate => matches!(right_fault, FaultKind::NetworkDuplicate),
+        FaultKind::NetworkReorder => matches!(right_fault, FaultKind::NetworkReorder),
     };
     left_at == right_at && faults_equal
 }

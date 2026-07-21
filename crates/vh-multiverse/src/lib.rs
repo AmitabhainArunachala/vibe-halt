@@ -1,11 +1,16 @@
 //! vh-multiverse — runs workloads across universes and detects divergence.
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
-//! TWICE and the complete observable results — trace hash, event count,
-//! assertion transcript, always-failures, sometimes map, and runner
-//! lifecycle evidence — must match exactly. A mismatch means nondeterminism
-//! leaked into the kernel or the workload, and the report says so loudly
-//! instead of pretending the run was reproducible.
+//! TWICE — in two non-adjacent passes — and the complete observable results
+//! — trace hash, event count, assertion transcript, always-failures,
+//! sometimes map, and runner lifecycle evidence — must match exactly. A
+//! mismatch means nondeterminism leaked into the kernel or the workload,
+//! and the report says so loudly instead of pretending the run was
+//! reproducible. Agreement is the SAMPLED-FALSIFIER evidence class
+//! ([`ReplayEvidence::PairwiseReplayAgreement`]): it can refute
+//! determinism, never prove it — the deterministic-substrate claim rests
+//! on the D0 boundary (gate 0), not on this sample
+//! (hardening-loop-4 BLOCKER 2).
 //!
 //! Evidence integrity: workloads interact with the evidence ledger ONLY
 //! through capability methods (`record`, `always`, `sometimes`, ...) —
@@ -22,6 +27,9 @@
 
 #![forbid(unsafe_code)]
 
+pub mod evidence;
+pub mod runtime;
+
 use std::collections::BTreeMap;
 use std::fmt;
 use std::num::NonZeroU64;
@@ -31,24 +39,51 @@ use vh_gremlin::FaultPlan;
 use vh_props::{AlwaysCheck, AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
+pub use evidence::{InjectionOutcome, RuntimeEvidence};
+pub use runtime::{DeliveryNote, DiskError, NodeId, SimRuntime, StepEvent};
+pub use vh_props::{EndState, EndStateOracle};
+
 /// Everything a workload may touch inside one universe. All randomness comes
 /// from named streams; all time comes from the virtual clock; all observable
 /// behavior goes into the trace — through capability methods only.
 pub struct UniverseCtx {
     universe_id: u64,
     seed_tree: SeedTree,
-    clock: VirtualClock,
-    trace: Trace,
-    props: Properties,
+    // pub(crate): the sim runtime (`runtime.rs`) records deliveries, IO,
+    // and lifecycle transitions itself. Crate-internal visibility keeps
+    // the evidence-integrity guarantee against DOWNSTREAM safe code
+    // intact — external workloads still reach these only through
+    // capability methods.
+    pub(crate) clock: VirtualClock,
+    pub(crate) trace: Trace,
+    pub(crate) props: Properties,
     fault_plan_override: Option<FaultPlan>,
-    /// Runner-owned ledger: how many times the workload asked for its
-    /// fault plan. Finalized into [`FaultPlanDiscipline`] — a workload
-    /// cannot edit it (hardening-loop-2 BLOCKER).
-    fault_plan_consumptions: u64,
+    /// Runner-owned ledger: how many times the workload RETRIEVED its
+    /// fault plan through [`UniverseCtx::fault_plan_or`]. Finalized into
+    /// [`FaultPlanDiscipline`] — a workload cannot edit it
+    /// (hardening-loop-2 BLOCKER). Retrieval is all this ledger can
+    /// truthfully claim; see [`FaultPlanDiscipline`] for what it does
+    /// NOT claim (hardening-loop-4 GAP 5).
+    fault_plan_retrievals: u64,
+    /// Runner-owned canonical digest ledger of every retrieved plan, in
+    /// retrieval order, under [`FAULT_PLAN_DIGEST_SCHEMA`]. Bound into
+    /// [`UniverseResult`] so replay evidence carries its input identity.
+    plan_digest_trace: Trace,
+    /// Runner-owned semantic fault-lifecycle ledger, finalized by the
+    /// Phase-1 sim runtime ([`UniverseCtx::runtime`]); `None` for
+    /// universes that never constructed the runtime.
+    pub(crate) runtime_evidence: Option<RuntimeEvidence>,
+    /// The workload's declared end state, judged post-run by the
+    /// workload's [`EndStateOracle`]s. Oracles read state and never
+    /// record trace events; their verdicts enter the always transcript
+    /// as `oracle:<name>` entries.
+    pub(crate) end_state: EndState,
 }
 
 impl UniverseCtx {
     fn new(root_seed: u64, universe_id: u64, fault_plan_override: Option<FaultPlan>) -> Self {
+        let mut plan_digest_trace = Trace::new();
+        plan_digest_trace.record(0, "schema", FAULT_PLAN_DIGEST_SCHEMA);
         Self {
             universe_id,
             seed_tree: SeedTree::new(root_seed),
@@ -56,7 +91,10 @@ impl UniverseCtx {
             trace: Trace::new(),
             props: Properties::new(),
             fault_plan_override,
-            fault_plan_consumptions: 0,
+            fault_plan_retrievals: 0,
+            plan_digest_trace,
+            runtime_evidence: None,
+            end_state: EndState::new(),
         }
     }
 
@@ -81,15 +119,24 @@ impl UniverseCtx {
     /// paths. Before this, an override skipped generation, and any workload
     /// whose generator shared a stream with later draws consumed a
     /// different number of words under replay, contradicting the
-    /// identical-path claim (hardening-loop-2 BLOCKER). Each call is
-    /// counted in a runner-owned ledger; see [`FaultPlanDiscipline`].
+    /// identical-path claim (hardening-loop-2 BLOCKER). Each RETRIEVAL is
+    /// counted in a runner-owned ledger and the retrieved plan's canonical
+    /// digest is bound into the universe's evidence; see
+    /// [`FaultPlanDiscipline`] and [`UniverseResult::fault_plan_digest`].
     pub fn fault_plan_or(&mut self, generate: impl FnOnce() -> FaultPlan) -> FaultPlan {
         let generated = generate();
-        self.fault_plan_consumptions += 1;
-        match &self.fault_plan_override {
+        self.fault_plan_retrievals += 1;
+        let effective = match &self.fault_plan_override {
             Some(plan) => plan.clone(),
             None => generated,
+        };
+        self.plan_digest_trace
+            .record(self.fault_plan_retrievals, "retrieval", "");
+        for inj in effective.injections() {
+            self.plan_digest_trace
+                .record(inj.at_nanos, "injection", &inj.fault.canonical());
         }
+        effective
     }
 
     /// A named, independent PRNG stream for this universe.
@@ -123,6 +170,15 @@ impl UniverseCtx {
     pub fn sometimes(&mut self, name: &str) {
         self.props.sometimes(name);
     }
+
+    /// Declare one end-state fact for post-run oracle judgment. Last
+    /// write per key wins (deterministic; keys iterate in BTreeMap
+    /// order). Declaring end state records NO trace event — oracles are
+    /// read-only over state, so re-expressing an inline check as an
+    /// oracle leaves the frozen trace identity untouched.
+    pub fn declare_end(&mut self, key: &str, value: &str) {
+        self.end_state.insert(key.to_string(), value.to_string());
+    }
 }
 
 /// Typed completion outcome a workload must return (hardening-loop-2
@@ -142,25 +198,45 @@ pub enum RunOutcome {
     ExecutionError(String),
 }
 
-/// Runner-derived fault-plan discipline for one universe. Produced from
-/// the private consumption ledger after the workload returns; a workload
-/// cannot construct or edit it.
+/// Versioned schema of the canonical fault-plan digest carried by
+/// [`UniverseResult::fault_plan_digest`]: the frozen trace hasher over a
+/// schema record plus, per retrieval, a `retrieval` marker and one
+/// `injection` record per canonical injection
+/// ([`vh_gremlin::FaultKind::canonical`]). Changing the rendering is a
+/// schema bump (v2), never a refactor.
+pub const FAULT_PLAN_DIGEST_SCHEMA: &str = "vh-fault-plan-v1";
+
+/// Runner-derived fault-plan RETRIEVAL discipline for one universe.
+/// Produced from the private retrieval ledger after the workload
+/// returns; a workload cannot construct or edit it.
+///
+/// Truthful scope (hardening-loop-4 GAP 5): this ledger records that the
+/// workload RETRIEVED a plan through [`UniverseCtx::fault_plan_or`] —
+/// nothing more. It does NOT claim the plan was applied, that any
+/// injection became eligible, or that a fault manifested; a workload can
+/// retrieve a plan and discard it while still reporting `Completed`. The
+/// semantic lifecycle (offered → retrieved → armed → manifested →
+/// effect-observed) requires the runtime to own fault scheduling, which
+/// lands with the Phase-1 sim runtime — until then the names here
+/// promise only what is measured. DEFERRED: owner
+/// vibe-halt-core-2026-07 (Claude), due with Phase 1 (2026-08-15).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaultPlanDiscipline {
-    /// No override was supplied; the workload generated its own plan
-    /// `consumptions` times through [`UniverseCtx::fault_plan_or`]
+    /// No override was supplied; the workload retrieved a self-generated
+    /// plan `retrievals` times through [`UniverseCtx::fault_plan_or`]
     /// (zero is legal — not every workload uses fault plans).
-    SelfGenerated { consumptions: u64 },
-    /// An override was supplied and consumed exactly once: the replay
-    /// contract held.
-    OverrideConsumed,
-    /// An override was supplied but never consumed — the workload ignored
-    /// the replacement plan, so any replay claim would be false. Fails
-    /// closed: never a valid completion.
-    OverrideIgnored,
-    /// An override was supplied and consumed more than once — ambiguous
+    SelfGenerated { retrievals: u64 },
+    /// An override was supplied and retrieved exactly once: the replay
+    /// input reached the workload (whether it was honored is a
+    /// divergence-detector question, not a ledger claim).
+    OverrideRetrieved,
+    /// An override was supplied but never retrieved — the replacement
+    /// plan cannot have influenced the run, so any replay claim would be
+    /// false. Fails closed: never a valid completion.
+    OverrideNeverRetrieved,
+    /// An override was supplied and retrieved more than once — ambiguous
     /// replay. Fails closed: never a valid completion.
-    OverrideOverconsumed { consumptions: u64 },
+    OverrideRetrievedMultiply { retrievals: u64 },
 }
 
 /// Runner-owned lifecycle evidence for one universe: the workload's typed
@@ -184,20 +260,124 @@ impl UniverseLifecycle {
     }
 
     /// A universe is validly complete iff the workload affirmatively
-    /// completed AND the fault-plan discipline held. CLEAN requires this
-    /// for every universe.
+    /// completed AND the fault-plan retrieval discipline held. CLEAN
+    /// requires this for every universe.
     pub fn is_valid_completion(&self) -> bool {
         self.outcome == RunOutcome::Completed
             && matches!(
                 self.fault_plan,
-                FaultPlanDiscipline::SelfGenerated { .. } | FaultPlanDiscipline::OverrideConsumed
+                FaultPlanDiscipline::SelfGenerated { .. } | FaultPlanDiscipline::OverrideRetrieved
             )
+    }
+}
+
+/// Runner-owned property contract (hardening-loop-4 GAP 5): what a
+/// workload COMMITS to asserting in every universe. Before this, a no-op
+/// workload could return `Completed` with no properties and reach CLEAN
+/// through an empty finding ledger. The runner verifies the contract
+/// against each universe's transcript; an EMPTY contract means the
+/// campaign asserted nothing and can never be CLEAN (it is UNCHECKED,
+/// the honest tri-state).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct PropertyContract {
+    required_always: Vec<String>,
+    required_sometimes: Vec<String>,
+    required_oracles: Vec<String>,
+}
+
+impl PropertyContract {
+    pub fn new(required_always: &[&str], required_sometimes: &[&str]) -> Self {
+        Self {
+            required_always: required_always.iter().map(|s| s.to_string()).collect(),
+            required_sometimes: required_sometimes.iter().map(|s| s.to_string()).collect(),
+            required_oracles: Vec::new(),
+        }
+    }
+
+    /// Require named [`EndStateOracle`]s to have been evaluated in every
+    /// universe (their verdicts appear as `oracle:<name>` transcript
+    /// entries). A workload whose oracle list omits a required name is a
+    /// contract violation — belt and suspenders against the two lists
+    /// drifting apart.
+    pub fn with_oracles(mut self, names: &[&str]) -> Self {
+        self.required_oracles = names.iter().map(|s| s.to_string()).collect();
+        self
+    }
+
+    /// End-state oracle names that must be judged in every universe.
+    pub fn required_oracles(&self) -> &[String] {
+        &self.required_oracles
+    }
+
+    /// Always-invariant names that must be evaluated at least once in
+    /// every universe.
+    pub fn required_always(&self) -> &[String] {
+        &self.required_always
+    }
+
+    /// Sometimes-property names that must be declared in every universe.
+    pub fn required_sometimes(&self) -> &[String] {
+        &self.required_sometimes
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.required_always.is_empty()
+            && self.required_sometimes.is_empty()
+            && self.required_oracles.is_empty()
+    }
+
+    /// Contract violations for one universe's transcript. Runner-owned:
+    /// evaluated against the immutable result, never workload state.
+    pub fn violations(&self, result: &UniverseResult) -> Vec<String> {
+        let mut out = Vec::new();
+        for name in &self.required_always {
+            if !result.always_checks().iter().any(|c| &c.name == name) {
+                out.push(format!(
+                    "required always property '{name}' was never evaluated"
+                ));
+            }
+        }
+        for name in &self.required_sometimes {
+            if !result.sometimes().contains_key(name) {
+                out.push(format!(
+                    "required sometimes property '{name}' was never declared"
+                ));
+            }
+        }
+        for name in &self.required_oracles {
+            let entry = format!("oracle:{name}");
+            if !result.always_checks().iter().any(|c| c.name == entry) {
+                out.push(format!(
+                    "required end-state oracle '{name}' was never judged"
+                ));
+            }
+        }
+        out
     }
 }
 
 pub trait Workload {
     fn name(&self) -> &str;
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome;
+
+    /// The properties this workload commits to asserting in every
+    /// universe. Default is the EMPTY contract, which fails closed: a
+    /// campaign that asserts nothing is UNCHECKED, never CLEAN
+    /// (hardening-loop-4 GAP 5).
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::default()
+    }
+
+    /// Typed post-run assertions over the declared end state. The runner
+    /// judges each oracle ONCE per universe after `run` returns and
+    /// records the verdict as an `oracle:<name>` entry in the always
+    /// transcript (in list order, after every inline check). Oracles
+    /// read state only — they cannot record trace events, so the frozen
+    /// trace identity of a re-expressed check is untouched by
+    /// construction.
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        Vec::new()
+    }
 }
 
 /// The complete public observation of one universe execution. All fields
@@ -214,6 +394,8 @@ pub struct UniverseResult {
     always_failures: Vec<AlwaysFailure>,
     sometimes: BTreeMap<String, bool>,
     lifecycle: UniverseLifecycle,
+    fault_plan_digest: Option<String>,
+    runtime_evidence: Option<RuntimeEvidence>,
 }
 
 impl UniverseResult {
@@ -250,9 +432,27 @@ impl UniverseResult {
     }
 
     /// Runner-owned lifecycle evidence (typed outcome + fault-plan
-    /// discipline).
+    /// retrieval discipline).
     pub fn lifecycle(&self) -> &UniverseLifecycle {
         &self.lifecycle
+    }
+
+    /// Canonical digest of every fault plan the workload retrieved, in
+    /// retrieval order, under [`FAULT_PLAN_DIGEST_SCHEMA`] — the replay
+    /// input's identity, bound into the observable result
+    /// (hardening-loop-4 GAP 5). `None` iff no plan was ever retrieved.
+    pub fn fault_plan_digest(&self) -> Option<&str> {
+        self.fault_plan_digest.as_deref()
+    }
+
+    /// Runner-owned semantic fault-lifecycle evidence from the Phase-1
+    /// sim runtime (Offered → Armed → Injected → Manifested → Recovered
+    /// per injection; see `evidence.rs` for the measured-stage doctrine).
+    /// `None` iff this universe never constructed the runtime — the
+    /// legacy workload-drained path, whose lifecycle claims remain
+    /// retrieval-only. In observable equality.
+    pub fn runtime_evidence(&self) -> Option<&RuntimeEvidence> {
+        self.runtime_evidence.as_ref()
     }
 
     /// Two replays are the same run iff EVERY observable agrees. Struct
@@ -261,6 +461,58 @@ impl UniverseResult {
     pub fn observably_equal(&self, other: &UniverseResult) -> bool {
         self == other
     }
+
+    /// Borrowed, read-only view of the COMPLETE observation — the
+    /// compile-time schema ratchet requested by the verifier track
+    /// (PR #2 interface request 5021566209). The implementation
+    /// destructures `UniverseResult` WITHOUT `..`, so adding a private
+    /// result field fails compilation here until the observation
+    /// doctrine decides how it is exposed; downstream verifiers
+    /// destructure this view without `..` to inherit the same ratchet.
+    /// Plain borrowed data only: no mutation path and no Track-1-owned
+    /// canonical hash, so independent downstream framings stay
+    /// independent. `observably_equal` remains whole-struct equality of
+    /// `UniverseResult`, never equality of this view.
+    pub fn observation(&self) -> UniverseObservation<'_> {
+        let UniverseResult {
+            universe_id,
+            trace_hash,
+            trace_events,
+            always_checks,
+            always_failures,
+            sometimes,
+            lifecycle,
+            fault_plan_digest,
+            runtime_evidence,
+        } = self;
+        UniverseObservation {
+            universe_id: *universe_id,
+            trace_hash,
+            trace_events: *trace_events,
+            always_checks,
+            always_failures,
+            sometimes,
+            lifecycle,
+            fault_plan_digest: fault_plan_digest.as_deref(),
+            runtime_evidence: runtime_evidence.as_ref(),
+        }
+    }
+}
+
+/// The complete public observation of a [`UniverseResult`], as plain
+/// borrowed data. See [`UniverseResult::observation`] for the ratchet
+/// contract this view carries.
+#[derive(Debug, Clone, Copy)]
+pub struct UniverseObservation<'a> {
+    pub universe_id: u64,
+    pub trace_hash: &'a str,
+    pub trace_events: usize,
+    pub always_checks: &'a [AlwaysCheck],
+    pub always_failures: &'a [AlwaysFailure],
+    pub sometimes: &'a BTreeMap<String, bool>,
+    pub lifecycle: &'a UniverseLifecycle,
+    pub fault_plan_digest: Option<&'a str>,
+    pub runtime_evidence: Option<&'a RuntimeEvidence>,
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
@@ -275,10 +527,11 @@ pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -
 /// Tier honesty: identical (seed, universe, workload, plan) inputs produce
 /// identical observable results — Tier 1 — PROVIDED the workload draws all
 /// nondeterminism from its `UniverseCtx` and its lifecycle reports
-/// `OverrideConsumed`. A result whose fault-plan discipline is
-/// `OverrideIgnored` or `OverrideOverconsumed` is not a valid replay and
-/// never a valid completion; the divergence detector remains the
-/// mechanical check for workload purity.
+/// `OverrideRetrieved`. A result whose fault-plan discipline is
+/// `OverrideNeverRetrieved` or `OverrideRetrievedMultiply` is not a valid
+/// replay and never a valid completion; the divergence detector remains
+/// the mechanical check for workload purity, and retrieval is all the
+/// ledger claims (see [`FaultPlanDiscipline`]).
 pub fn run_universe_with_fault_plan(
     root_seed: u64,
     universe_id: u64,
@@ -297,11 +550,27 @@ fn run_universe_inner(
     let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
     let outcome = workload.run(&mut ctx);
-    let fault_plan = match (override_supplied, ctx.fault_plan_consumptions) {
-        (false, n) => FaultPlanDiscipline::SelfGenerated { consumptions: n },
-        (true, 1) => FaultPlanDiscipline::OverrideConsumed,
-        (true, 0) => FaultPlanDiscipline::OverrideIgnored,
-        (true, n) => FaultPlanDiscipline::OverrideOverconsumed { consumptions: n },
+    // Post-run oracle judgment: runner-owned, over the immutable declared
+    // end state, one transcript entry per oracle in list order. Judged
+    // unconditionally (an errored universe's oracle verdicts are evidence
+    // too; invalid completions already bar CLEAN).
+    for oracle in workload.end_state_oracles() {
+        let name = format!("oracle:{}", oracle.name);
+        match (oracle.check)(&ctx.end_state) {
+            Ok(()) => ctx.props.always(&name, true, String::new),
+            Err(detail) => ctx.props.always(&name, false, || detail.clone()),
+        }
+    }
+    let fault_plan = match (override_supplied, ctx.fault_plan_retrievals) {
+        (false, n) => FaultPlanDiscipline::SelfGenerated { retrievals: n },
+        (true, 1) => FaultPlanDiscipline::OverrideRetrieved,
+        (true, 0) => FaultPlanDiscipline::OverrideNeverRetrieved,
+        (true, n) => FaultPlanDiscipline::OverrideRetrievedMultiply { retrievals: n },
+    };
+    let fault_plan_digest = if ctx.fault_plan_retrievals > 0 {
+        Some(ctx.plan_digest_trace.hash_hex())
+    } else {
+        None
     };
     UniverseResult {
         universe_id: ctx.universe_id,
@@ -314,6 +583,8 @@ fn run_universe_inner(
             outcome,
             fault_plan,
         },
+        fault_plan_digest,
+        runtime_evidence: ctx.runtime_evidence,
     }
 }
 
@@ -404,25 +675,38 @@ pub enum Verdict {
 }
 
 /// Typed replay-evidence quality, orthogonal to finding status
-/// (hardening-loop-2 GAP): the tier claim and whether it was mechanically
-/// checked travel with the report instead of living in prose.
+/// (hardening-loop-2 GAP), named as the exact fact it is
+/// (hardening-loop-4 BLOCKER 2): a finite replay sample is a
+/// FALSIFIER of determinism, never a proof. The old name
+/// (`Tier1DivergenceChecked`) promoted pairwise agreement into a tier
+/// claim; the Tier-1 claim actually rests on the separately enforced D0
+/// boundary (gate 0: deny-list + rustc lints; docs/specs/
+/// DETERMINISM_TIERS.md), and this evidence only reports whether that
+/// claim survived a sampled falsification attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplayEvidence {
-    /// Every universe ran twice and complete observations were compared:
-    /// the Tier-1 claim is mechanically checked (divergences, if any, are
-    /// findings — checked ≠ clean).
-    Tier1DivergenceChecked,
-    /// Single executions only: Tier 1 claimed by the simulated-runtime
-    /// substrate (docs/specs/DETERMINISM_TIERS.md) but not verified in
+    /// Every universe ran twice — in two NON-ADJACENT passes, see
+    /// [`run_multiverse`] — and complete observations agreed pairwise.
+    /// Agreement is evidence, not proof: a workload keyed to the
+    /// execution schedule can agree with itself while being
+    /// nondeterministic (regression-documented in
+    /// `tests/divergence.rs`). Divergences, if any, are findings —
+    /// sampled ≠ clean.
+    PairwiseReplayAgreement,
+    /// Single executions only: no replay agreement was even sampled in
     /// this run.
-    Tier1Unchecked,
+    SingleRunUnchecked,
 }
 
 impl ReplayEvidence {
     pub fn label(self) -> &'static str {
         match self {
-            ReplayEvidence::Tier1DivergenceChecked => "Tier 1 (divergence-checked)",
-            ReplayEvidence::Tier1Unchecked => "Tier 1 claimed (divergence check disabled)",
+            ReplayEvidence::PairwiseReplayAgreement => {
+                "pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)"
+            }
+            ReplayEvidence::SingleRunUnchecked => {
+                "single execution (no replay agreement — divergence check disabled)"
+            }
         }
     }
 }
@@ -440,6 +724,8 @@ pub struct MultiverseReport {
     results: Vec<UniverseResult>,
     divergent_universes: Vec<u64>,
     merged: MergedProperties,
+    contract: PropertyContract,
+    contract_violations: Vec<(u64, String)>,
 }
 
 impl MultiverseReport {
@@ -497,10 +783,20 @@ impl MultiverseReport {
     /// Typed replay-evidence quality (orthogonal to findings).
     pub fn replay_evidence(&self) -> ReplayEvidence {
         if self.divergence_checked {
-            ReplayEvidence::Tier1DivergenceChecked
+            ReplayEvidence::PairwiseReplayAgreement
         } else {
-            ReplayEvidence::Tier1Unchecked
+            ReplayEvidence::SingleRunUnchecked
         }
+    }
+
+    /// The runner-verified property contract this campaign ran under.
+    pub fn contract(&self) -> &PropertyContract {
+        &self.contract
+    }
+
+    /// Per-universe contract violations (universe id, description).
+    pub fn contract_violations(&self) -> &[(u64, String)] {
+        &self.contract_violations
     }
 
     fn has_findings(&self) -> bool {
@@ -508,6 +804,7 @@ impl MultiverseReport {
             || !self.invalid_universes().is_empty()
             || !self.divergent_universes.is_empty()
             || !self.merged.unreached_sometimes().is_empty()
+            || !self.contract_violations.is_empty()
     }
 
     /// Report integrity: exactly the requested number of universes must
@@ -518,12 +815,15 @@ impl MultiverseReport {
     }
 
     /// Tri-state verdict; CLEAN requires divergence checking to have run,
-    /// every universe to have validly completed, and result cardinality to
-    /// match the requested campaign size.
+    /// every universe to have validly completed under a NON-EMPTY,
+    /// satisfied property contract, and result cardinality to match the
+    /// requested campaign size. An empty contract is UNCHECKED — a
+    /// campaign that asserted nothing proved nothing
+    /// (hardening-loop-4 GAP 5).
     pub fn verdict(&self) -> Verdict {
         if !self.cardinality_ok() || self.has_findings() {
             Verdict::Findings
-        } else if self.divergence_checked {
+        } else if self.divergence_checked && !self.contract.is_empty() {
             Verdict::Clean
         } else {
             Verdict::Unchecked
@@ -540,6 +840,17 @@ impl MultiverseReport {
 /// v0 runs universes sequentially; Phase 3 fans out across cores. The
 /// sequential baseline is also the reference implementation the parallel
 /// runner must match hash-for-hash.
+///
+/// Replay pairing is NON-ADJACENT (hardening-loop-4 BLOCKER 2): pass 1
+/// runs every universe once, pass 2 replays them all. The old adjacent
+/// pairing let a process-global counter divided by 2 agree with itself
+/// inside every pair (`A,A` then `B,B`) and be reported divergence-free;
+/// separating the passes catches that exact class. It remains a SAMPLED
+/// falsifier: a workload keyed to the full execution schedule can still
+/// agree with itself (documented by
+/// `schedule_keyed_nondeterminism_still_evades_sampled_replay_agreement`
+/// in `tests/divergence.rs`), which is why the evidence is named
+/// [`ReplayEvidence::PairwiseReplayAgreement`], never "proof".
 pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> MultiverseReport {
     let universes = cfg.universes.get();
     // UniverseCount::MAX bounds this preallocation; the typed constructor
@@ -547,17 +858,24 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
     let mut results = Vec::with_capacity(universes as usize);
     let mut divergent = Vec::new();
     let mut merged = MergedProperties::default();
+    let contract = workload.property_contract();
+    let mut contract_violations: Vec<(u64, String)> = Vec::new();
 
     for universe_id in 0..universes {
         let first = run_universe(cfg.root_seed, universe_id, workload);
-        if cfg.check_divergence {
+        merged.absorb(universe_id, &props_of(&first));
+        for v in contract.violations(&first) {
+            contract_violations.push((universe_id, v));
+        }
+        results.push(first);
+    }
+    if cfg.check_divergence {
+        for universe_id in 0..universes {
             let second = run_universe(cfg.root_seed, universe_id, workload);
-            if !second.observably_equal(&first) {
+            if !second.observably_equal(&results[universe_id as usize]) {
                 divergent.push(universe_id);
             }
         }
-        merged.absorb(universe_id, &props_of(&first));
-        results.push(first);
     }
 
     MultiverseReport {
@@ -568,6 +886,8 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
         results,
         divergent_universes: divergent,
         merged,
+        contract,
+        contract_violations,
     }
 }
 

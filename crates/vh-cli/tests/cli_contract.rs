@@ -60,7 +60,7 @@ fn single_universe_replay_with_findings_exits_1() {
     ]);
     assert_eq!(code, 1, "failing replay must exit 1:\n{stdout}");
     assert!(stdout.contains("replay verdict: FINDINGS"), "{stdout}");
-    assert!(stdout.contains("ALWAYS-FAIL durability"), "{stdout}");
+    assert!(stdout.contains("ALWAYS-FAIL oracle:durability"), "{stdout}");
 }
 
 /// Pre-repair: `--universes 0 --universe 0` exited 0 because the single-
@@ -147,8 +147,8 @@ fn no_divergence_check_is_unchecked_exit_3() {
     assert_eq!(code, 3, "{stdout}");
     assert!(stdout.contains("verdict: UNCHECKED"), "{stdout}");
     assert!(
-        stdout.contains("Tier 1 claimed (divergence check disabled)"),
-        "the evidence line must state the unchecked tier claim:\n{stdout}"
+        stdout.contains("single execution (no replay agreement — divergence check disabled)"),
+        "the evidence line must state that no replay agreement was sampled:\n{stdout}"
     );
 }
 
@@ -166,5 +166,8 @@ fn clean_campaign_exits_0_with_checked_evidence() {
     ]);
     assert_eq!(code, 0, "{stdout}");
     assert!(stdout.contains("verdict: CLEAN"), "{stdout}");
-    assert!(stdout.contains("Tier 1 (divergence-checked)"), "{stdout}");
+    assert!(
+        stdout.contains("pairwise replay agreement (sampled falsifier"),
+        "the evidence line must name the sampled falsifier, not a tier proof:\n{stdout}"
+    );
 }

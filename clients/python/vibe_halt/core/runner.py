@@ -1,47 +1,30 @@
-from typing import Any, Dict, List
+"""QUARANTINED (PR #1 hardening-loop-4 BLOCKER 3).
 
-from .rng import SeededRNG
-from .faults import FaultInjector
-from .properties import PROPERTIES
-from .sandbox import Sandbox
-from .evidence import EvidenceReport
+The previous MultiverseRunner was a second simulator that manufactured
+success without executing its target: `target` was never used, universes
+were fabricated, dict results passed property checks through getattr
+defaults, and the report hardcoded reproducibility_score=1.0 — the
+installed console script printed "All properties held" for a nonexistent
+repository.
+
+Python must never be a second simulator. This surface stays quarantined
+until it is a strict schema/process client for the Rust engine
+(`crates/vh-cli`), planned for Phase 4. Until then, construction fails
+explicitly instead of fabricating evidence.
+"""
+
+from .evidence import EvidenceReport  # noqa: F401  (schema type, data-only)
+
+QUARANTINE_MESSAGE = (
+    "vibe-halt Python client is quarantined: MultiverseRunner is NOT "
+    "implemented and must never simulate. Use the Rust engine: "
+    "`cargo run -p vh-cli -- run ...` (see README.md). The Python package "
+    "will return as a strict client of the Rust engine in Phase 4."
+)
 
 
 class MultiverseRunner:
-    """Core multiverse runner for the Mega Hyper Vibration Multiverse Halting Machine."""
+    """Quarantined stub: constructing it raises NotImplementedError."""
 
     def __init__(self, target: str, universes: int = 1000, base_seed: int = 42):
-        self.target = target
-        self.universes = universes
-        self.base_seed = base_seed
-        self.rng = SeededRNG(base_seed)
-        self.fault_injector = FaultInjector()
-        self.sandbox = Sandbox()
-
-    def run(self) -> EvidenceReport:
-        violations: List[Dict] = []
-        for i in range(self.universes):
-            seed = self.base_seed + i
-            # Simulate one universe
-            result = self._run_universe(seed)
-            for name, prop in PROPERTIES.items():
-                if not prop.check(result):
-                    violations.append({"universe": i, "property": name})
-
-        return EvidenceReport(
-            universes_run=self.universes,
-            violations=violations,
-            reproducibility_score=1.0 if not violations else 0.8,
-        )
-
-    def _run_universe(self, seed: int) -> Dict[str, Any]:
-        # Stub universe execution
-        self.rng = SeededRNG(seed)  # reset for reproducibility
-        # Example: inject a fault sometimes
-        if self.rng.random() < 0.1:
-            self.fault_injector.inject("hallucinated_import", "fake_module")
-        return {
-            "seed": seed,
-            "exceptions": [],
-            "state_coherent": True,
-        }
+        raise NotImplementedError(QUARANTINE_MESSAGE)

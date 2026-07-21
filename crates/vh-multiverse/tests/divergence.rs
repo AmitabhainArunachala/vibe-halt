@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use vh_gremlin::FaultPlan;
 use vh_multiverse::{
     run_multiverse, run_universe, run_universe_with_fault_plan, FaultPlanDiscipline,
-    MultiverseConfig, RunOutcome, UniverseCount, UniverseCtx, Workload,
+    MultiverseConfig, PropertyContract, RunOutcome, UniverseCount, UniverseCtx, Verdict, Workload,
 };
 
 fn count(n: u64) -> UniverseCount {
@@ -116,7 +116,7 @@ fn fault_plan_override_replays_deterministically() {
     let baseline = run_universe(0xD1CE, 3, &w);
     assert_eq!(
         baseline.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::SelfGenerated { consumptions: 1 }
+        &FaultPlanDiscipline::SelfGenerated { retrievals: 1 }
     );
 
     // Empty plan: no faults fire; the run must differ from the baseline
@@ -132,14 +132,14 @@ fn fault_plan_override_replays_deterministically() {
     );
     assert_eq!(
         a.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideConsumed
+        &FaultPlanDiscipline::OverrideRetrieved
     );
     assert!(a.lifecycle().is_valid_completion());
 
     // Overriding with the plan the workload would have generated anyway
     // must reproduce the baseline's observables exactly — proving override
     // and generated paths are the same path. (Lifecycles differ by
-    // provenance — SelfGenerated vs OverrideConsumed — which is honest:
+    // provenance — SelfGenerated vs OverrideRetrieved — which is honest:
     // they ARE different modes; the workload-visible path is identical.)
     let mut gremlin = vh_core::SeedTree::new(0xD1CE).stream(3, "gremlin");
     let generated = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
@@ -192,7 +192,7 @@ fn override_preserves_generator_stream_effects() {
     assert_eq!(replay.trace_events(), baseline.trace_events());
     assert_eq!(
         replay.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideConsumed
+        &FaultPlanDiscipline::OverrideRetrieved
     );
 }
 
@@ -219,7 +219,7 @@ fn ignored_override_is_never_a_valid_completion() {
     let result = run_universe_with_fault_plan(1, 0, &w, FaultPlan::default());
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideIgnored
+        &FaultPlanDiscipline::OverrideNeverRetrieved
     );
     assert!(!result.lifecycle().is_valid_completion());
     // Without an override the same workload is fine — not every workload
@@ -227,7 +227,7 @@ fn ignored_override_is_never_a_valid_completion() {
     let plain = run_universe(1, 0, &w);
     assert_eq!(
         plain.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::SelfGenerated { consumptions: 0 }
+        &FaultPlanDiscipline::SelfGenerated { retrievals: 0 }
     );
     assert!(plain.lifecycle().is_valid_completion());
 }
@@ -255,7 +255,7 @@ fn overconsumed_override_is_never_a_valid_completion() {
     let result = run_universe_with_fault_plan(1, 0, &w, FaultPlan::default());
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideOverconsumed { consumptions: 2 }
+        &FaultPlanDiscipline::OverrideRetrievedMultiply { retrievals: 2 }
     );
     assert!(!result.lifecycle().is_valid_completion());
 }
@@ -452,6 +452,192 @@ impl Workload for ReorderedChecksDemo {
     }
 }
 
+/// Hardening-loop-4 GAP 5, reproduced: a no-op workload returning
+/// `Completed` with no properties used to reach CLEAN through an empty
+/// finding ledger. With the runner-owned property contract, an EMPTY
+/// contract campaign is UNCHECKED — never CLEAN.
+struct NoOpDemo;
+
+impl Workload for NoOpDemo {
+    fn name(&self) -> &str {
+        "no-op-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.record("op", "nothing asserted");
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn no_op_completed_workload_with_no_contract_is_never_clean() {
+    let w = NoOpDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 1,
+        universes: count(3),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert!(report.divergent_universes().is_empty());
+    assert!(report.contract().is_empty());
+    assert_eq!(
+        report.verdict(),
+        Verdict::Unchecked,
+        "an empty property contract asserted nothing and must be UNCHECKED, never CLEAN"
+    );
+    assert!(!report.is_clean());
+}
+
+/// A workload that DECLARES a contract and then fails to honor it: the
+/// runner, not the workload, detects the breach per universe.
+struct ContractBreakingDemo;
+
+impl Workload for ContractBreakingDemo {
+    fn name(&self) -> &str {
+        "contract-breaking-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.record("op", "contract never honored");
+        RunOutcome::Completed
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&["durability"], &["crash_seen"])
+    }
+}
+
+#[test]
+fn unmet_property_contract_is_a_finding() {
+    let w = ContractBreakingDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 1,
+        universes: count(2),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert_eq!(
+        report.contract_violations().len(),
+        4,
+        "both universes must report both unmet requirements: {:?}",
+        report.contract_violations()
+    );
+    assert_eq!(report.verdict(), Verdict::Findings);
+    assert!(!report.is_clean());
+}
+
+/// The fault-plan digest binds the replay input's identity into the
+/// observable result (hardening-loop-4 GAP 5): different plans yield
+/// different digests, identical plans yield identical digests, and a
+/// workload that never retrieves a plan carries none.
+#[test]
+fn fault_plan_digest_binds_replay_input_identity() {
+    let w = DeterministicDemo;
+    let empty = run_universe_with_fault_plan(0xD1CE, 3, &w, FaultPlan::default());
+    let mut gremlin = vh_core::SeedTree::new(0xD1CE).stream(3, "gremlin");
+    let generated = FaultPlan::generate(&mut gremlin, 1_000_000, 4);
+    let full = run_universe_with_fault_plan(0xD1CE, 3, &w, generated.clone());
+    let full_again = run_universe_with_fault_plan(0xD1CE, 3, &w, generated);
+    assert!(empty.fault_plan_digest().is_some());
+    assert_ne!(
+        empty.fault_plan_digest(),
+        full.fault_plan_digest(),
+        "different replay inputs must carry different digests"
+    );
+    assert_eq!(full.fault_plan_digest(), full_again.fault_plan_digest());
+
+    // The baseline (self-generated) run retrieved the same plan content,
+    // so its digest matches the override replay of that plan.
+    let baseline = run_universe(0xD1CE, 3, &w);
+    assert_eq!(baseline.fault_plan_digest(), full.fault_plan_digest());
+
+    // No retrieval → no digest.
+    let none = run_universe(1, 0, &IgnoresPlanDemo);
+    assert_eq!(none.fault_plan_digest(), None);
+}
+
+/// Hardening-loop-4 BLOCKER 2, reproduced: `GLOBAL.fetch_add(1) / 2`
+/// yields the pair-local values A,A then B,B, so ADJACENT pairing
+/// reported systematic nondeterminism as divergence-free. Non-adjacent
+/// two-pass pairing separates the executions and must flag every
+/// universe.
+static PAIR_LOCAL_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct PairLocalCounterDemo;
+
+impl Workload for PairLocalCounterDemo {
+    fn name(&self) -> &str {
+        "pair-local-counter-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let v = PAIR_LOCAL_COUNTER.fetch_add(1, Ordering::SeqCst) / 2;
+        ctx.record("leak", &format!("half={v}"));
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn pair_local_counter_nondeterminism_is_caught_by_nonadjacent_replay() {
+    let w = PairLocalCounterDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: count(4),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert_eq!(
+        report.divergent_universes().len(),
+        4,
+        "the adjacent-pair-blessed counter workload must be flagged in every universe"
+    );
+    assert!(!report.is_clean());
+}
+
+/// The honest limit that keeps the evidence named "agreement", never
+/// "proof" (hardening-loop-4 BLOCKER 2): a workload keyed to the full
+/// execution schedule — counter modulo the per-pass invocation count —
+/// produces identical observations in both passes and is blessed by ANY
+/// finite fixed-schedule replay sample. This regression pins the
+/// limitation so the naming cannot quietly re-inflate; refuting this
+/// class needs controlled-effect closure (the D0 boundary), not more
+/// samples.
+static SCHEDULE_KEYED_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+struct ScheduleKeyedDemo;
+
+impl Workload for ScheduleKeyedDemo {
+    fn name(&self) -> &str {
+        "schedule-keyed-demo"
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        // 4 universes per pass: invocation i and i+4 collapse to the same
+        // recorded value, so the two passes agree observation-for-
+        // observation despite the process-global state.
+        let v = SCHEDULE_KEYED_COUNTER.fetch_add(1, Ordering::SeqCst) % 4;
+        ctx.record("leak", &format!("keyed={v}"));
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn schedule_keyed_nondeterminism_still_evades_sampled_replay_agreement() {
+    let w = ScheduleKeyedDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: count(4),
+        check_divergence: true,
+    };
+    let report = run_multiverse(&cfg, &w);
+    assert!(
+        report.divergent_universes().is_empty(),
+        "this workload is CONSTRUCTED to evade the sampled falsifier; if it \
+         is now caught, the pairing schedule changed — update the \
+         construction AND re-verify the ReplayEvidence naming stays honest"
+    );
+}
+
 #[test]
 fn detector_flags_reordered_passing_check_transcripts() {
     let w = ReorderedChecksDemo;
@@ -468,4 +654,146 @@ fn detector_flags_reordered_passing_check_transcripts() {
         3,
         "reordered passing-check transcripts with identical traces must be flagged"
     );
+}
+
+/// The observation view is the compile-time schema ratchet (PR #2
+/// interface request 5021566209): it must agree with the getter surface
+/// field for field, and because both the kernel implementation and this
+/// destructuring use no `..`, a new result field cannot ship without
+/// extending the view and this test.
+#[test]
+fn observation_view_matches_the_getter_surface_exhaustively() {
+    let w = DeterministicDemo;
+    let r = run_universe(0xD1CE, 3, &w);
+    let vh_multiverse::UniverseObservation {
+        universe_id,
+        trace_hash,
+        trace_events,
+        always_checks,
+        always_failures,
+        sometimes,
+        lifecycle,
+        fault_plan_digest,
+        runtime_evidence,
+    } = r.observation();
+    assert_eq!(universe_id, r.universe_id());
+    assert_eq!(trace_hash, r.trace_hash());
+    assert_eq!(trace_events, r.trace_events());
+    assert_eq!(always_checks, r.always_checks());
+    assert_eq!(always_failures, r.always_failures());
+    assert_eq!(sometimes, r.sometimes());
+    assert_eq!(lifecycle, r.lifecycle());
+    assert_eq!(fault_plan_digest, r.fault_plan_digest());
+    assert_eq!(
+        runtime_evidence.is_some(),
+        r.runtime_evidence().is_some(),
+        "runtime evidence exposure must match the getter surface"
+    );
+    assert_eq!(runtime_evidence, r.runtime_evidence());
+}
+
+/// End-state oracles fail closed (Phase-2 oracles pulled early,
+/// 2026-07-21): a contract-required oracle the workload never supplies
+/// is a per-universe contract violation, and a failing oracle is an
+/// always-failure named `oracle:<name>` — neither can reach CLEAN.
+#[test]
+fn required_oracle_missing_or_failing_fails_closed() {
+    struct NoOracle;
+    impl Workload for NoOracle {
+        fn name(&self) -> &str {
+            "no-oracle"
+        }
+        fn property_contract(&self) -> PropertyContract {
+            PropertyContract::new(&[], &[]).with_oracles(&["durability"])
+        }
+        fn run(&self, _ctx: &mut UniverseCtx) -> RunOutcome {
+            RunOutcome::Completed
+        }
+    }
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 1,
+            universes: count(2),
+            check_divergence: true,
+        },
+        &NoOracle,
+    );
+    assert_eq!(report.contract_violations().len(), 2);
+    assert!(report.contract_violations()[0]
+        .1
+        .contains("end-state oracle 'durability' was never judged"));
+    assert_eq!(report.verdict(), Verdict::Findings);
+
+    struct FailingOracle;
+    impl Workload for FailingOracle {
+        fn name(&self) -> &str {
+            "failing-oracle"
+        }
+        fn property_contract(&self) -> PropertyContract {
+            PropertyContract::new(&[], &[]).with_oracles(&["broken"])
+        }
+        fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+            vec![vh_multiverse::EndStateOracle {
+                name: "broken",
+                check: |end| {
+                    Err(format!(
+                        "end state had {} keys and the law failed",
+                        end.len()
+                    ))
+                },
+            }]
+        }
+        fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+            ctx.declare_end("k", "v");
+            RunOutcome::Completed
+        }
+    }
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 1,
+            universes: count(1),
+            check_divergence: true,
+        },
+        &FailingOracle,
+    );
+    assert_eq!(report.verdict(), Verdict::Findings);
+    let failures = report.results()[0].always_failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].name, "oracle:broken");
+    assert_eq!(
+        failures[0].detail,
+        "end state had 1 keys and the law failed"
+    );
+    assert!(report.contract_violations().is_empty());
+}
+
+/// Oracle verdicts are part of the observable transcript: two replays
+/// whose oracle outcomes differ would differ in `always_checks` — and a
+/// passing oracle entry is present, so a replay that skipped judgment is
+/// observably different (same doctrine as skipped passing invariants).
+#[test]
+fn oracle_judgment_enters_the_observable_transcript() {
+    struct Judged;
+    impl Workload for Judged {
+        fn name(&self) -> &str {
+            "judged"
+        }
+        fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+            vec![vh_multiverse::EndStateOracle {
+                name: "law",
+                check: |_| Ok(()),
+            }]
+        }
+        fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+            ctx.record("op", "x");
+            RunOutcome::Completed
+        }
+    }
+    let r = run_universe(9, 0, &Judged);
+    assert_eq!(r.always_checks().len(), 1);
+    assert_eq!(r.always_checks()[0].name, "oracle:law");
+    assert!(r.always_checks()[0].passed);
+    // And judgment reads state only: the trace carries the workload's one
+    // event, nothing from the oracle.
+    assert_eq!(r.trace_events(), 1);
 }

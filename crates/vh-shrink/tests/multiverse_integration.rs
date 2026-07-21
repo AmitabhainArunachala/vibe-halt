@@ -66,7 +66,7 @@ fn replay_pair_reproduces_expected_failure(
 fn reproduces_expected_failure(result: &UniverseResult) -> bool {
     let failures = result.always_failures();
     result.lifecycle().outcome() == &RunOutcome::Completed
-        && result.lifecycle().fault_plan() == &FaultPlanDiscipline::OverrideConsumed
+        && result.lifecycle().fault_plan() == &FaultPlanDiscipline::OverrideRetrieved
         && failures.len() == 1
         && failures[0].name == PROPERTY
         && failures[0].detail == EXPECTED_DETAIL
@@ -158,7 +158,7 @@ fn expected_failure_with_invalid_replay_lifecycle_is_not_a_reproducer() {
     assert_eq!(result.lifecycle().outcome(), &RunOutcome::Completed);
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideIgnored
+        &FaultPlanDiscipline::OverrideNeverRetrieved
     );
     assert!(!reproduces_expected_failure(&result));
 }
@@ -189,7 +189,7 @@ fn same_property_name_with_different_detail_is_not_the_expected_fingerprint() {
     assert_eq!(result.lifecycle().outcome(), &RunOutcome::Completed);
     assert_eq!(
         result.lifecycle().fault_plan(),
-        &FaultPlanDiscipline::OverrideConsumed
+        &FaultPlanDiscipline::OverrideRetrieved
     );
     assert!(result
         .always_failures()

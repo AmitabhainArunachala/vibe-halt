@@ -255,15 +255,21 @@ fn outcome_snapshot(outcome: &RunOutcome) -> OutcomeSnapshot {
 }
 
 fn fault_plan_snapshot(discipline: &FaultPlanDiscipline) -> FaultPlanSnapshot {
+    // Track-1 loop-4 rename mapping (retrieval-honest kernel vocabulary ->
+    // this crate's frozen snapshot framing, values unchanged so every
+    // recorded fingerprint stays valid). Renaming the SNAPSHOT side to the
+    // retrieval vocabulary is a verifier-track schema decision deferred to
+    // its owner: it would change frozen encodings and must be re-derived
+    // independently.
     match discipline {
-        FaultPlanDiscipline::SelfGenerated { consumptions } => FaultPlanSnapshot::SelfGenerated {
-            consumptions: *consumptions,
+        FaultPlanDiscipline::SelfGenerated { retrievals } => FaultPlanSnapshot::SelfGenerated {
+            consumptions: *retrievals,
         },
-        FaultPlanDiscipline::OverrideConsumed => FaultPlanSnapshot::OverrideConsumed,
-        FaultPlanDiscipline::OverrideIgnored => FaultPlanSnapshot::OverrideIgnored,
-        FaultPlanDiscipline::OverrideOverconsumed { consumptions } => {
+        FaultPlanDiscipline::OverrideRetrieved => FaultPlanSnapshot::OverrideConsumed,
+        FaultPlanDiscipline::OverrideNeverRetrieved => FaultPlanSnapshot::OverrideIgnored,
+        FaultPlanDiscipline::OverrideRetrievedMultiply { retrievals } => {
             FaultPlanSnapshot::OverrideOverconsumed {
-                consumptions: *consumptions,
+                consumptions: *retrievals,
             }
         }
     }
