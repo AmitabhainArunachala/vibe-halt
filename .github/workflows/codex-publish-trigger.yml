@@ -1,0 +1,73 @@
+name: codex-publish-trigger
+
+on:
+  pull_request:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    if: github.head_ref == 'codex/publish-vibe-halt-20260721'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          ref: codex/publish-vibe-halt-20260721
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Onboard first
+        shell: bash
+        run: make onboard
+      - name: Reconstruct, gate, and publish exact verifier commit
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          patch_file="$(mktemp "$RUNNER_TEMP/vh-verifier-patch.XXXXXXXX")"
+          python3 - <<'PY' | base64 --decode | gzip --decompress > "$patch_file"
+          from pathlib import Path
+          prefix = "          patch_b64='"
+          for line in Path('.github/workflows/codex-publish.yml').read_text().splitlines():
+              if line.startswith(prefix) and line.endswith("'"):
+                  print(line[len(prefix):-1], end='')
+                  break
+          else:
+              raise SystemExit('embedded publication payload not found')
+          PY
+          git reset --hard 6760e9902fc7cab35de4728e82102a3a7c594612
+          git clean -fdx
+          git apply --index --whitespace=nowarn "$patch_file"
+          actual_tree="$(git write-tree)"
+          expected_tree='86cbae3df06c8c3e8681e390eb1f80c8264a8ab5'
+          if [[ "$actual_tree" != "$expected_tree" ]]; then
+            printf 'reconstructed tree mismatch: actual=%s expected=%s\n' "$actual_tree" "$expected_tree" >&2
+            exit 1
+          fi
+          export GIT_AUTHOR_NAME='AmitabhainArunachala'
+          export GIT_AUTHOR_EMAIL='79852583+AmitabhainArunachala@users.noreply.github.com'
+          export GIT_AUTHOR_DATE='1784545590 +0900'
+          export GIT_COMMITTER_NAME='Codex'
+          export GIT_COMMITTER_EMAIL='codex@openai.com'
+          export GIT_COMMITTER_DATE='1784619537 +0000'
+          git commit --no-gpg-sign -m 'Rebase verifier stack onto Phase-1 night tip'
+          actual_head="$(git rev-parse HEAD)"
+          expected_head='5152b9fa56d4a994d4af9818b735ba627c179d9d'
+          if [[ "$actual_head" != "$expected_head" ]]; then
+            printf 'reconstructed commit mismatch: actual=%s expected=%s\n' "$actual_head" "$expected_head" >&2
+            exit 1
+          fi
+          export CARGO_TARGET_DIR="$(mktemp -d "$RUNNER_TEMP/vh-publish-target.XXXXXXXX")"
+          bash scripts/gate.sh
+          if [[ -n "$(git status --porcelain=v1 --untracked-files=all --ignored=matching)" ]]; then
+            printf 'gate mutated reconstructed source\n' >&2
+            git status --short --ignored >&2
+            exit 1
+          fi
+          printf 'publication: head=%s tree=%s parent=%s\n' \
+            "$(git rev-parse HEAD)" "$(git rev-parse HEAD^{tree})" "$(git rev-parse HEAD^)"
+          git push --force \
+            "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            HEAD:refs/heads/codex/vibe-halt-verify
