@@ -709,6 +709,7 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
         lifecycle,
         fault_plan_digest,
         runtime_evidence,
+        decision_tape_digest,
     } = r.observation();
     assert_eq!(universe_id, r.universe_id());
     assert_eq!(trace_hash, r.trace_hash());
@@ -724,6 +725,7 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
         "runtime evidence exposure must match the getter surface"
     );
     assert_eq!(runtime_evidence, r.runtime_evidence());
+    assert_eq!(decision_tape_digest, r.decision_tape_digest());
 }
 
 /// End-state oracles fail closed (Phase-2 oracles pulled early,

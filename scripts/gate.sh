@@ -333,5 +333,40 @@ fi
 # Kill-criterion telemetry (charter C5: median shrink >60s at 100
 # universes fires the kill). Boundary wall clock only — never in kernels.
 echo "gate: --shrink MINIMIZED with provenance binding (exit 1, ${shrink_secs}s wall)"
+echo "== decision-tape gate: opt-in tape digest agrees across two processes (C1/W2) =="
+set +e
+tape_a=$(cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-net --seed 0xD1CE --universe 3 --record-tape | grep '^  decision tape: ')
+code_a=$?
+tape_b=$(cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-net --seed 0xD1CE --universe 3 --record-tape | grep '^  decision tape: ')
+code_b=$?
+set -e
+if [ -z "$tape_a" ] || [ "$tape_a" != "$tape_b" ]; then
+  echo "GATE FAIL: decision-tape digests must exist and agree across processes, got '$tape_a' vs '$tape_b' (exits $code_a/$code_b)"
+  exit 1
+fi
+if ! printf '%s' "$tape_a" | grep -q 'vh-decision-tape-v1'; then
+  echo "GATE FAIL: tape line missing its schema: $tape_a"
+  exit 1
+fi
+echo "gate: decision tape agrees across two processes ($tape_a)"
+
+echo "== negative gate: tape leak test — default path and legacy demo carry no tape =="
+set +e
+default_out=$(cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-net --seed 0xD1CE --universe 3)
+legacy_out=$(cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo --seed 0xD1CE --universe 0 --record-tape)
+set -e
+if printf '%s\n' "$default_out" | grep -q 'decision tape:'; then
+  echo "GATE FAIL: default (un-flagged) run leaked a decision tape line"
+  exit 1
+fi
+if printf '%s\n' "$legacy_out" | grep -q 'decision tape:'; then
+  echo "GATE FAIL: legacy demo universe grew a decision tape"
+  exit 1
+fi
+if ! printf '%s\n' "$legacy_out" | grep -q 'hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45'; then
+  echo "GATE FAIL: frozen demo identity moved under --record-tape"
+  exit 1
+fi
+echo "gate: tape is opt-in and additive (no default/legacy leak; frozen identity intact)"
 
 echo "== gate battery: ALL PASS =="
