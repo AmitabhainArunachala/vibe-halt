@@ -1,0 +1,182 @@
+# C6 — real-bug harvest sprint, increment 1 (VB-007): receipt (2026-07-22)
+# Branch claude/convergence-c6-harvest-1 off origin/main @ e36b15b.
+
+## Provenance (playbook source priority 1: real AI-framework defect)
+
+langchain-ai/langgraph issue #7417 — "Long tool calls (~180s+) silently
+re-executed from checkpoint on LangGraph Cloud" (2026-04-05; versions
+1.1.3-1.1.6, Cloud Plus). Mechanism verified from the issue body:
+BG_JOB_HEARTBEAT hardcoded 120s; queue sweep every 240s marks
+long-running tasks stale; CancelledError in ALL_RETRIABLE_EXCEPTIONS
+restarts swept runs from pending WHILE the original still executes;
+both complete; duplicate tool invocations with identical arguments.
+
+## Pipeline (all six playbook steps)
+
+1. Mechanism isolated: liveness sweep with fixed deadline re-enqueues
+   merely-slow in-flight work; no idempotency key at the effect site.
+2. Workload: corpus-stale-redispatch (crates/vh-cli/src/workloads/
+   corpus.rs, VB-007 section). Delay-only palette — nothing is ever
+   lost, so every duplicate application is the sweep's presumption,
+   never a legitimate loss-recovery (distinctness from seeded VB-002,
+   whose retries answer real loss).
+3. Law as oracle: exactly_once_dispatch — applied:<task> == 1 per task;
+   detail names each over-applied task and count.
+4. Recall measured: found 91/100 at seed 0xD1CE, budget 100;
+   divergent 0; 9 fault-light universes PASS (vacuous-failure doctrine
+   holds); sometimes redispatch_fired reached.
+   $ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universes 100
+     always-failures: 91 universe(s); divergent: 0; ...  (exit 1)
+5. Gate pinned: "corpus recall gate: corpus-stale-redispatch" — exact
+   exit 1 + one FINDINGS verdict + anchored oracle:exactly_once_dispatch.
+6. Entry: corpus/entries/VB-007-stale-redispatch.md (VB-006 reserved
+   for the C2 same-timestamp race per charter §4).
+
+## Repro (single failing universe, deterministic)
+
+$ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universe 0
+  hash 326b0dd419e897ce07142ca83adab1ed events 41
+  ALWAYS-FAIL oracle:exactly_once_dispatch: task 3 applied 2 times ...
+  sometimes redispatch_fired: hit          (exit 1)
+
+## Gate
+
+$ make gate
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 ...)
+  gate: corpus-stale-redispatch recalled (exit 1, oracle:exactly_once_dispatch)
+== gate battery: ALL PASS ==
+
+Corpus count after this increment: 6/25 (5 seeded + 1 HARVESTED).
+Sprint target: >=5 harvested this campaign; harvest continues.
+Candidate pool researched for next increments (to be verified at point
+of use): langgraph #6491 (checkpoint saved-but-unretrievable on schema
+violation), OpenHands #12064 (transient upstream 502 crashes the agent,
+losing session work), plus the AIDev merged-agentic-PR dataset
+(arXiv:2606.13468) as a systematic source.
+
+## Increment 2 (same PR): VB-008 unvalidated checkpoint
+
+Provenance: langchain-ai/langgraph issue #6491 (2025-11-24) — node
+OUTPUT never validated; invalid state checkpoints successfully;
+get_state_history() re-validates on retrieval and the checkpoint is
+permanently unrecoverable. Verified from the issue body at point of use.
+
+Reduced: corpus-unvalidated-checkpoint — write->flush->fsync->ACK with
+no validation/read-back (the gap); torn-writes-only palette (every
+write Ok, everything fsynced) so the ONLY unrecoverability path is the
+write-side gap meeting a tear. Contrast demo-disk's verify-after-fsync.
+
+Oracle checkpoint_recoverable: acked:<id> => recovered:<id> (exact
+framed record validates at retrieval).
+
+Recall measured then pinned: found 96/100 at seed 0xD1CE, budget 100;
+divergent 0; fault-light universes PASS.
+$ vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universe 0
+  hash cc9068874514d123d0bb370bb3c11ce4 events 31
+  ALWAYS-FAIL oracle:checkpoint_recoverable: ... checkpoint 1 ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-unvalidated-checkpoint" (exact exit 1
++ anchored oracle line). make gate ALL PASS; identities unchanged.
+
+Corpus count: 7/25 (5 seeded + 2 HARVESTED). Sprint: 2/5.
+
+## Increment 3 (same PR): VB-009 transient-fatal abort
+
+Provenance: OpenHands/OpenHands issue #12064 (2025-12-16; FIXED by PR
+#12117) — 502 Bad Gateway surfaces as litellm.APIError, missing from
+LLM_RETRY_EXCEPTIONS in openhands/llm/llm.py; retry logic doesn't
+recognize it; agent controller catches the unhandled exception and the
+agent crashes, abandoning the session. Verified from the issue at point
+of use.
+
+Reduced: corpus-transient-fatal-abort — client awaits each reply under
+a deadline; transient-only palette (healing partitions, delivering
+delays) so a RETRYING client always finishes; the buggy client
+classifies a missed deadline as fatal and aborts the WHOLE session
+(later timers step nothing, late replies dropped). Distinct from
+demo-net-buggy: learns-and-misclassifies (blast radius) vs never-learns
+(blindness).
+
+Oracle session_complete: completed:<task> == true for all accepted;
+detail names abandoned tasks.
+
+Recall measured then pinned: found 79/100 at seed 0xD1CE, budget 100;
+divergent 0; 21 fault-light universes PASS; sometimes session_aborted
+reached.
+$ vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universe 0
+  FAIL: accepted work abandoned: task 2, task 3, task 4 ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-transient-fatal-abort" (exact exit 1
++ anchored oracle:session_complete). make gate ALL PASS; identities
+unchanged.
+
+Corpus count: 8/25 (5 seeded + 3 HARVESTED). Sprint: 3/5.
+
+## Increment 4 (same PR): VB-010 resume-becomes-replay
+
+Provenance: langchain-ai/langgraph issue #7361 (2026-03-31, 1.1.x
+regression) — resume from a checkpoint_id re-executes from the
+BEGINNING, not the interrupt point; the checkpoint was fine (dropping
+checkpoint_id works around it). Verified at point of use.
+
+Reduced: corpus-resume-replay — side-effecting steps + durably fsynced
+progress cursor; on crash-recovery the cursor is READ BACK then ignored
+(pipeline rescheduled from step 0). Crashes-only palette 0..=2 — the
+first pin (count 1..=2) hit 100/100, which trips the anti-gaming rule
+(a palette must not guarantee failure); widened to include crash-free
+universes, which PASS. Duplication engine = crash-recovery itself
+(distinct from VB-002 lossy-retry and VB-007 stale-sweep).
+
+Oracle resume_at_most_once: applied:<step> <= 1 across crash epochs.
+
+Recall measured then pinned: found 70/100 at seed 0xD1CE, budget 100;
+divergent 0; crash-free universes PASS; sometimes crash_resume reached.
+$ vh run --workload corpus-resume-replay --seed 0xD1CE --universe 1
+  FAIL: resume replayed completed work: step 0 applied 2 times, step 1
+  applied 2 times ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-resume-replay". make gate ALL PASS;
+identities unchanged.
+
+Corpus count: 9/25 (5 seeded + 4 HARVESTED). Sprint: 4/5.
+
+## Increment 5 (same PR): VB-011 blind stream append — SPRINT TARGET MET
+
+Provenance: langchain-ai/langchain issue #22227 (2024-05-28, closed) —
+astream_events V1/V2 deliver duplicate content in on_chat_model_stream;
+nested callback layers re-emit chunks; consumers see every token twice.
+Verified at point of use.
+
+Reduced: corpus-blind-stream-append — producer streams uniquely
+numbered chunks; consumer appends every delivery in arrival order,
+ignoring the sequence number in the payload (no dedupe, no ordering).
+Palette: NetworkDuplicate + NetworkReorder, 0..=2. Design note: the
+first cut lost a held-reorder captive at end-of-stream (runtime
+semantics: a held reorder with no following send expires) — content
+loss that would blur oracle attribution; an eos trailer send now
+guarantees every held content chunk is released, so failures are pure
+duplication/transposition. Fault-free universes PASS.
+
+Oracle stream_integrity: assembled == sent, detail prints both.
+
+Recall measured then pinned: found 58/100 at seed 0xD1CE, budget 100;
+divergent 0.
+$ vh run --workload corpus-blind-stream-append --seed 0xD1CE --universe 2
+  FAIL: assembled "t0x34|t2x18|t1x95|..." != sent "t0x34|t1x95|t2x18|..."  (exit 1)
+
+Gate: "corpus recall gate: corpus-blind-stream-append". make gate ALL
+PASS; identities unchanged.
+
+## Sprint closeout (C6 acceptance)
+
+Corpus count: 10/25 — 5 seeded + 5 HARVESTED (VB-007..VB-011), sprint
+target >=5 MET. Every harvested entry: real cited provenance (three
+langgraph/langchain issues, one OpenHands issue with its fix PR), typed
+admission per PLAYBOOK/SCHEMA, measured-then-pinned recall (91, 96, 79,
+70, 58 of 100 at 0xD1CE), anchored gate, one-command repro, Tier 1.
+Fault-family coverage across the five: delay, torn-write, partition,
+crash-restart, duplicate+reorder — five distinct exposure families.
+R7 kill criterion (<3 admissible real bugs in 4 weeks): NOT fired —
+5 admitted in one day. Realism verdict at this sample: the rig's fault
+classes map cleanly onto real agent-framework failure mechanisms.
