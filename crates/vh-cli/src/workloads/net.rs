@@ -13,7 +13,7 @@
 //! violate the `echo_acked` oracle: the classic vibe-coded
 //! the-network-is-reliable fallacy.
 
-use vh_gremlin::{FaultInjection, FaultKind, FaultPlan};
+use vh_gremlin::{FaultInjection, FaultKind, FaultPalette, FaultPlan, PaletteChooser};
 use vh_multiverse::{
     EndState, EndStateOracle, PropertyContract, RunOutcome, StepEvent, UniverseCtx, Workload,
 };
@@ -43,12 +43,17 @@ impl EchoDemo {
     /// 100_000 — worst case 400_000 of blackout against a retry budget
     /// of MAX_ATTEMPTS * RETRY_TIMEOUT = 480_000 per round, so the
     /// correct variant always lands inside its budget.
-    fn plan(rng: &mut vh_core::Xoshiro256pp) -> FaultPlan {
+    fn plan(
+        rng: &mut vh_core::Xoshiro256pp,
+        palette: FaultPalette,
+        universe_seed: u64,
+    ) -> FaultPlan {
         let count = 2 + rng.next_below(3); // 2..=4
+        let chooser = PaletteChooser::new(palette, universe_seed, 4);
         let injections = (0..count)
             .map(|_| {
                 let at_nanos = rng.next_below(HORIZON_NANOS);
-                let fault = match rng.next_below(4) {
+                let fault = match chooser.choose(rng) {
                     0 => FaultKind::NetworkPartition {
                         duration_nanos: 20_000 + rng.next_below(80_000),
                     },
@@ -125,7 +130,9 @@ impl Workload for EchoDemo {
             ctx.declare_sometimes("reordered_delivery");
         }
         let mut gremlin = ctx.stream("gremlin");
-        let mut rt = ctx.runtime(|| Self::plan(&mut gremlin));
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| Self::plan(&mut gremlin, fault_palette, universe_seed));
 
         let mut acked = [false; ROUNDS as usize];
         for round in 0..ROUNDS {

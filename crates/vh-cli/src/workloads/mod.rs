@@ -68,8 +68,17 @@ impl Workload for KvDemo {
 
         let mut ops = ctx.stream("ops");
         let mut gremlin = ctx.stream("gremlin");
-        let plan =
-            ctx.fault_plan_or(|| FaultPlan::generate(&mut gremlin, HORIZON_NANOS, FAULT_COUNT));
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let plan = ctx.fault_plan_or(|| {
+            FaultPlan::generate_with_palette(
+                &mut gremlin,
+                HORIZON_NANOS,
+                FAULT_COUNT,
+                fault_palette,
+                universe_seed,
+            )
+        });
         let mut cursor = 0usize;
 
         // committed survives crashes; wal is volatile; acked is the client's

@@ -4,7 +4,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use vh_gremlin::FaultPlan;
+use vh_gremlin::{FaultPalette, FaultPlan};
 use vh_multiverse::{
     run_multiverse, run_universe, run_universe_with_fault_plan, FaultPlanDiscipline,
     MultiverseConfig, PropertyContract, RunOutcome, UniverseCount, UniverseCtx, Verdict, Workload,
@@ -26,7 +26,17 @@ impl Workload for DeterministicDemo {
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         let mut ops = ctx.stream("ops");
         let mut gremlin = ctx.stream("gremlin");
-        let plan = ctx.fault_plan_or(|| FaultPlan::generate(&mut gremlin, 1_000_000, 4));
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let plan = ctx.fault_plan_or(|| {
+            FaultPlan::generate_with_palette(
+                &mut gremlin,
+                1_000_000,
+                4,
+                fault_palette,
+                universe_seed,
+            )
+        });
         let mut cursor = 0;
         for i in 0..50u64 {
             let now = i * 20_000;
@@ -106,6 +116,30 @@ fn multiverse_replays_across_many_runs() {
         .map(|r| r.trace_hash().to_string())
         .collect();
     assert_eq!(hashes, hashes2);
+}
+
+#[test]
+fn explicit_v0_palette_preserves_default_report_identity() {
+    let w = DeterministicDemo;
+    let cfg = MultiverseConfig {
+        root_seed: 42,
+        universes: count(10),
+        check_divergence: true,
+    };
+    let default_report = run_multiverse(&cfg, &w);
+    let explicit_v0 = vh_multiverse::run_multiverse_with_palette(&cfg, &w, FaultPalette::V0);
+    assert_eq!(
+        default_report
+            .results()
+            .iter()
+            .map(|r| (r.trace_hash().to_string(), r.trace_events()))
+            .collect::<Vec<_>>(),
+        explicit_v0
+            .results()
+            .iter()
+            .map(|r| (r.trace_hash().to_string(), r.trace_events()))
+            .collect::<Vec<_>>()
+    );
 }
 
 /// The shrinker's oracle surface: an override plan replaces the

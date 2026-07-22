@@ -16,7 +16,7 @@
 
 use std::collections::BTreeMap;
 
-use vh_gremlin::{FaultInjection, FaultKind, FaultPlan};
+use vh_gremlin::{FaultInjection, FaultKind, FaultPalette, FaultPlan, PaletteChooser};
 use vh_multiverse::{
     EndState, EndStateOracle, PropertyContract, RunOutcome, SimRuntime, StepEvent, UniverseCtx,
     Workload,
@@ -42,18 +42,25 @@ pub struct WalDemo {
 }
 
 impl WalDemo {
-    fn plan(&self, rng: &mut vh_core::Xoshiro256pp) -> FaultPlan {
+    fn plan(
+        &self,
+        rng: &mut vh_core::Xoshiro256pp,
+        palette: FaultPalette,
+        universe_seed: u64,
+    ) -> FaultPlan {
         let count = 2 + rng.next_below(3); // 2..=4
+        let chooser =
+            PaletteChooser::new(palette, universe_seed, if self.lie_palette { 2 } else { 3 });
         let injections = (0..count)
             .map(|_| {
                 let at_nanos = rng.next_below(HORIZON_NANOS);
                 let fault = if self.lie_palette {
-                    match rng.next_below(2) {
+                    match chooser.choose(rng) {
                         0 => FaultKind::FsyncLie,
                         _ => FaultKind::CrashRestart,
                     }
                 } else {
-                    match rng.next_below(3) {
+                    match chooser.choose(rng) {
                         0 => FaultKind::DiskWriteFail,
                         1 => FaultKind::TornWrite,
                         _ => FaultKind::CrashRestart,
@@ -244,7 +251,9 @@ impl Workload for WalDemo {
         }
         let mut values = ctx.stream("values");
         let mut gremlin = ctx.stream("gremlin");
-        let mut rt = ctx.runtime(|| self.plan(&mut gremlin));
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| self.plan(&mut gremlin, fault_palette, universe_seed));
 
         let mut client = WalClient {
             ack_at_flush: self.ack_at_flush,

@@ -171,3 +171,56 @@ fn clean_campaign_exits_0_with_checked_evidence() {
         "the evidence line must name the sampled falsifier, not a tier proof:\n{stdout}"
     );
 }
+
+#[test]
+fn palette_flag_accepts_v0_and_swarm_but_keeps_v0_default() {
+    let (default_code, default_stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "5",
+    ]);
+    let (v0_code, v0_stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "5",
+        "--palette",
+        "v0",
+    ]);
+    let (swarm_code, swarm_stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "5",
+        "--palette",
+        "swarm",
+    ]);
+    assert_eq!(default_code, 0, "{default_stdout}");
+    assert_eq!(v0_code, 0, "{v0_stdout}");
+    assert_eq!(
+        default_stdout, v0_stdout,
+        "explicit --palette v0 must be bit-identical to the default"
+    );
+    assert_eq!(swarm_code, 0, "{swarm_stdout}");
+    assert!(swarm_stdout.contains("palette=swarm"), "{swarm_stdout}");
+}
+
+#[test]
+fn unknown_palette_is_usage_error() {
+    let (code, _, stderr) = vh(&["run", "--palette", "magic"]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("unknown palette \"magic\"; expected v0 or swarm"),
+        "{stderr}"
+    );
+}

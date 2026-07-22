@@ -14,6 +14,7 @@ shared_surfaces:
   - Cargo.lock
   - docs/governance/ACTIVE_TRACK.yaml
   - scripts/check_determinism_denylist.py
+  - corpus/PLAYBOOK.md
 
 spine_objectives:
   - id: deterministic-truth
@@ -131,8 +132,11 @@ tracks:
       - crates/vh-core/**
       - crates/vh-trace/**
       - crates/vh-gremlin/**
+      - crates/vh-multiverse/src/lib.rs
       - crates/vh-cli/**
+      - scripts/track2_swarm_bakeoff.py
       - scripts/onboard.py
+      - corpus/PLAYBOOK.md
       - docs/audits/**
       - docs/prompts/TRACK2_1000X_INSTANTIATION_2026-07-21.md
       - CLAUDE.md

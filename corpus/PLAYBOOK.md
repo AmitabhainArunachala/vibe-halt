@@ -48,3 +48,30 @@ vibe-coded defects, not self-graded demos (build-plan risk 4).
 - Recall numbers in entries are frozen measurements; re-measurement
   after a runtime change that shifts them is a new pin with a changelog
   line in the entry, never a silent edit.
+
+## Track-2 swarm-mask bakeoff result (2026-07-22)
+
+Track 2 added an opt-in `--palette swarm` and ran the R2 seeded A/B
+harness over 16 seeds with the pinned 100-universe budget:
+
+```bash
+python3 scripts/track2_swarm_bakeoff.py --seeds 16 --max-budget 100
+```
+
+Result: **negative**. Swarm passed **0/5** seeded classes against the
+R2 threshold (needs `--palette swarm` to reach the pinned recall in
+≤25% of v0's universe executions on at least 4/5 classes). The measured
+class summaries were:
+
+| workload | class_pass | median swarm/v0 | wins |
+|---|---:|---:|---:|
+| `corpus-lost-update` | false | 1.032967032967033 | 0/6 |
+| `corpus-retry-double-apply` | false | NA | 0/1 |
+| `corpus-dirty-read` | false | NA | 0/1 |
+| `corpus-crash-toctou` | false | 1.0168539325842696 | 0/12 |
+| `corpus-fsync-lie` | false | NA | 0/14 |
+
+Action: keep `--palette v0` as the default and treat all
+"guided exploration" claims based on swarm masks as **unproven** until a
+new algorithm passes the same harness. Evidence:
+`docs/audits/antithesis-dst-2026-07-21/commands/track2-w1-swarm-bakeoff.txt`.

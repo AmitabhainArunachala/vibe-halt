@@ -3,7 +3,10 @@
 //! finding replays bit-identically.
 
 use vh_cli::workloads::by_name;
-use vh_multiverse::{run_multiverse, run_universe, MultiverseConfig, UniverseCount};
+use vh_gremlin::FaultPalette;
+use vh_multiverse::{
+    run_multiverse, run_multiverse_with_palette, run_universe, MultiverseConfig, UniverseCount,
+};
 
 const SEED: u64 = 0xD1CE;
 
@@ -96,4 +99,27 @@ fn buggy_demo_is_caught_with_reproducible_universe() {
             "universe {u} failed durability without a dirty-WAL crash"
         );
     }
+}
+
+#[test]
+fn explicit_v0_palette_preserves_demo_trace_identity() {
+    let w = by_name("demo").unwrap();
+    let cfg = MultiverseConfig {
+        root_seed: SEED,
+        universes: count(5),
+        check_divergence: true,
+    };
+    let default_report = run_multiverse(&cfg, w.as_ref());
+    let explicit_v0 = run_multiverse_with_palette(&cfg, w.as_ref(), FaultPalette::V0);
+    let default_hashes: Vec<_> = default_report
+        .results()
+        .iter()
+        .map(|r| (r.trace_hash().to_string(), r.trace_events()))
+        .collect();
+    let explicit_hashes: Vec<_> = explicit_v0
+        .results()
+        .iter()
+        .map(|r| (r.trace_hash().to_string(), r.trace_events()))
+        .collect();
+    assert_eq!(default_hashes, explicit_hashes);
 }
