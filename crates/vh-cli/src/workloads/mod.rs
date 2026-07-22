@@ -15,8 +15,8 @@ use std::collections::BTreeMap;
 use std::rc::Rc;
 
 pub use corpus::{
-    CrashToctou, DirtyRead, LostUpdate, ResumeReplay, RetryDoubleApply, StaleRedispatch,
-    TransientFatalAbort, UnvalidatedCheckpoint,
+    BlindStreamAppend, CrashToctou, DirtyRead, LostUpdate, ResumeReplay, RetryDoubleApply,
+    StaleRedispatch, TransientFatalAbort, UnvalidatedCheckpoint,
 };
 pub use disk::WalDemo;
 pub use net::EchoDemo;
@@ -251,6 +251,7 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
         "corpus-unvalidated-checkpoint" => Some(Box::new(UnvalidatedCheckpoint)),
         "corpus-transient-fatal-abort" => Some(Box::new(TransientFatalAbort)),
         "corpus-resume-replay" => Some(Box::new(ResumeReplay)),
+        "corpus-blind-stream-append" => Some(Box::new(BlindStreamAppend)),
         "corpus-fsync-lie" => Some(Box::new(WalDemo {
             ack_at_flush: false,
             lie_palette: true,

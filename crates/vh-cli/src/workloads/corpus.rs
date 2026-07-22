@@ -11,7 +11,8 @@
 //! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417),
 //! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491),
 //! transient-fatal abort (VB-009, HARVESTED from OpenHands#12064),
-//! resume-becomes-replay (VB-010, HARVESTED from langgraph#7361).
+//! resume-becomes-replay (VB-010, HARVESTED from langgraph#7361),
+//! blind stream append (VB-011, HARVESTED from langchain#22227).
 //! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
 //! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
 //! the C2 same-timestamp race (convergence charter §4).
@@ -1080,6 +1081,134 @@ impl Workload for ResumeReplay {
                 &applied[step as usize].to_string(),
             );
         }
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-011
+
+const BS_PRODUCER: u32 = 0;
+const BS_CONSUMER: u32 = 1;
+const BS_CHUNKS: u64 = 8;
+const BS_CHUNK_SPACING: u64 = 20_000;
+
+/// VB-011 blind stream append (HARVESTED — langchain-ai/langchain
+/// issue #22227, 2024-05-28, closed): `astream_events` (V1 and V2)
+/// delivers duplicate content in `on_chat_model_stream` — nested
+/// callback/streaming layers re-emit the same chunk, and consumers see
+/// every token twice ("Books| Books|", "1|1|.|.|"). The consumer-side
+/// defect this harvests: assembling a stream by BLIND APPEND, trusting
+/// the event stream to be exactly-once-in-order — no sequence numbers,
+/// no deduplication, no reorder handling. Reduced mechanism: a
+/// producer streams uniquely-numbered chunks; the consumer appends
+/// every delivery in arrival order, ignoring the sequence number it
+/// was handed; a duplicated or reordered delivery corrupts the
+/// assembled document.
+pub struct BlindStreamAppend;
+
+fn stream_integrity_oracle(end: &EndState) -> Result<(), String> {
+    let assembled = end.get("assembled").cloned().unwrap_or_default();
+    let expected = end.get("expected").cloned().unwrap_or_default();
+    if assembled == expected {
+        Ok(())
+    } else {
+        Err(format!(
+            "assembled stream {assembled:?} != sent stream {expected:?} (duplicated or reordered delivery appended blindly; no sequence discipline at the consumer)"
+        ))
+    }
+}
+
+impl Workload for BlindStreamAppend {
+    fn name(&self) -> &str {
+        "corpus-blind-stream-append"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &[]).with_oracles(&["stream_integrity"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "stream_integrity",
+            check: stream_integrity_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let mut ops = ctx.stream("ops");
+        let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| {
+            // Duplicates and pairwise reorders only (0..=2 — fault-free
+            // universes exist and must PASS): with the eos trailer below
+            // no content chunk is ever lost, so the assembled stream can
+            // only differ from the sent stream through the consumer's
+            // missing sequence discipline meeting a shaped delivery.
+            let count = gremlin.next_below(3);
+            let horizon = BS_CHUNKS * BS_CHUNK_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 2);
+            FaultPlan::new(
+                (0..count)
+                    .map(|_| {
+                        let at_nanos = gremlin.next_below(horizon);
+                        let fault = match chooser.choose(&mut gremlin) {
+                            0 => FaultKind::NetworkDuplicate,
+                            _ => FaultKind::NetworkReorder,
+                        };
+                        FaultInjection { at_nanos, fault }
+                    })
+                    .collect(),
+            )
+        });
+
+        // Unique token per chunk: any duplication or swap is visible in
+        // the assembled document.
+        let mut tokens: Vec<String> = Vec::new();
+        for chunk in 0..BS_CHUNKS {
+            tokens.push(format!("t{chunk}x{}", ops.next_below(100)));
+            rt.set_timer(chunk * BS_CHUNK_SPACING, chunk);
+        }
+        // End-of-stream trailer: a held pairwise reorder releases its
+        // captive only when a FOLLOWING send occurs; without a trailer a
+        // reorder arming near the last chunk silently EXPIRES it —
+        // content loss, which would blur the oracle's attribution. The
+        // trailer guarantees every held content chunk is released
+        // (reordered, not lost); a held trailer expiring is harmless
+        // because the consumer ignores it.
+        rt.set_timer(BS_CHUNKS * BS_CHUNK_SPACING, BS_CHUNKS);
+        let mut assembled: Vec<String> = Vec::new();
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    if token == BS_CHUNKS {
+                        rt.send(BS_PRODUCER, BS_CONSUMER, "eos");
+                        continue;
+                    }
+                    let chunk = token as usize;
+                    rt.send(
+                        BS_PRODUCER,
+                        BS_CONSUMER,
+                        &format!("chunk:{chunk}:{}", tokens[chunk]),
+                    );
+                }
+                StepEvent::Delivered { payload, .. } => {
+                    if let Some(rest) = payload.strip_prefix("chunk:") {
+                        // The bug: the sequence number is RIGHT THERE in
+                        // the payload and the consumer appends anyway —
+                        // no dedupe, no ordering, arrival order is
+                        // trusted as stream order.
+                        if let Some((_seq, tok)) = rest.split_once(':') {
+                            assembled.push(tok.to_string());
+                        }
+                    }
+                }
+                StepEvent::Crashed => unreachable!("no CrashRestart in palette"),
+            }
+        }
+        rt.declare_end("assembled", &assembled.join("|"));
+        rt.declare_end("expected", &tokens.join("|"));
         rt.finish();
         RunOutcome::Completed
     }

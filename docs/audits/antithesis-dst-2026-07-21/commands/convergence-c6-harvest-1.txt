@@ -140,3 +140,43 @@ Gate: "corpus recall gate: corpus-resume-replay". make gate ALL PASS;
 identities unchanged.
 
 Corpus count: 9/25 (5 seeded + 4 HARVESTED). Sprint: 4/5.
+
+## Increment 5 (same PR): VB-011 blind stream append — SPRINT TARGET MET
+
+Provenance: langchain-ai/langchain issue #22227 (2024-05-28, closed) —
+astream_events V1/V2 deliver duplicate content in on_chat_model_stream;
+nested callback layers re-emit chunks; consumers see every token twice.
+Verified at point of use.
+
+Reduced: corpus-blind-stream-append — producer streams uniquely
+numbered chunks; consumer appends every delivery in arrival order,
+ignoring the sequence number in the payload (no dedupe, no ordering).
+Palette: NetworkDuplicate + NetworkReorder, 0..=2. Design note: the
+first cut lost a held-reorder captive at end-of-stream (runtime
+semantics: a held reorder with no following send expires) — content
+loss that would blur oracle attribution; an eos trailer send now
+guarantees every held content chunk is released, so failures are pure
+duplication/transposition. Fault-free universes PASS.
+
+Oracle stream_integrity: assembled == sent, detail prints both.
+
+Recall measured then pinned: found 58/100 at seed 0xD1CE, budget 100;
+divergent 0.
+$ vh run --workload corpus-blind-stream-append --seed 0xD1CE --universe 2
+  FAIL: assembled "t0x34|t2x18|t1x95|..." != sent "t0x34|t1x95|t2x18|..."  (exit 1)
+
+Gate: "corpus recall gate: corpus-blind-stream-append". make gate ALL
+PASS; identities unchanged.
+
+## Sprint closeout (C6 acceptance)
+
+Corpus count: 10/25 — 5 seeded + 5 HARVESTED (VB-007..VB-011), sprint
+target >=5 MET. Every harvested entry: real cited provenance (three
+langgraph/langchain issues, one OpenHands issue with its fix PR), typed
+admission per PLAYBOOK/SCHEMA, measured-then-pinned recall (91, 96, 79,
+70, 58 of 100 at 0xD1CE), anchored gate, one-command repro, Tier 1.
+Fault-family coverage across the five: delay, torn-write, partition,
+crash-restart, duplicate+reorder — five distinct exposure families.
+R7 kill criterion (<3 admissible real bugs in 4 weeks): NOT fired —
+5 admitted in one day. Realism verdict at this sample: the rig's fault
+classes map cleanly onto real agent-framework failure mechanisms.

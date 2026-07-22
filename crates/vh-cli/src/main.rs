@@ -65,7 +65,7 @@ WORKLOADS:
                      lost-update, retry-double-apply, dirty-read,
                      crash-toctou, fsync-lie, stale-redispatch,
                      unvalidated-checkpoint, transient-fatal-abort,
-                     resume-replay
+                     resume-replay, blind-stream-append
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every
