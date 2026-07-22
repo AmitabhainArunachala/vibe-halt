@@ -1,0 +1,70 @@
+# C5 — shrink wiring from the boundary side: command receipt (2026-07-22)
+# Branch claude/convergence-c5-shrink-boundary off origin/main @ e36b15b.
+
+## Radioactive-surface discipline
+
+vh-shrink is consumed through its PUBLIC API only:
+try_shrink / ShrinkReport (crates/vh-shrink/src/lib.rs:632, :126 — read,
+never edited). The Cargo dependency rides the shared append-only
+manifests (Cargo.toml comment cites this rule; Cargo.lock +1 line).
+Zero edits under crates/vh-shrink/** or crates/vh-verify/**.
+
+## Shape
+
+- workloads::by_name_capturing + PlanCell (Rc<RefCell<Option<FaultPlan>>>):
+  KvDemo clones its single retrieved plan into the cell — purely
+  observational, no draw/order/trace change. Capture support v1: demo,
+  demo-buggy. Runtime-path workloads (disk/net/corpus) retrieve their
+  plan INSIDE UniverseCtx::runtime and never hold it — capture there
+  needs a kernel API; recorded as a discovered coupling in the ledger,
+  surfaced to the user as a typed unsupported diagnostic (exit 2).
+- vh_cli::shrink_cli::shrink_universe (pure module; main.rs prints):
+  baseline run-twice self-agreement, then try_shrink with the
+  exact-fingerprint oracle vh-shrink demands — a candidate passes only
+  if two override replays (run_universe_with_fault_plan) agree AND
+  reproduce the baseline's exact always-failure (name+detail) set with
+  a valid completion. Never any-failure (cause-switch hazard).
+- vh run --shrink: additive; minimizes the FIRST failing universe;
+  verdict and exit code unchanged; anchored lines `shrink: MINIMIZED`,
+  `shrink: UNAVAILABLE`, `shrink-binding:`.
+- vh shrink --workload W --seed N --universe K: exit 0 MINIMIZED /
+  1 nothing-to-shrink / 2 usage-or-unsupported.
+- Provenance binding printed at the boundary (PR #2's open contract —
+  ShrinkReport deliberately carries no source/seed binding): workload,
+  seed, universe, palette, baseline trace hash, plan digest,
+  fingerprint names. Moves into C4 bundles once #19 lands (§5 coupling).
+
+## Acceptance (charter C5 / audit R1)
+
+$ vh run --workload demo-buggy --seed 0xD1CE --universes 100 --shrink   # exit 1
+  shrink: MINIMIZED 3 -> 1 injection(s) (universe 2, 10 oracle calls, 5 distinct candidates)
+    kept at=246734 crash_restart
+  shrink-binding: workload=demo-buggy seed=0xd1ce universe=2 palette=v0
+    baseline-hash=8f1db0c973707726a14e106ee912f9e8
+    plan-digest=5f09a6244bec8d48ed3124b55b186834 fingerprint=oracle:durability
+-> strictly fewer injections (3 -> 1); same-violation replay verified
+   INDEPENDENTLY in cli_contract.rs
+   (standalone_shrink_result_reproduces_the_exact_baseline_violation:
+   minimized plan replayed through the public hook reproduces the exact
+   baseline failure detail; dropping the kept injection loses it).
+
+## Kill criterion telemetry (charter: median shrink >60s at 100u -> kill)
+
+time vh run ... --universes 100 --shrink  -> 0.44s wall total (shrink
+portion ~0.2s; 10 oracle calls). Gate measures per-run boundary wall
+clock and prints it: "gate: --shrink MINIMIZED ... (exit 1, 1s wall)".
+Kill margin ~60x — not fired.
+
+## Verification
+
+$ cargo test -q --offline -p vh-cli --test cli_contract
+running 12 tests ... ok. 12 passed; 0 failed
+  (new: run_shrink_minimizes_first_failing_universe_strictly,
+        standalone_shrink_result_reproduces_the_exact_baseline_violation,
+        shrink_exit_contract_is_typed)
+$ make gate
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+  all five corpus recall gates green (unmoved)
+  gate: --shrink MINIMIZED with provenance binding (exit 1, 1s wall)
+== gate battery: ALL PASS ==

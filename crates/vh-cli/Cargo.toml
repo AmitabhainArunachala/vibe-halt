@@ -17,6 +17,10 @@ vh-gremlin = { path = "../vh-gremlin" }
 vh-props = { path = "../vh-props" }
 vh-multiverse = { path = "../vh-multiverse" }
 vh-sandbox = { path = "../vh-sandbox" }
+# Public-API consumer only (convergence C5, audit R1): the CLI calls
+# vh-shrink's shrink/try_shrink surface; crates/vh-shrink/** itself stays
+# verifier-track-owned and unedited.
+vh-shrink = { path = "../vh-shrink" }
 
 [lints]
 workspace = true

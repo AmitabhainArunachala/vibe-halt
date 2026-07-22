@@ -317,5 +317,21 @@ if [ "$code" -ne 1 ] || [ "$mismatch" -ne 1 ]; then
   exit 1
 fi
 echo "gate: tampered bundle correctly fails closed (exit 1, MISMATCH)"
+echo "== shrink gate: --shrink minimizes the first failing universe (C5/R1) =="
+shrink_start=$SECONDS
+set +e
+out=$(cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 100 --shrink)
+code=$?
+set -e
+shrink_secs=$((SECONDS - shrink_start))
+minimized=$(printf '%s\n' "$out" | grep -c '^  shrink: MINIMIZED')
+binding=$(printf '%s\n' "$out" | grep -c '^  shrink-binding: workload=demo-buggy')
+if [ "$code" -ne 1 ] || [ "$minimized" -ne 1 ] || [ "$binding" -ne 1 ]; then
+  echo "GATE FAIL: --shrink expected exit 1 + anchored MINIMIZED + binding, got exit $code / $minimized / $binding"
+  exit 1
+fi
+# Kill-criterion telemetry (charter C5: median shrink >60s at 100
+# universes fires the kill). Boundary wall clock only — never in kernels.
+echo "gate: --shrink MINIMIZED with provenance binding (exit 1, ${shrink_secs}s wall)"
 
 echo "== gate battery: ALL PASS =="

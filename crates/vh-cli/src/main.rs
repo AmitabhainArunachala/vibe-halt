@@ -30,6 +30,7 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
         Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
+        Some("shrink") => cmd_shrink(&args[1..]),
         Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
         Some("doctor") => cmd_doctor(),
         _ => {
@@ -47,6 +48,8 @@ USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
            [--palette v0|swarm] [--no-divergence-check] [--out DIR]
     vh replay-bundle PATH
+           [--palette v0|swarm] [--no-divergence-check] [--shrink]
+    vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh doctor
 
@@ -85,6 +88,15 @@ agree with each other AND with every recorded observable (trace hash,
 event count, failures, contract violations, lifecycle validity, plan
 digest); exit 1 on any mismatch or divergence; exit 2 on usage or a
 malformed bundle.
+`vh run --shrink` additionally ddmin-minimizes the FIRST failing
+universe's fault plan through vh-shrink's public API and prints the kept
+injections plus provenance binding (workload, seed, universe, baseline
+hash, plan digest). The run's verdict and exit code are unchanged; a
+shrink that cannot run prints an anchored `shrink: UNAVAILABLE` line.
+`vh shrink` does the same for one named universe: exit 0 = MINIMIZED
+(exact-fingerprint oracle, paired replays per candidate), 1 = the
+universe has no finding or diverges, 2 = usage/unsupported workload.
+v0 palette only; capture support today: demo, demo-buggy.
 
 `vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
 universes with env scrubbing, pinned Python env, fixture cassette replay,
@@ -99,6 +111,7 @@ struct RunArgs {
     check_divergence: bool,
     palette: FaultPalette,
     out: Option<String>,
+    shrink: bool,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -110,6 +123,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         check_divergence: true,
         palette: FaultPalette::V0,
         out: None,
+        shrink: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -132,6 +146,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             "--no-divergence-check" => out.check_divergence = false,
             "--palette" => out.palette = parse_palette(&value_for("--palette")?)?,
             "--out" => out.out = Some(value_for("--out")?),
+            "--shrink" => out.shrink = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -146,6 +161,16 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     // thing bundles point AT, not a receipt producer.
     if out.out.is_some() && out.single_universe.is_some() {
         return Err("--out conflicts with --universe (receipts describe a multiverse run)".into());
+    }
+    // Shrinking needs a campaign to pick a failing universe from, and the
+    // v1 oracle replays under the default palette only.
+    if out.shrink && out.single_universe.is_some() {
+        return Err("--shrink conflicts with --universe (use `vh shrink --universe K`)".into());
+    }
+    if out.shrink && out.palette != FaultPalette::V0 {
+        return Err(
+            "--shrink supports --palette v0 only (the oracle replays override plans)".into(),
+        );
     }
     Ok(out)
 }
@@ -346,8 +371,112 @@ fn cmd_run(args: &[String]) -> i32 {
                 return 2;
             }
         }
+    };
+    // Additive shrink pass (convergence C5): minimize the FIRST failing
+    // universe. Never changes the run's verdict or exit code — a shrink
+    // that cannot run says so on an anchored line instead of failing the
+    // campaign it decorates.
+    if run.shrink {
+        match failing.first() {
+            None => println!("  shrink: SKIPPED (no always-failing universe to minimize)"),
+            Some(&u) => {
+                print_shrink(&run.workload, run.seed, u);
+            }
+        }
     }
     code
+}
+
+/// Print one minimization (or its typed unavailability) for `--shrink`
+/// and `vh shrink`. Anchored lines: `shrink: MINIMIZED`, `shrink:
+/// UNAVAILABLE`, `shrink-binding:`.
+fn print_shrink(workload: &str, seed: u64, universe: u64) -> bool {
+    match vh_cli::shrink_cli::shrink_universe(workload, seed, universe) {
+        Err(e) => {
+            println!("  shrink: UNAVAILABLE ({e})");
+            false
+        }
+        Ok(o) => {
+            println!(
+                "  shrink: MINIMIZED {} -> {} injection(s) (universe {}, {} oracle calls, {} distinct candidates)",
+                o.original_injections, o.minimized_injections, o.universe, o.oracle_calls, o.distinct_candidates
+            );
+            for inj in o.minimized_plan.injections() {
+                println!("    kept at={} {}", inj.at_nanos, inj.fault.canonical());
+            }
+            let fingerprint: Vec<&str> = o
+                .baseline_failures
+                .iter()
+                .map(|(n, _)| n.as_str())
+                .collect();
+            println!(
+                "  shrink-binding: workload={} seed=0x{:x} universe={} palette=v0 baseline-hash={} plan-digest={} fingerprint={}",
+                o.workload,
+                o.seed,
+                o.universe,
+                o.baseline_trace_hash,
+                o.baseline_plan_digest.as_deref().unwrap_or("none"),
+                fingerprint.join(",")
+            );
+            println!(
+                "    repro: vh run --workload {} --seed 0x{:x} --universe {}",
+                o.workload, o.seed, o.universe
+            );
+            true
+        }
+    }
+}
+
+/// `vh shrink --workload W --seed N --universe K` — standalone
+/// minimization of one universe. Exit 0 iff MINIMIZED; 1 when the
+/// universe offers nothing to shrink (no finding, divergence, invalid
+/// completion, or the shrinker failed); 2 on usage errors or a workload
+/// without capture support.
+fn cmd_shrink(args: &[String]) -> i32 {
+    let mut workload = "demo-buggy".to_string();
+    let mut seed = DEFAULT_SEED;
+    let mut universe: Option<u64> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        let mut value_for = |flag: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        let parsed = match arg.as_str() {
+            "--workload" => value_for("--workload").map(|v| workload = v),
+            "--seed" => value_for("--seed")
+                .and_then(|v| parse_u64(&v))
+                .map(|v| seed = v),
+            "--universe" => value_for("--universe")
+                .and_then(|v| parse_u64(&v))
+                .map(|v| universe = Some(v)),
+            other => Err(format!("unknown argument: {other}")),
+        };
+        if let Err(e) = parsed {
+            eprintln!("error: {e}\n\n{USAGE}");
+            return 2;
+        }
+    }
+    let Some(universe) = universe else {
+        eprintln!("error: shrink requires --universe K\n\n{USAGE}");
+        return 2;
+    };
+    if workloads::by_name(&workload).is_none() {
+        eprintln!("error: unknown workload '{workload}'\n\n{USAGE}");
+        return 2;
+    }
+    if workloads::by_name_capturing(&workload).is_none() {
+        eprintln!(
+            "error: shrink does not support workload '{workload}' yet (capture is wired for demo/demo-buggy)"
+        );
+        return 2;
+    }
+    if print_shrink(&workload, seed, universe) {
+        0
+    } else {
+        1
+    }
 }
 
 /// Render the COMPLETE public observation of a universe result into a
