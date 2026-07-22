@@ -53,3 +53,57 @@ line anchors re-verified exact; none moved.
 - **Loop closure:** PR link posted as a reply on the interface-request
   thread (PR #13 comment 5040630656) so the request and its answer live in
   one place.
+
+---
+
+## 2026-07-22 — Wave-1 closeout: every package executed to its two-key limit
+
+All solo-executable work is DONE; every package is now merged-pending
+(draft PR escalated to the operator with evidence) or blocked by the
+two-key law itself. Per-package disposition, numbers not adjectives:
+
+| Pkg | Disposition | PR | Evidence |
+|---|---|---|---|
+| C0 | escalated-with-evidence (draft, CI 6/6 green) | #16 | this ledger; receipt convergence-c0-reanchor.txt; onboard READY; overlap gate clean |
+| C1 | blocked-by-design: needs #16's ratified runtime.rs grant (two-key). Spec ready: PR #13 comment 5040630656 | — | interface-request thread carries the C0 answer link |
+| C2 | blocked on C1 (charter spine C0→C1→C2) | — | — |
+| C3 | escalated-with-evidence (draft, CI 6/6 green) | #18 | implement-not-remove derivation; 0 pins moved; falsifier: 5-workload byte-identical stdout vs main; receipt convergence-c3-clockskew.txt |
+| C4 | escalated-with-evidence (draft) | #19 | delete-parent standalone replay REPRODUCED; tamper-negative exit 1; byte-stable receipts (diff -r); receipt convergence-c4-evidence-store.txt |
+| C5 | escalated-with-evidence (draft) | #20 | MINIMIZED 3->1 @ demo-buggy 0xD1CE; kill margin ~60x (0.4s vs 60s); verifier-track courtesy comment 5041929439; receipt convergence-c5-shrink-boundary.txt |
+| C6 | ACCEPTANCE MET, escalated-with-evidence (draft) | #21 | 5/5 harvested (VB-007..011: recalls 91,96,79,70,58 of 100 @0xD1CE); corpus 10/25; five distinct fault families; R7 kill NOT fired; receipt convergence-c6-harvest-1.txt |
+| C7 | escalated-with-evidence (draft) | #17 | annotate-in-place; OPEN QUESTION in PR body; receipt convergence-c7-doctrine.txt |
+
+Frozen identities on every branch, every gate run: doctor
+9ce6199f133f4d3c9dd0da0075e352d2 / 45 events; fingerprint
+1684e7c347e645f43a80a30abc46adb7 (vh-doctor-observable-v3).
+
+Kill criteria fired this wave: VB-010's first palette (guaranteed >=1
+crash, 100/100) tripped the anti-gaming rule -> widened 0..=2,
+re-pinned 70/100, published in the entry + PR #21 (same-PR
+counterevidence discipline). C5 and C6 kill criteria measured and NOT
+fired. No frozen-identity drift anywhere.
+
+Couplings discovered beyond §5 (first-class results):
+1. Runtime-path workloads (disk/net/corpus) retrieve their fault plan
+   INSIDE UniverseCtx::runtime and never hold it — boundary-side shrink
+   capture (C5) cannot reach them without a small kernel API (a
+   plan-capture hook or a runtime() variant returning the retrieved
+   plan). Future INTERFACE REQUEST; typed exit-2 diagnostic meanwhile.
+2. The held-reorder expiry semantic (a reorder with no following send
+   expires its captive) makes NetworkReorder a LOSSY fault at
+   stream-end — workloads wanting loss-free reorder palettes need an
+   eos-trailer idiom (VB-011 implements it; reusable pattern).
+3. demo-buggy universe 0 shares trace hash 9ce6199f… with demo's
+   doctor universe (no crash drawn -> identical trace) — a useful
+   cross-workload identity witness, and a reminder that trace hashes
+   identify EXECUTIONS, not workload variants.
+
+Switches taken (adaptive scheduling): C0 wait -> C7 -> C3 -> C4 -> C5
+-> C6 (increments 1-5). C6 was never blocked, as the charter demands.
+
+Next wave (auto-resumes on merge events / armed check-in): re-anchor,
+rebase later-merging PRs (known trivial conflicts: ACTIVE_TRACK.yaml
+#16/#18; gate.sh + cli_contract.rs + workloads/mod.rs among
+#19/#20/#21), then C1 the moment the grant is ratified, then C2 — the
+guided-exploration thesis' final disposition (promoted or
+falsification-completed) rides on C2's bakeoff.
