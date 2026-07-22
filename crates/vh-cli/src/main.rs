@@ -47,8 +47,8 @@ vh — Mega Hyper Vibration Multiverse Halting Machine
 USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
            [--palette v0|swarm] [--no-divergence-check] [--out DIR]
+           [--shrink]
     vh replay-bundle PATH
-           [--palette v0|swarm] [--no-divergence-check] [--shrink]
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh doctor
