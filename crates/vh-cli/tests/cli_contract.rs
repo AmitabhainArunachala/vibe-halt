@@ -338,3 +338,137 @@ fn out_conflicts_with_single_universe_replay() {
         "missing typed diagnostic:\n{stderr}"
     );
 }
+// ---- boundary-side shrink wiring (convergence C5, audit R1) ----
+
+/// The charter's C5 acceptance, pinned: `vh run --workload demo-buggy
+/// --seed 0xD1CE --universes 100 --shrink` exits 1 and prints a shrunk
+/// plan with STRICTLY fewer injections whose replay reproduces the SAME
+/// oracle violation (exact fingerprint — the oracle inside shrink_cli
+/// matches name+detail, never any-failure).
+#[test]
+fn run_shrink_minimizes_first_failing_universe_strictly() {
+    let (code, stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--shrink",
+    ]);
+    assert_eq!(code, 1, "--shrink must not change the FINDINGS exit code");
+    let line = stdout
+        .lines()
+        .find(|l| l.starts_with("  shrink: MINIMIZED"))
+        .unwrap_or_else(|| panic!("missing anchored MINIMIZED line:\n{stdout}"));
+    // "  shrink: MINIMIZED N -> M injection(s) ..."
+    let mut nums = line
+        .split_whitespace()
+        .filter_map(|w| w.parse::<usize>().ok());
+    let original = nums.next().expect("original count");
+    let minimized = nums.next().expect("minimized count");
+    assert!(
+        minimized < original,
+        "shrink must remove at least one injection ({original} -> {minimized}):\n{stdout}"
+    );
+    assert!(
+        stdout.contains("  shrink-binding: workload=demo-buggy seed=0xd1ce universe="),
+        "missing provenance binding line:\n{stdout}"
+    );
+}
+
+/// Standalone minimization replays to the same violation: shrink one
+/// universe, then independently verify the minimized plan through the
+/// public replay hook — same exact failure detail as the baseline.
+#[test]
+fn standalone_shrink_result_reproduces_the_exact_baseline_violation() {
+    let outcome = vh_cli::shrink_cli::shrink_universe("demo-buggy", 0xD1CE, 2)
+        .expect("universe 2 is a known failing universe");
+    assert!(outcome.minimized_injections < outcome.original_injections);
+    // Independent replay of the minimized plan through the public hook:
+    // the SAME oracle violation, exact detail — not any-failure.
+    let w = vh_cli::workloads::by_name("demo-buggy").unwrap();
+    let replayed = vh_multiverse::run_universe_with_fault_plan(
+        0xD1CE,
+        2,
+        w.as_ref(),
+        outcome.minimized_plan.clone(),
+    );
+    let replayed_failures: Vec<(String, String)> = replayed
+        .always_failures()
+        .iter()
+        .map(|f| (f.name.clone(), f.detail.clone()))
+        .collect();
+    assert_eq!(
+        replayed_failures, outcome.baseline_failures,
+        "minimized plan switched cause — exact fingerprint law violated"
+    );
+    // And removing the last kept injection must lose the violation
+    // (1-minimality is a claim, so check its negative once).
+    assert!(!outcome.minimized_plan.injections().is_empty());
+    let without_last = vh_gremlin::FaultPlan::new(
+        outcome.minimized_plan.injections()[..outcome.minimized_plan.injections().len() - 1]
+            .to_vec(),
+    );
+    let weaker = vh_multiverse::run_universe_with_fault_plan(0xD1CE, 2, w.as_ref(), without_last);
+    let weaker_failures: Vec<(String, String)> = weaker
+        .always_failures()
+        .iter()
+        .map(|f| (f.name.clone(), f.detail.clone()))
+        .collect();
+    assert_ne!(
+        weaker_failures, outcome.baseline_failures,
+        "dropping a kept injection should not still reproduce the exact violation"
+    );
+}
+
+#[test]
+fn shrink_exit_contract_is_typed() {
+    // Clean universe: nothing to shrink — exit 1, anchored UNAVAILABLE.
+    let (code, stdout, _) = vh(&[
+        "shrink",
+        "--workload",
+        "demo",
+        "--seed",
+        "0xD1CE",
+        "--universe",
+        "0",
+    ]);
+    assert_eq!(code, 1);
+    assert!(stdout.contains("shrink: UNAVAILABLE"));
+    // Unsupported workload: usage-class error, exit 2.
+    let (code, _, stderr) = vh(&[
+        "shrink",
+        "--workload",
+        "corpus-lost-update",
+        "--seed",
+        "0xD1CE",
+        "--universe",
+        "1",
+    ]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("does not support workload"));
+    // Missing --universe: usage error.
+    let (code, _, _) = vh(&["shrink", "--workload", "demo-buggy"]);
+    assert_eq!(code, 2);
+    // --shrink conflicts with --universe and with non-v0 palettes.
+    let (code, _, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--universe",
+        "2",
+        "--shrink",
+    ]);
+    assert_eq!(code, 2);
+    let (code, _, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--palette",
+        "swarm",
+        "--shrink",
+    ]);
+    assert_eq!(code, 2);
+}

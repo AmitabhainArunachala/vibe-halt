@@ -10,7 +10,9 @@ mod corpus;
 mod disk;
 mod net;
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 
 pub use corpus::{CrashToctou, DirtyRead, LostUpdate, RetryDoubleApply};
 pub use disk::WalDemo;
@@ -25,9 +27,17 @@ const OP_SPACING_NANOS: u64 = 25_000;
 const HORIZON_NANOS: u64 = OPS * OP_SPACING_NANOS;
 const FAULT_COUNT: usize = 3;
 
+/// Shared cell a capture-enabled workload clones its retrieved fault plan
+/// into (shrink boundary, convergence C5). Purely observational: capture
+/// never alters retrieval order, draws, or the trace.
+pub type PlanCell = Rc<RefCell<Option<FaultPlan>>>;
+
 pub struct KvDemo {
     /// true = acknowledge before flush (the seeded bug).
     pub ack_before_flush: bool,
+    /// When set, the retrieved fault plan is cloned into the cell after
+    /// the single `fault_plan_or` retrieval (shrink capture, C5).
+    pub plan_capture: Option<PlanCell>,
 }
 
 impl Workload for KvDemo {
@@ -79,6 +89,9 @@ impl Workload for KvDemo {
                 universe_seed,
             )
         });
+        if let Some(cell) = &self.plan_capture {
+            *cell.borrow_mut() = Some(plan.clone());
+        }
         let mut cursor = 0usize;
 
         // committed survives crashes; wal is volatile; acked is the client's
@@ -210,9 +223,11 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
     match name {
         "demo" => Some(Box::new(KvDemo {
             ack_before_flush: false,
+            plan_capture: None,
         })),
         "demo-buggy" => Some(Box::new(KvDemo {
             ack_before_flush: true,
+            plan_capture: None,
         })),
         "demo-nondet" => Some(Box::new(NondetDemo)),
         "demo-net" => Some(Box::new(EchoDemo { no_retry: false })),
@@ -235,4 +250,25 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
         })),
         _ => None,
     }
+}
+
+/// Construct a workload with plan capture wired, plus the cell to read
+/// after a run. `None` for workloads without capture support: the sim
+/// runtime retrieves their plan internally (`UniverseCtx::runtime`), so
+/// the workload never holds it — extending capture there needs a kernel
+/// API and is recorded as an open coupling in the convergence ledger.
+pub fn by_name_capturing(name: &str) -> Option<(Box<dyn Workload>, PlanCell)> {
+    let cell: PlanCell = Rc::new(RefCell::new(None));
+    let workload: Box<dyn Workload> = match name {
+        "demo" => Box::new(KvDemo {
+            ack_before_flush: false,
+            plan_capture: Some(Rc::clone(&cell)),
+        }),
+        "demo-buggy" => Box::new(KvDemo {
+            ack_before_flush: true,
+            plan_capture: Some(Rc::clone(&cell)),
+        }),
+        _ => return None,
+    };
+    Some((workload, cell))
 }
