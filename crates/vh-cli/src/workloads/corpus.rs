@@ -7,9 +7,11 @@
 //! doctrine). Entries + pinned recall claims: `corpus/entries/`.
 //!
 //! Classes here: lost update (VB-001), retry double-apply (VB-002),
-//! dirty read (VB-003), crash-window TOCTOU (VB-004). VB-005
-//! (fsync-lie durability hole) lives in `disk.rs` as the paranoid WAL
-//! under a lying-hardware palette.
+//! dirty read (VB-003), crash-window TOCTOU (VB-004), stale-sweep
+//! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417).
+//! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
+//! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
+//! the C2 same-timestamp race (convergence charter §4).
 
 use std::collections::BTreeMap;
 
@@ -520,6 +522,150 @@ impl Workload for CrashToctou {
             rt.declare_end(&format!("acted:{k}"), "true");
             rt.declare_end(&format!("check_epoch:{k}"), &check.to_string());
             rt.declare_end(&format!("act_epoch:{k}"), &act.to_string());
+        }
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-007
+
+const SR_DISPATCHER: u32 = 0;
+const SR_WORKER: u32 = 1;
+const SR_TASKS: u64 = 4;
+const SR_TASK_SPACING: u64 = 100_000;
+/// The stale-run sweep window: a task whose completion has not come back
+/// by this long after dispatch is presumed dead and re-dispatched.
+/// Normal round trip is 2 x BASE_LATENCY (2_000); armed delays reach
+/// 50_000 — the bug window is a merely-slow call outliving the sweep.
+const SR_SWEEP_NANOS: u64 = 20_000;
+
+/// VB-007 stale-sweep re-dispatch (HARVESTED — langchain-ai/langgraph
+/// issue #7417, 2026-04-05): LangGraph Cloud's stale-run sweep marks a
+/// long tool call (~180s+, heartbeat 120s hardcoded) as dead and
+/// re-dispatches it from the last checkpoint WHILE the original is
+/// still running; both complete and the side effect lands twice.
+/// Reduced mechanism: a dispatcher re-sends any task whose completion
+/// missed the sweep deadline; the worker applies every receipt with no
+/// idempotency key. The palette is DELAY-ONLY — no message is ever
+/// lost, so every duplicate application is purely the sweep presuming a
+/// slow call dead (VB-002's cousin: there the retry answers real loss;
+/// here nothing was lost at all).
+pub struct StaleRedispatch;
+
+fn exactly_once_dispatch_oracle(end: &EndState) -> Result<(), String> {
+    let mut violations = Vec::new();
+    for task in 0..SR_TASKS {
+        let applied = end
+            .get(&format!("applied:{task}"))
+            .cloned()
+            .unwrap_or_else(|| "0".to_string());
+        if applied != "1" {
+            violations.push(format!("task {task} applied {applied} times"));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "exactly-once violated: {} (stale sweep re-dispatched an in-flight call; worker has no idempotency key)",
+            violations.join(", ")
+        ))
+    }
+}
+
+impl Workload for StaleRedispatch {
+    fn name(&self) -> &str {
+        "corpus-stale-redispatch"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &["redispatch_fired"]).with_oracles(&["exactly_once_dispatch"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "exactly_once_dispatch",
+            check: exactly_once_dispatch_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.declare_sometimes("redispatch_fired");
+        let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| {
+            // Delays only: every dispatch and every completion is
+            // eventually delivered, so an at-least-once sweep is never
+            // NEEDED — any duplicate application is the sweep firing on
+            // a merely-slow call (the harvested mechanism).
+            let count = 2 + gremlin.next_below(3);
+            let horizon = SR_TASKS * SR_TASK_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
+            FaultPlan::new(
+                (0..count)
+                    .map(|_| FaultInjection {
+                        at_nanos: gremlin.next_below(horizon),
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::NetworkDelay {
+                                delay_nanos: 5_000 + gremlin.next_below(45_000),
+                            }
+                        },
+                    })
+                    .collect(),
+            )
+        });
+
+        // Even timer tokens dispatch task token/2; odd tokens are that
+        // task's sweep deadline.
+        let mut done = [false; SR_TASKS as usize];
+        let mut applied = [0u64; SR_TASKS as usize];
+        for task in 0..SR_TASKS {
+            rt.set_timer(task * SR_TASK_SPACING, task * 2);
+        }
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    let task = token / 2;
+                    if token % 2 == 0 {
+                        rt.send(SR_DISPATCHER, SR_WORKER, &format!("task:{task}"));
+                        let now = rt.now_nanos();
+                        rt.set_timer(now + SR_SWEEP_NANOS, task * 2 + 1);
+                    } else if !done[task as usize] {
+                        // The sweep: completion missed the deadline, so
+                        // the run is presumed dead and re-enqueued — the
+                        // original is still in flight (delay-only).
+                        rt.sometimes("redispatch_fired");
+                        rt.send(SR_DISPATCHER, SR_WORKER, &format!("task:{task}"));
+                    }
+                }
+                StepEvent::Delivered { to, payload, .. } => {
+                    if to == SR_WORKER {
+                        if let Some(task) = payload.strip_prefix("task:") {
+                            let task: u64 = task.parse().expect("deterministic payload");
+                            // The bug: apply on every receipt — no
+                            // idempotency key, no in-flight check.
+                            applied[task as usize] += 1;
+                            let reply = format!("done:{task}");
+                            rt.send(SR_WORKER, SR_DISPATCHER, &reply);
+                        }
+                    } else if let Some(task) = payload.strip_prefix("done:") {
+                        let task: u64 = task.parse().expect("deterministic payload");
+                        done[task as usize] = true;
+                    }
+                }
+                StepEvent::Crashed => unreachable!("delay-only palette"),
+            }
+        }
+        for task in 0..SR_TASKS {
+            rt.declare_end(
+                &format!("applied:{task}"),
+                &applied[task as usize].to_string(),
+            );
         }
         rt.finish();
         RunOutcome::Completed

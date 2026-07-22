@@ -14,7 +14,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-pub use corpus::{CrashToctou, DirtyRead, LostUpdate, RetryDoubleApply};
+pub use corpus::{CrashToctou, DirtyRead, LostUpdate, RetryDoubleApply, StaleRedispatch};
 pub use disk::WalDemo;
 pub use net::EchoDemo;
 use vh_gremlin::{FaultKind, FaultPlan};
@@ -244,6 +244,7 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
         "corpus-retry-double-apply" => Some(Box::new(RetryDoubleApply)),
         "corpus-dirty-read" => Some(Box::new(DirtyRead)),
         "corpus-crash-toctou" => Some(Box::new(CrashToctou)),
+        "corpus-stale-redispatch" => Some(Box::new(StaleRedispatch)),
         "corpus-fsync-lie" => Some(Box::new(WalDemo {
             ack_at_flush: false,
             lie_palette: true,

@@ -1,0 +1,56 @@
+# C6 — real-bug harvest sprint, increment 1 (VB-007): receipt (2026-07-22)
+# Branch claude/convergence-c6-harvest-1 off origin/main @ e36b15b.
+
+## Provenance (playbook source priority 1: real AI-framework defect)
+
+langchain-ai/langgraph issue #7417 — "Long tool calls (~180s+) silently
+re-executed from checkpoint on LangGraph Cloud" (2026-04-05; versions
+1.1.3-1.1.6, Cloud Plus). Mechanism verified from the issue body:
+BG_JOB_HEARTBEAT hardcoded 120s; queue sweep every 240s marks
+long-running tasks stale; CancelledError in ALL_RETRIABLE_EXCEPTIONS
+restarts swept runs from pending WHILE the original still executes;
+both complete; duplicate tool invocations with identical arguments.
+
+## Pipeline (all six playbook steps)
+
+1. Mechanism isolated: liveness sweep with fixed deadline re-enqueues
+   merely-slow in-flight work; no idempotency key at the effect site.
+2. Workload: corpus-stale-redispatch (crates/vh-cli/src/workloads/
+   corpus.rs, VB-007 section). Delay-only palette — nothing is ever
+   lost, so every duplicate application is the sweep's presumption,
+   never a legitimate loss-recovery (distinctness from seeded VB-002,
+   whose retries answer real loss).
+3. Law as oracle: exactly_once_dispatch — applied:<task> == 1 per task;
+   detail names each over-applied task and count.
+4. Recall measured: found 91/100 at seed 0xD1CE, budget 100;
+   divergent 0; 9 fault-light universes PASS (vacuous-failure doctrine
+   holds); sometimes redispatch_fired reached.
+   $ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universes 100
+     always-failures: 91 universe(s); divergent: 0; ...  (exit 1)
+5. Gate pinned: "corpus recall gate: corpus-stale-redispatch" — exact
+   exit 1 + one FINDINGS verdict + anchored oracle:exactly_once_dispatch.
+6. Entry: corpus/entries/VB-007-stale-redispatch.md (VB-006 reserved
+   for the C2 same-timestamp race per charter §4).
+
+## Repro (single failing universe, deterministic)
+
+$ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universe 0
+  hash 326b0dd419e897ce07142ca83adab1ed events 41
+  ALWAYS-FAIL oracle:exactly_once_dispatch: task 3 applied 2 times ...
+  sometimes redispatch_fired: hit          (exit 1)
+
+## Gate
+
+$ make gate
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 ...)
+  gate: corpus-stale-redispatch recalled (exit 1, oracle:exactly_once_dispatch)
+== gate battery: ALL PASS ==
+
+Corpus count after this increment: 6/25 (5 seeded + 1 HARVESTED).
+Sprint target: >=5 harvested this campaign; harvest continues.
+Candidate pool researched for next increments (to be verified at point
+of use): langgraph #6491 (checkpoint saved-but-unretrievable on schema
+violation), OpenHands #12064 (transient upstream 502 crashes the agent,
+losing session work), plus the AIDev merged-agentic-PR dataset
+(arXiv:2606.13468) as a systematic source.
