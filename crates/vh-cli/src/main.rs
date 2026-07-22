@@ -63,7 +63,8 @@ WORKLOADS:
     demo-disk-buggy  acks at flush — the flushed-is-not-fsynced fallacy
     corpus-*         seeded vibe-bug corpus classes (corpus/entries/):
                      lost-update, retry-double-apply, dirty-read,
-                     crash-toctou, fsync-lie, stale-redispatch
+                     crash-toctou, fsync-lie, stale-redispatch,
+                     unvalidated-checkpoint
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every

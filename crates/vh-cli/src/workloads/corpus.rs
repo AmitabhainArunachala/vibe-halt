@@ -8,7 +8,8 @@
 //!
 //! Classes here: lost update (VB-001), retry double-apply (VB-002),
 //! dirty read (VB-003), crash-window TOCTOU (VB-004), stale-sweep
-//! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417).
+//! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417),
+//! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491).
 //! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
 //! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
 //! the C2 same-timestamp race (convergence charter §4).
@@ -666,6 +667,134 @@ impl Workload for StaleRedispatch {
                 &format!("applied:{task}"),
                 &applied[task as usize].to_string(),
             );
+        }
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-008
+
+const UC_NODE: u32 = 0;
+const UC_CKPTS: u64 = 6;
+const UC_CKPT_SPACING: u64 = 30_000;
+
+/// VB-008 unvalidated checkpoint (HARVESTED — langchain-ai/langgraph
+/// issue #6491, 2025-11-24): LangGraph validates node INPUT but not
+/// node OUTPUT, so invalid state is checkpointed successfully and only
+/// explodes later, when `get_state_history()` re-validates on
+/// retrieval — the checkpoint is permanently unrecoverable. Reduced
+/// mechanism: a checkpointer persists records and acknowledges after
+/// fsync WITHOUT ever validating or reading back what it wrote
+/// (validation lives on the read path only). A torn write persists
+/// half a record while the writer sees Ok; retrieval rejects the
+/// malformed record and the acknowledged checkpoint is gone for good.
+/// Contrast demo-disk's paranoid WAL: its verify-after-fsync closes
+/// exactly this window.
+pub struct UnvalidatedCheckpoint;
+
+fn checkpoint_recoverable_oracle(end: &EndState) -> Result<(), String> {
+    let mut violations = Vec::new();
+    for ckpt in 0..UC_CKPTS {
+        if end.get(&format!("acked:{ckpt}")).is_none() {
+            continue;
+        }
+        if end.get(&format!("recovered:{ckpt}")).map(String::as_str) != Some("true") {
+            violations.push(format!("checkpoint {ckpt}"));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "acknowledged but unrecoverable at retrieval: {} (persisted unvalidated; validation lives on the read path only)",
+            violations.join(", ")
+        ))
+    }
+}
+
+impl Workload for UnvalidatedCheckpoint {
+    fn name(&self) -> &str {
+        "corpus-unvalidated-checkpoint"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &[]).with_oracles(&["checkpoint_recoverable"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "checkpoint_recoverable",
+            check: checkpoint_recoverable_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let mut ops = ctx.stream("ops");
+        let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| {
+            // Torn writes only: every write is acknowledged Ok and every
+            // record is durably fsynced, so the ONLY way an acknowledged
+            // checkpoint can be unrecoverable is the missing write-side
+            // validation (the harvested asymmetry) meeting a tear.
+            let count = 1 + gremlin.next_below(3);
+            let horizon = UC_CKPTS * UC_CKPT_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
+            FaultPlan::new(
+                (0..count)
+                    .map(|_| FaultInjection {
+                        at_nanos: gremlin.next_below(horizon),
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::TornWrite
+                        },
+                    })
+                    .collect(),
+            )
+        });
+
+        // Expected full record per checkpoint, deterministic: the
+        // retrieval validator demands the exact framed record
+        // ("ckpt:<id>:<payload>#end"); a torn half-record loses the
+        // terminator and fails validation.
+        let mut expected: Vec<String> = Vec::new();
+        for ckpt in 0..UC_CKPTS {
+            expected.push(format!("ckpt:{ckpt}:d{:04}#end", ops.next_below(10_000)));
+            rt.set_timer(ckpt * UC_CKPT_SPACING, ckpt);
+        }
+        let mut acked = [false; UC_CKPTS as usize];
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    let ckpt = token as usize;
+                    // The bug: write -> flush -> fsync -> ACK. No
+                    // validation, no read-back verify — the writer
+                    // trusts its own Ok (langgraph#6491's output-side
+                    // gap; demo-disk shows the paranoid fix).
+                    let ok = rt.disk_write(UC_NODE, &expected[ckpt]).is_ok()
+                        && rt.disk_flush(UC_NODE).is_ok()
+                        && rt.disk_fsync(UC_NODE).is_ok();
+                    if ok {
+                        acked[ckpt] = true;
+                    }
+                }
+                StepEvent::Delivered { .. } => unreachable!("no messages"),
+                StepEvent::Crashed => unreachable!("torn-only palette"),
+            }
+        }
+        // Retrieval (the get_state_history moment): read durable state
+        // and validate each record on the way out.
+        let durable = rt.disk_read_durable(UC_NODE);
+        for (ckpt, want) in expected.iter().enumerate() {
+            if acked[ckpt] {
+                rt.declare_end(&format!("acked:{ckpt}"), "true");
+                let recovered = durable.iter().any(|r| r == want);
+                rt.declare_end(&format!("recovered:{ckpt}"), &recovered.to_string());
+            }
         }
         rt.finish();
         RunOutcome::Completed

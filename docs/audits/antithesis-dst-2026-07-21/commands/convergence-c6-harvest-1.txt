@@ -54,3 +54,29 @@ of use): langgraph #6491 (checkpoint saved-but-unretrievable on schema
 violation), OpenHands #12064 (transient upstream 502 crashes the agent,
 losing session work), plus the AIDev merged-agentic-PR dataset
 (arXiv:2606.13468) as a systematic source.
+
+## Increment 2 (same PR): VB-008 unvalidated checkpoint
+
+Provenance: langchain-ai/langgraph issue #6491 (2025-11-24) — node
+OUTPUT never validated; invalid state checkpoints successfully;
+get_state_history() re-validates on retrieval and the checkpoint is
+permanently unrecoverable. Verified from the issue body at point of use.
+
+Reduced: corpus-unvalidated-checkpoint — write->flush->fsync->ACK with
+no validation/read-back (the gap); torn-writes-only palette (every
+write Ok, everything fsynced) so the ONLY unrecoverability path is the
+write-side gap meeting a tear. Contrast demo-disk's verify-after-fsync.
+
+Oracle checkpoint_recoverable: acked:<id> => recovered:<id> (exact
+framed record validates at retrieval).
+
+Recall measured then pinned: found 96/100 at seed 0xD1CE, budget 100;
+divergent 0; fault-light universes PASS.
+$ vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universe 0
+  hash cc9068874514d123d0bb370bb3c11ce4 events 31
+  ALWAYS-FAIL oracle:checkpoint_recoverable: ... checkpoint 1 ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-unvalidated-checkpoint" (exact exit 1
++ anchored oracle line). make gate ALL PASS; identities unchanged.
+
+Corpus count: 7/25 (5 seeded + 2 HARVESTED). Sprint: 2/5.
