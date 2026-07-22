@@ -507,3 +507,159 @@ fn runtime_evidence_divergence_is_caught_by_the_detector() {
     // at the delayed delivery.
     assert_eq!(ea.injections()[0].manifested_at(), Some(3_500));
 }
+
+// ---- ClockSkew: observable virtual-clock divergence (convergence C3, audit D6) ----
+//
+// UniverseResult exposes trace hash + event count, not raw entries, so
+// divergence is measured three ways: the workload observes skewed
+// now_nanos values inline (assertions run inside the universe), the
+// lifecycle ladder pins interception to the observing read, and the
+// trace event-count delta against a skew-free control pins exactly the
+// events the skew machinery records (offered, armed, clock.skew,
+// injected, manifested, clock.read).
+
+#[test]
+fn clock_skew_manifests_on_the_first_observing_read() {
+    let skewed = Scripted {
+        plan: vec![inj(5_000, FaultKind::ClockSkew { skew_nanos: 700 })],
+        script: |rt| {
+            // Before the skew arms: local == global.
+            assert_eq!(rt.now_nanos(), 0);
+            rt.set_timer(10_000, 1);
+            while let Some(ev) = rt.step() {
+                if let StepEvent::Timer { .. } = ev {
+                    // Timer fires at global 10_000; the local read has
+                    // diverged by the armed skew.
+                    let t = rt.now_nanos();
+                    assert_eq!(t, 10_700);
+                    rt.record("app", &format!("t={t}"));
+                }
+            }
+        },
+    };
+    let control = Scripted {
+        plan: vec![],
+        script: |rt| {
+            assert_eq!(rt.now_nanos(), 0);
+            rt.set_timer(10_000, 1);
+            while let Some(ev) = rt.step() {
+                if let StepEvent::Timer { .. } = ev {
+                    let t = rt.now_nanos();
+                    assert_eq!(t, 10_000);
+                    rt.record("app", &format!("t={t}"));
+                }
+            }
+        },
+    };
+    let r = run_universe(21, 0, &skewed);
+    let c = run_universe(21, 0, &control);
+
+    let ev = r.runtime_evidence().unwrap();
+    let skew = &ev.injections()[0];
+    assert_eq!(skew.fault(), "clock_skew:700");
+    assert_eq!(skew.offered_at(), Some(5_000));
+    assert_eq!(skew.armed_at(), Some(5_000));
+    // Injected+Manifested coincide at the first observing read (the
+    // read at global 10_000), like a partition drop.
+    assert_eq!(skew.injected_at(), Some(10_000));
+    assert_eq!(skew.manifested_at(), Some(10_000));
+    assert!(skew.recovered_at().is_none());
+
+    // Exactly the skew machinery's six trace events separate the runs:
+    // fault.offered, fault.armed, clock.skew, fault.injected,
+    // fault.manifested, clock.read.
+    assert_eq!(r.trace_events(), c.trace_events() + 6);
+    assert_ne!(r.trace_hash(), c.trace_hash());
+}
+
+#[test]
+fn clock_skew_never_read_honestly_stays_armed() {
+    // The workload never consults its clock: the skew arms (the offset
+    // IS installed) but no read intercepts it — Injected/Manifested
+    // must stay absent; over-claiming here would be the exact ladder
+    // dishonesty the skip-arm removal was meant to end.
+    let w = Scripted {
+        plan: vec![inj(1_000, FaultKind::ClockSkew { skew_nanos: 42 })],
+        script: |rt| {
+            drain(rt);
+        },
+    };
+    let r = run_universe(22, 0, &w);
+    let ev = r.runtime_evidence().unwrap();
+    let skew = &ev.injections()[0];
+    assert_eq!(skew.offered_at(), Some(1_000));
+    assert_eq!(skew.armed_at(), Some(1_000));
+    assert!(skew.injected_at().is_none());
+    assert!(skew.manifested_at().is_none());
+    assert!(skew.recovered_at().is_none());
+    // The universe still completes validly — an armed-only skew is an
+    // honest terminal state, not an invalid completion.
+    assert!(r.lifecycle().is_valid_completion());
+}
+
+#[test]
+fn clock_skew_accumulates_and_replays_bit_identically() {
+    let w = Scripted {
+        plan: vec![
+            inj(1_000, FaultKind::ClockSkew { skew_nanos: 100 }),
+            inj(2_000, FaultKind::ClockSkew { skew_nanos: 30 }),
+        ],
+        script: |rt| {
+            rt.set_timer(3_000, 1);
+            while let Some(ev) = rt.step() {
+                if let StepEvent::Timer { .. } = ev {
+                    // Both skews stack: 3_000 + 100 + 30. Application
+                    // records are stamped with the LOCAL clock — a
+                    // skewed component honestly records skewed time.
+                    assert_eq!(rt.now_nanos(), 3_130);
+                    rt.record("app", "skewed-view");
+                }
+            }
+        },
+    };
+    let a = run_universe(23, 0, &w);
+    let b = run_universe(23, 0, &w);
+    assert!(a.observably_equal(&b));
+    let ev = a.runtime_evidence().unwrap();
+    // One read observes both pending skews at once; each ladder pins
+    // interception to that read.
+    assert_eq!(ev.injections()[0].injected_at(), Some(3_000));
+    assert_eq!(ev.injections()[0].manifested_at(), Some(3_000));
+    assert_eq!(ev.injections()[1].injected_at(), Some(3_000));
+    assert_eq!(ev.injections()[1].manifested_at(), Some(3_000));
+}
+
+#[test]
+fn zero_magnitude_clock_skew_honestly_stays_armed() {
+    // next_below(horizon/20 + 1) can draw 0: a skew that cannot diverge
+    // any reading must never claim interception or manifestation, even
+    // when the clock is read (review finding: phantom-effect
+    // over-claim, the exact dishonesty this change removes).
+    let w = Scripted {
+        plan: vec![
+            inj(1_000, FaultKind::ClockSkew { skew_nanos: 0 }),
+            inj(2_000, FaultKind::ClockSkew { skew_nanos: 40 }),
+        ],
+        script: |rt| {
+            rt.set_timer(3_000, 1);
+            while let Some(ev) = rt.step() {
+                if let StepEvent::Timer { .. } = ev {
+                    // Only the non-zero skew contributes.
+                    assert_eq!(rt.now_nanos(), 3_040);
+                }
+            }
+        },
+    };
+    let r = run_universe(24, 0, &w);
+    let ev = r.runtime_evidence().unwrap();
+    let zero = &ev.injections()[0];
+    assert_eq!(zero.armed_at(), Some(1_000));
+    assert!(zero.injected_at().is_none(), "zero skew must not inject");
+    assert!(
+        zero.manifested_at().is_none(),
+        "zero skew must not manifest"
+    );
+    let real = &ev.injections()[1];
+    assert_eq!(real.injected_at(), Some(3_000));
+    assert_eq!(real.manifested_at(), Some(3_000));
+}

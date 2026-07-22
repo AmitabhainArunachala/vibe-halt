@@ -1,0 +1,82 @@
+# C3 — ClockSkew honesty fix: command receipt (2026-07-22)
+# Branch claude/convergence-c3-clockskew off origin/main @ e36b15b.
+
+## Disposition derivation (why implement, not remove)
+
+Charter offered two options. Option A (remove ClockSkew from
+FaultPlan::generate) is not honestly available:
+- The frozen-surface regression test
+  crates/vh-gremlin/src/lib.rs:417-435 declares generate "part of the
+  frozen demo path — the demo workload's plans, and therefore the frozen
+  doctor trace identity, depend on this exact palette and draw sequence",
+  and asserts ClockSkew IS in v0's allowed set.
+- Any change to the v0 draw mapping changes demo universe plans ->
+  moves doctor trace hash 9ce6199f133f4d3c9dd0da0075e352d2 — which
+  standing law and C1's acceptance both freeze.
+Option B (implement observable virtual-clock divergence) moves ZERO
+current pins, because no SimRuntime workload can receive a ClockSkew
+injection today:
+$ grep -n "FaultPlan::new\|generate_with_palette" crates/vh-cli/src/workloads/*.rs
+  corpus.rs:75,193,316,447  -> explicit FaultPlan::new, no ClockSkew
+  disk.rs:72, net.rs:69     -> explicit FaultPlan::new, no ClockSkew
+  mod.rs:74                 -> generate_with_palette (KvDemo demo/demo-buggy
+                               ONLY — inline workload, never constructs
+                               SimRuntime; ClockSkew is an inert label
+                               there like every non-crash kind)
+vh-shrink's ClockSkew uses (lib.rs:393,396,804-805;
+tests/multiverse_integration.rs:91) never construct a SimRuntime either
+(plan-inspection workload) — radioactive surface unaffected, untouched.
+
+## Implementation (crates/vh-multiverse only)
+
+- runtime.rs: frame split — private global_now() (scheduler frame: all
+  runtime effects, timers, lifecycle marks) vs pub now_nanos(&mut self)
+  (workload-visible LOCAL clock = global + accumulated skew). ClockSkew
+  arm now: Armed at offer + skew installed (clock.skew trace event);
+  Injected+Manifested coincide at the first observing read (clock.read
+  trace event: local=<..> global=<..> skew=<..>); a workload that never
+  reads honestly leaves the skew Armed. fault.skipped arm REMOVED.
+- evidence.rs: stage-doctrine doc updated (skip note removed; skew arm/
+  inject/manifest semantics stated).
+- tests/runtime.rs: 3 new adversarial tests —
+  clock_skew_manifests_on_the_first_observing_read (ladder + exact
+  6-event trace delta vs skew-free control + hash divergence),
+  clock_skew_never_read_honestly_stays_armed (negative: no over-claim,
+  valid completion), clock_skew_accumulates_and_replays_bit_identically
+  (stacked skews, one read observes both, run-twice observably_equal).
+
+## Verification
+
+$ cargo test -q --locked --offline -p vh-multiverse --test runtime
+running 16 tests ... test result: ok. 16 passed; 0 failed
+
+$ make test    # full suite
+32 test-result lines, all "0 failed"
+
+$ make gate    # coupling check: identities + ALL FIVE corpus pins
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+  corpus-lost-update recalled (exit 1, oracle:no_lost_updates)
+  corpus-retry-double-apply recalled (exit 1, oracle:exactly_once)
+  corpus-dirty-read recalled (exit 1, oracle:published_implies_durable)
+  corpus-crash-toctou recalled (exit 1, oracle:act_epoch_matches_check)
+  corpus-fsync-lie recalled (exit 1, oracle:wal_durability)
+== gate battery: ALL PASS ==
+-> no corpus pin moved; no re-pin needed (predicted by the derivation
+   above: generation untouched, no runtime workload draws ClockSkew).
+
+## Falsification attempt (adversarial self-check)
+
+Byte-diff of full `vh run` stdout, main vs this branch, 50 universes,
+seed 0xD1CE, five workloads (demo-disk, demo-net, corpus-crash-toctou,
+demo, demo-buggy):
+$ diff main-<w>.txt branch-<w>.txt   # all five
+demo-disk: IDENTICAL / demo-net: IDENTICAL / corpus-crash-toctou:
+IDENTICAL / demo: IDENTICAL / demo-buggy: IDENTICAL
+-> the claim "zero current behavior changes" survived its falsifier.
+
+## Governance
+
+ACTIVE_TRACK.yaml: C3 grant appended to Track-2 owned_surfaces
+(runtime.rs clock-skew arm + local-clock surface, evidence.rs doc,
+tests/runtime.rs), ratified by human merge of this PR (two-key).

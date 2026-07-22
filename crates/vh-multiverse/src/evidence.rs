@@ -13,18 +13,19 @@
 //!   scheduled virtual time. An injection beyond the workload's last
 //!   `step()` is honestly never offered.
 //! * **Armed** — the runtime installed the fault (partition window set,
-//!   one-shot fault queued, crash initiated). ClockSkew is offered but
-//!   never armed by the v1 runtime (no per-node clock surface yet); the
-//!   skip is recorded in the trace.
+//!   one-shot fault queued, crash initiated, clock-skew offset added to
+//!   the workload-visible local clock).
 //! * **Injected** — the armed fault intercepted a concrete operation
 //!   (a send dropped or delayed, a write failed or torn, an fsync lied,
-//!   volatile state wiped by a crash).
+//!   volatile state wiped by a crash, a clock read returning skewed
+//!   time). A skew whose clock is never read honestly stays Armed.
 //! * **Manifested** — the effect crossed the workload-visible API
 //!   surface (an `Err` returned, a shaped/late delivery handed over, a
 //!   torn record read back, lied-about data actually lost at a crash,
 //!   the `Crashed` event delivered). For faults whose effect is
-//!   unconditional at the point of injection (a partition drop), the
-//!   two timestamps coincide by design — non-delivery IS the effect.
+//!   unconditional at the point of injection (a partition drop, a
+//!   skewed clock read), the two timestamps coincide by design —
+//!   non-delivery / the skewed reading IS the effect.
 //! * **Recovered** — the faulted channel demonstrably operated normally
 //!   again (post-heal delivery, post-failure successful write, honest
 //!   fsync persisting lied-about data, first workload-initiated
