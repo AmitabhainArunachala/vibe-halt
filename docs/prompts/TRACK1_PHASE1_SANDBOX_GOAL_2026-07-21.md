@@ -1,5 +1,7 @@
 # VIBE-HALT — PHASE-1 REMAINDER: TIER-2/D1 HERMETIC SANDBOX MVP (Track 1)
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 Authored 2026-07-21 by the Grand Orchestrator. You are a fresh Track-1
 builder session on `AmitabhainArunachala/vibe-halt` — assume ZERO memory;
 every moving fact below must be re-verified before you rely on it. This

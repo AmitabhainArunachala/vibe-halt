@@ -1,5 +1,7 @@
 # Phase-1 Night Campaign — 2026-07-20 → 07-21
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 One overnight, two autonomous tracks, one goal: convert the hardened
 Phase-0 skeleton into a real Phase-1 simulation runtime — runtime-owned
 fault injection across all five gremlin channels, the semantic fault
