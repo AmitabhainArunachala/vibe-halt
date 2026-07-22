@@ -28,12 +28,28 @@ pub struct ShrinkOutcome {
     /// The exact fingerprint the oracle matched: `(name, detail)` per
     /// always-failure, in recorded order.
     pub baseline_failures: Vec<(String, String)>,
+    /// Deterministic digest over the EXACT `(name, detail)` fingerprint
+    /// the oracle matched, so the printed binding can distinguish cause
+    /// switches and later drift without dumping multi-line details
+    /// (review finding on this PR; full details move into C4 bundles).
+    pub fingerprint_digest: String,
     pub original_injections: usize,
     pub minimized_injections: usize,
     pub oracle_calls: usize,
     pub distinct_candidates: usize,
     /// The 1-minimal plan itself, for independent replay verification.
     pub minimized_plan: FaultPlan,
+}
+
+/// Digest the exact `(name, detail)` failure set with the frozen trace
+/// hasher — the binding receipt's cause identity.
+fn fingerprint_digest(failures: &[(String, String)]) -> String {
+    let mut t = vh_trace::Trace::new();
+    t.record(0, "schema", "vh-shrink-fingerprint-v1");
+    for (i, (name, detail)) in failures.iter().enumerate() {
+        t.record(i as u64 + 1, "failure", &format!("{name}={detail}"));
+    }
+    t.hash_hex()
 }
 
 fn fingerprint(result: &UniverseResult) -> Vec<(String, String)> {
@@ -120,6 +136,7 @@ pub fn shrink_universe(
         universe,
         baseline_trace_hash: a.trace_hash().to_string(),
         baseline_plan_digest: a.fault_plan_digest().map(str::to_string),
+        fingerprint_digest: fingerprint_digest(&baseline),
         baseline_failures: baseline,
         original_injections: report.original_injections(),
         minimized_injections: report.minimized_injections(),

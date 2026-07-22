@@ -410,13 +410,14 @@ fn print_shrink(workload: &str, seed: u64, universe: u64) -> bool {
                 .map(|(n, _)| n.as_str())
                 .collect();
             println!(
-                "  shrink-binding: workload={} seed=0x{:x} universe={} palette=v0 baseline-hash={} plan-digest={} fingerprint={}",
+                "  shrink-binding: workload={} seed=0x{:x} universe={} palette=v0 baseline-hash={} plan-digest={} fingerprint={} fingerprint-digest={}",
                 o.workload,
                 o.seed,
                 o.universe,
                 o.baseline_trace_hash,
                 o.baseline_plan_digest.as_deref().unwrap_or("none"),
-                fingerprint.join(",")
+                fingerprint.join(","),
+                o.fingerprint_digest
             );
             println!(
                 "    repro: vh run --workload {} --seed 0x{:x} --universe {}",

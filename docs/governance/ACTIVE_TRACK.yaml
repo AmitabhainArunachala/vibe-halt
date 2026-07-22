@@ -15,6 +15,10 @@ shared_surfaces:
   - docs/governance/ACTIVE_TRACK.yaml
   - scripts/check_determinism_denylist.py
   - corpus/PLAYBOOK.md
+  # The single gate implementation (make gate AND CI): every track
+  # appends its anchored gates here — shared under the append-only
+  # protocol (registered 2026-07-22, convergence C5 review finding).
+  - scripts/gate.sh
 
 spine_objectives:
   - id: deterministic-truth
