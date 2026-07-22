@@ -44,12 +44,12 @@
 
 use std::collections::{BTreeMap, VecDeque};
 
-use vh_core::{Scheduler, VirtualTime};
+use vh_core::{PctStrategy, Scheduler, UniformTiebreakStrategy, VirtualTime};
 use vh_gremlin::{FaultKind, FaultPlan};
 use vh_trace::DecisionTape;
 
 use crate::evidence::{InjectionOutcome, RuntimeEvidence};
-use crate::UniverseCtx;
+use crate::{SchedulePolicy, UniverseCtx};
 
 pub type NodeId = u32;
 
@@ -123,6 +123,12 @@ struct HeldMsg {
     reorder_idx: usize,
 }
 
+enum ActiveStrategy {
+    Fifo,
+    Pct(PctStrategy),
+    Uniform(UniformTiebreakStrategy),
+}
+
 enum LifecycleStage {
     Offered,
     Armed,
@@ -146,6 +152,9 @@ pub struct SimRuntime<'a> {
     /// universe result; the frozen execution trace never sees it
     /// (convergence C1, the standing W2 interface request).
     tape: DecisionTape,
+    /// The instantiated same-timestamp strategy (convergence C2):
+    /// deterministic per universe seed; Fifo carries no state.
+    strategy: ActiveStrategy,
     faults: Vec<FaultKind>,
     outcomes: Vec<InjectionOutcome>,
     epoch: u64,
@@ -192,12 +201,21 @@ impl UniverseCtx {
             "one sim runtime per universe (v1): a second construction would fragment the fault-lifecycle ledger"
         );
         let plan = self.fault_plan_or(generate);
-        SimRuntime::new(self, plan)
+        let strategy = match self.schedule_policy {
+            SchedulePolicy::Fifo => ActiveStrategy::Fifo,
+            SchedulePolicy::Pct { depth } => {
+                ActiveStrategy::Pct(PctStrategy::new(self.universe_seed(), depth))
+            }
+            SchedulePolicy::UniformTiebreak => {
+                ActiveStrategy::Uniform(UniformTiebreakStrategy::new(self.universe_seed()))
+            }
+        };
+        SimRuntime::new(self, plan, strategy)
     }
 }
 
 impl<'a> SimRuntime<'a> {
-    fn new(ctx: &'a mut UniverseCtx, plan: FaultPlan) -> Self {
+    fn new(ctx: &'a mut UniverseCtx, plan: FaultPlan, strategy: ActiveStrategy) -> Self {
         let mut sched = Scheduler::new();
         let mut faults = Vec::new();
         let mut outcomes = Vec::new();
@@ -210,6 +228,7 @@ impl<'a> SimRuntime<'a> {
             ctx,
             sched,
             tape: DecisionTape::new(),
+            strategy,
             faults,
             outcomes,
             epoch: 0,
@@ -596,25 +615,52 @@ impl<'a> SimRuntime<'a> {
     /// faults along the way. `None` when the scheduler is drained.
     pub fn step(&mut self) -> Option<StepEvent> {
         loop {
-            // The sole runtime pop site (C0-granted wiring). Recording
-            // is OPT-IN: the per-pop candidate digest costs ~50% wall
-            // at the 200-universe runtime demo, so the C1 kill
-            // criterion put the tape behind the flag; the un-recorded
-            // arm is the original pop, bit-for-bit.
+            // The sole runtime pop site (C0-granted wiring; C2 extends
+            // it with opt-in same-timestamp strategies). Recording is
+            // OPT-IN: the per-pop candidate digest costs ~50% wall at
+            // the 200-universe runtime demo (C1 kill criterion), so the
+            // Fifo un-recorded arm is the original pop, bit-for-bit.
+            // Exploratory strategies always pop through the chosen-
+            // candidate path; their decisions enter the tape only when
+            // recording is on.
             let Self {
-                sched, tape, ctx, ..
+                sched,
+                tape,
+                ctx,
+                strategy,
+                ..
             } = self;
-            let (at, ev) = if ctx.record_tape {
-                sched.pop_recorded("runtime.step", "fifo-v0", |d| {
+            let record_tape = ctx.record_tape;
+            let record = |d: vh_core::SchedulerDecision| {
+                if record_tape {
                     tape.record_decision(
                         &d.site_id,
                         &d.candidate_set_digest,
                         d.chosen_index,
                         &d.policy_id,
                     );
-                })?
-            } else {
-                sched.pop()?
+                }
+            };
+            let (at, ev) = match strategy {
+                ActiveStrategy::Fifo => {
+                    if record_tape {
+                        sched.pop_recorded("runtime.step", "fifo-v0", record)?
+                    } else {
+                        sched.pop()?
+                    }
+                }
+                ActiveStrategy::Pct(pct) => sched.pop_chosen(
+                    "runtime.step",
+                    "pct-v1",
+                    |candidates| pct.choose(candidates),
+                    record,
+                )?,
+                ActiveStrategy::Uniform(uni) => sched.pop_chosen(
+                    "runtime.step",
+                    "uniform-tiebreak-v1",
+                    |candidates| uni.choose(candidates),
+                    record,
+                )?,
             };
             let now = at.nanos();
             self.ctx.clock.advance_to(at);

@@ -12,7 +12,8 @@
 //! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491),
 //! transient-fatal abort (VB-009, HARVESTED from OpenHands#12064),
 //! resume-becomes-replay (VB-010, HARVESTED from langgraph#7361),
-//! blind stream append (VB-011, HARVESTED from langchain#22227).
+//! blind stream append (VB-011, HARVESTED from langchain#22227),
+//! same-timestamp race (VB-006, SEEDED for the C2 PCT bet).
 //! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
 //! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
 //! the C2 same-timestamp race (convergence charter §4).
@@ -1209,6 +1210,119 @@ impl Workload for BlindStreamAppend {
         }
         rt.declare_end("assembled", &assembled.join("|"));
         rt.declare_end("expected", &tokens.join("|"));
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-006
+
+const ST_WRITER: u32 = 0;
+const ST_STORE: u32 = 1;
+const ST_ROUNDS: u64 = 6;
+const ST_ROUND_SPACING: u64 = 40_000;
+
+/// VB-006 same-timestamp race (SEEDED for convergence C2 / Track-2 W3;
+/// reserved since the campaign charter): each round the writer sends
+/// `init` then `commit` back-to-back, so both arrive at the SAME
+/// virtual time — a same-timestamp scheduler frontier of exactly two.
+/// The store applies `commit` without checking that `init` arrived (the
+/// bug: an ordering assumption with no guard). Under FIFO v0 the
+/// insertion-order tiebreak ALWAYS delivers init first — the bug is
+/// invisible by construction, in any universe, at any seed. Only a
+/// same-timestamp schedule strategy (PCT / uniform tiebreak) can flip
+/// the pair and expose it. No faults are injected at all: the race is
+/// pure scheduling.
+pub struct SameTimestampRace;
+
+fn init_before_commit_oracle(end: &EndState) -> Result<(), String> {
+    // Fail-closed (Codex audit B.2): every round must declare its base
+    // fact AND it must be "ok". An absent key or any non-ok value is a
+    // violation — the oracle never passes by omission.
+    let mut violations = Vec::new();
+    for round in 0..ST_ROUNDS {
+        match end.get(&format!("commit_base:{round}")).map(String::as_str) {
+            Some("ok") => {}
+            Some(other) => violations.push(format!("round {round} (base={other})")),
+            None => violations.push(format!("round {round} (base fact missing)")),
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "commit applied before its init: {} (same-timestamp delivery order assumed, never guarded)",
+            violations.join(", ")
+        ))
+    }
+}
+
+impl Workload for SameTimestampRace {
+    fn name(&self) -> &str {
+        "corpus-same-timestamp-race"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &[]).with_oracles(&["init_before_commit"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "init_before_commit",
+            check: init_before_commit_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let mut ops = ctx.stream("ops");
+        let mut rt = ctx.runtime(|| FaultPlan::new(Vec::new()));
+
+        // Per-universe payload texture only — behavior is identical in
+        // every universe under FIFO; the SCHEDULE is the only variable.
+        let mut vals: Vec<u64> = Vec::new();
+        for round in 0..ST_ROUNDS {
+            vals.push(ops.next_below(1_000));
+            rt.set_timer(round * ST_ROUND_SPACING, round);
+        }
+        let mut inited = [false; ST_ROUNDS as usize];
+        let mut outcome: Vec<Option<&'static str>> = vec![None; ST_ROUNDS as usize];
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    let round = token as usize;
+                    // Back-to-back sends: identical delivery time, one
+                    // same-timestamp frontier per round.
+                    rt.send(
+                        ST_WRITER,
+                        ST_STORE,
+                        &format!("init:{round}:{}", vals[round]),
+                    );
+                    rt.send(ST_WRITER, ST_STORE, &format!("commit:{round}"));
+                }
+                StepEvent::Delivered { payload, .. } => {
+                    if let Some(rest) = payload.strip_prefix("init:") {
+                        let round: usize = rest
+                            .split(':')
+                            .next()
+                            .and_then(|r| r.parse().ok())
+                            .expect("deterministic payload");
+                        inited[round] = true;
+                    } else if let Some(round) = payload.strip_prefix("commit:") {
+                        let round: usize = round.parse().expect("deterministic payload");
+                        // The bug: apply the commit against whatever
+                        // base is present — no init-arrived guard.
+                        outcome[round] = Some(if inited[round] { "ok" } else { "missing-init" });
+                    }
+                }
+                StepEvent::Crashed => unreachable!("empty fault plan"),
+            }
+        }
+        for (round, oc) in outcome.iter().enumerate() {
+            rt.declare_end(
+                &format!("commit_base:{round}"),
+                oc.unwrap_or("never-committed"),
+            );
+        }
         rt.finish();
         RunOutcome::Completed
     }

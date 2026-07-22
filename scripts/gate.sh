@@ -434,4 +434,45 @@ if ! printf '%s\n' "$legacy_out" | grep -q 'hash 9ce6199f133f4d3c9dd0da0075e352d
 fi
 echo "gate: tape is opt-in and additive (no default/legacy leak; frozen identity intact)"
 
+echo "== C2 gate: VB-006 invisible to FIFO v0 (exact exit 0, CLEAN, 2000 universes) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 2000)
+code=$?
+set -e
+clean=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN')
+if [ "$code" -ne 0 ] || [ "$clean" -ne 1 ]; then
+  echo "GATE FAIL: VB-006 must be INVISIBLE to FIFO v0 (expected exit 0 + CLEAN, got exit $code / $clean) — a FIFO finding here means the frozen tiebreak moved"
+  exit 1
+fi
+echo "gate: VB-006 invisible to FIFO v0 (exit 0, CLEAN over 2000 universes; 10k pinned in the C2 receipt)"
+
+echo "== C2 gate: PCT d=3 finds VB-006 within 100 universes (exact exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 100 --schedule pct:3 --record-tape)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:init_before_commit')
+# Exact-count pins (Codex audit B.1): the published recall is 76/100
+# with the first finding at universe 0 — drift in either direction
+# (including UP: the anti-gaming rule) is a gate failure, not a bonus.
+pinned=$(printf '%s\n' "$out" | grep -c '^  always-failures: 76 universe(s)')
+first=$(printf '%s\n' "$out" | grep -c '^  FAIL universe 0: oracle:init_before_commit')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ] || [ "$pinned" -ne 1 ] || [ "$first" -ne 1 ]; then
+  echo "GATE FAIL: PCT d=3 expected exit 1 + FINDINGS + exactly 76/100 failing with first at universe 0, got exit $code / verdicts $verdicts / fails $fails / pin76 $pinned / first0 $first"
+  exit 1
+fi
+echo "gate: PCT d=3 finds VB-006 within 100 universes (exit 1, oracle:init_before_commit, pinned 76/100 first=0)"
+
+echo "== C2 gate: PCT replay is byte-identical from (seed, tape digest) =="
+set +e
+rep_a=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-same-timestamp-race --seed 0xD1CE --universe 0 --schedule pct:3 --record-tape | grep -E '^universe 0 |^  decision tape: ')
+rep_b=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-same-timestamp-race --seed 0xD1CE --universe 0 --schedule pct:3 --record-tape | grep -E '^universe 0 |^  decision tape: ')
+set -e
+if [ -z "$rep_a" ] || [ "$rep_a" != "$rep_b" ]; then
+  echo "GATE FAIL: PCT replay identity broke across two processes"
+  exit 1
+fi
+echo "gate: PCT replay byte-identical across processes (trace hash + tape digest agree)"
+
 echo "== gate battery: ALL PASS =="

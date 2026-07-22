@@ -140,6 +140,7 @@ tracks:
       - crates/vh-multiverse/src/lib.rs
       - crates/vh-cli/**
       - scripts/track2_swarm_bakeoff.py
+      - scripts/track2_pct_bakeoff.py
       - scripts/onboard.py
       - corpus/PLAYBOOK.md
       - docs/audits/**

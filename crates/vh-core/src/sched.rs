@@ -148,6 +148,43 @@ impl<E> Scheduler<E> {
         Some((at, event))
     }
 
+    /// Pop the same-timestamp candidate CHOSEN by `choose` (an index
+    /// into the seq-sorted frontier), recording the decision
+    /// (convergence C2). `choose(_) -> 0` is exactly FIFO. The frontier
+    /// is drained, the chosen entry removed, and the rest re-pushed
+    /// with their ORIGINAL sequence numbers — total order among
+    /// unchosen events is preserved, so the only degree of freedom is
+    /// the one the policy exercises. An out-of-range choice is clamped
+    /// to the last candidate (defensive; policies are deterministic).
+    pub fn pop_chosen(
+        &mut self,
+        site_id: &str,
+        policy_id: &str,
+        choose: impl FnOnce(&[(VirtualTime, u64)]) -> usize,
+        mut record: impl FnMut(SchedulerDecision),
+    ) -> Option<(VirtualTime, E)> {
+        let earliest = self.heap.peek().map(|Reverse(e)| e.at)?;
+        let mut frontier: Vec<Entry<E>> = Vec::new();
+        while self.heap.peek().is_some_and(|Reverse(e)| e.at == earliest) {
+            frontier.push(self.heap.pop().expect("peeked").0);
+        }
+        frontier.sort_by_key(|e| e.seq);
+        let candidates: Vec<(VirtualTime, u64)> = frontier.iter().map(|e| (e.at, e.seq)).collect();
+        let idx = choose(&candidates).min(candidates.len() - 1);
+        record(SchedulerDecision {
+            site_id: site_id.to_string(),
+            candidate_set_digest: scheduler_candidate_digest(&candidates),
+            chosen_index: idx as u64,
+            policy_id: policy_id.to_string(),
+        });
+        let chosen = frontier.remove(idx);
+        for e in frontier {
+            self.heap.push(Reverse(e));
+        }
+        self.watermark = chosen.at;
+        Some((chosen.at, chosen.event))
+    }
+
     pub fn len(&self) -> usize {
         self.heap.len()
     }

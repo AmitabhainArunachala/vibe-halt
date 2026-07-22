@@ -79,6 +79,9 @@ pub struct UniverseCtx {
     /// evidence ledger; `None` for universes that never constructed the
     /// runtime (convergence C1, Track-2 W2 / RFC-003).
     pub(crate) decision_tape_digest: Option<String>,
+    /// Same-timestamp schedule policy the sim runtime pops under
+    /// (convergence C2). Fifo unless an exploratory entry point set it.
+    pub(crate) schedule_policy: SchedulePolicy,
     /// Whether the sim runtime records its scheduler decision tape.
     /// OFF by default: the tape's per-pop candidate digest costs ~50%
     /// wall at the 200-universe runtime demo (convergence C1 kill
@@ -113,6 +116,7 @@ impl UniverseCtx {
             plan_digest_trace,
             runtime_evidence: None,
             decision_tape_digest: None,
+            schedule_policy: SchedulePolicy::Fifo,
             record_tape: false,
             end_state: EndState::new(),
             fault_palette,
@@ -270,6 +274,24 @@ pub enum FaultPlanDiscipline {
     /// An override was supplied and retrieved more than once — ambiguous
     /// replay. Fails closed: never a valid completion.
     OverrideRetrievedMultiply { retrievals: u64 },
+}
+
+/// Same-timestamp schedule policy for the sim runtime's pop site
+/// (convergence C2, Track-2 W3). `Fifo` is the frozen v0 default —
+/// bit-for-bit the original pop. The exploratory strategies are OPT-IN
+/// and deterministic per `(root seed, universe)`; their choices are
+/// witnessed by the decision tape when recording is on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SchedulePolicy {
+    Fifo,
+    /// PCT with `depth` change points (Burckhardt 2010; Shuttle shapes,
+    /// reimplemented dependency-free in `vh_core::strategy`).
+    Pct {
+        depth: u64,
+    },
+    /// Uniform-with-random-tiebreak: the null hypothesis PCT must beat
+    /// (the C2 kill criterion's comparator).
+    UniformTiebreak,
 }
 
 /// Runner-owned lifecycle evidence for one universe: the workload's typed
@@ -644,6 +666,29 @@ fn run_universe_inner(
     )
 }
 
+/// [`run_universe_recorded`] with an explicit same-timestamp schedule
+/// policy (convergence C2). `SchedulePolicy::Fifo` is bit-identical to
+/// [`run_universe_recorded`]; exploratory policies are opt-in and
+/// deterministic per `(root_seed, universe_id)`.
+pub fn run_universe_scheduled(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+    policy: SchedulePolicy,
+) -> UniverseResult {
+    run_universe_inner_scheduled(
+        root_seed,
+        universe_id,
+        workload,
+        None,
+        fault_palette,
+        record_tape,
+        policy,
+    )
+}
+
 fn run_universe_inner_recorded(
     root_seed: u64,
     universe_id: u64,
@@ -652,9 +697,30 @@ fn run_universe_inner_recorded(
     fault_palette: FaultPalette,
     record_tape: bool,
 ) -> UniverseResult {
+    run_universe_inner_scheduled(
+        root_seed,
+        universe_id,
+        workload,
+        fault_plan_override,
+        fault_palette,
+        record_tape,
+        SchedulePolicy::Fifo,
+    )
+}
+
+fn run_universe_inner_scheduled(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_plan_override: Option<FaultPlan>,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+    policy: SchedulePolicy,
+) -> UniverseResult {
     let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override, fault_palette);
     ctx.record_tape = record_tape;
+    ctx.schedule_policy = policy;
     let outcome = workload.run(&mut ctx);
     // Post-run oracle judgment: runner-owned, over the immutable declared
     // end state, one transcript entry per oracle in list order. Judged
@@ -980,6 +1046,24 @@ pub fn run_multiverse_recorded(
     fault_palette: FaultPalette,
     record_tape: bool,
 ) -> MultiverseReport {
+    run_multiverse_scheduled(
+        cfg,
+        workload,
+        fault_palette,
+        record_tape,
+        SchedulePolicy::Fifo,
+    )
+}
+
+/// [`run_multiverse_recorded`] with an explicit schedule policy
+/// (convergence C2; opt-in, Fifo default).
+pub fn run_multiverse_scheduled(
+    cfg: &MultiverseConfig,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+    policy: SchedulePolicy,
+) -> MultiverseReport {
     let universes = cfg.universes.get();
     // UniverseCount::MAX bounds this preallocation; the typed constructor
     // rejects anything larger before we get here.
@@ -990,12 +1074,13 @@ pub fn run_multiverse_recorded(
     let mut contract_violations: Vec<(u64, String)> = Vec::new();
 
     for universe_id in 0..universes {
-        let first = run_universe_recorded(
+        let first = run_universe_scheduled(
             cfg.root_seed,
             universe_id,
             workload,
             fault_palette,
             record_tape,
+            policy,
         );
         merged.absorb(universe_id, &props_of(&first));
         for v in contract.violations(&first) {
@@ -1005,12 +1090,13 @@ pub fn run_multiverse_recorded(
     }
     if cfg.check_divergence {
         for universe_id in 0..universes {
-            let second = run_universe_recorded(
+            let second = run_universe_scheduled(
                 cfg.root_seed,
                 universe_id,
                 workload,
                 fault_palette,
                 record_tape,
+                policy,
             );
             if !second.observably_equal(&results[universe_id as usize]) {
                 divergent.push(universe_id);

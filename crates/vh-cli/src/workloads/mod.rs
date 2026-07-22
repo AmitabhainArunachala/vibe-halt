@@ -16,7 +16,7 @@ use std::rc::Rc;
 
 pub use corpus::{
     BlindStreamAppend, CrashToctou, DirtyRead, LostUpdate, ResumeReplay, RetryDoubleApply,
-    StaleRedispatch, TransientFatalAbort, UnvalidatedCheckpoint,
+    SameTimestampRace, StaleRedispatch, TransientFatalAbort, UnvalidatedCheckpoint,
 };
 pub use disk::WalDemo;
 pub use net::EchoDemo;
@@ -252,6 +252,7 @@ pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
         "corpus-transient-fatal-abort" => Some(Box::new(TransientFatalAbort)),
         "corpus-resume-replay" => Some(Box::new(ResumeReplay)),
         "corpus-blind-stream-append" => Some(Box::new(BlindStreamAppend)),
+        "corpus-same-timestamp-race" => Some(Box::new(SameTimestampRace)),
         "corpus-fsync-lie" => Some(Box::new(WalDemo {
             ack_at_flush: false,
             lie_palette: true,
