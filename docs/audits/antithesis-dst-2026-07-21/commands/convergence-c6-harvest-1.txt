@@ -112,3 +112,31 @@ Gate: "corpus recall gate: corpus-transient-fatal-abort" (exact exit 1
 unchanged.
 
 Corpus count: 8/25 (5 seeded + 3 HARVESTED). Sprint: 3/5.
+
+## Increment 4 (same PR): VB-010 resume-becomes-replay
+
+Provenance: langchain-ai/langgraph issue #7361 (2026-03-31, 1.1.x
+regression) — resume from a checkpoint_id re-executes from the
+BEGINNING, not the interrupt point; the checkpoint was fine (dropping
+checkpoint_id works around it). Verified at point of use.
+
+Reduced: corpus-resume-replay — side-effecting steps + durably fsynced
+progress cursor; on crash-recovery the cursor is READ BACK then ignored
+(pipeline rescheduled from step 0). Crashes-only palette 0..=2 — the
+first pin (count 1..=2) hit 100/100, which trips the anti-gaming rule
+(a palette must not guarantee failure); widened to include crash-free
+universes, which PASS. Duplication engine = crash-recovery itself
+(distinct from VB-002 lossy-retry and VB-007 stale-sweep).
+
+Oracle resume_at_most_once: applied:<step> <= 1 across crash epochs.
+
+Recall measured then pinned: found 70/100 at seed 0xD1CE, budget 100;
+divergent 0; crash-free universes PASS; sometimes crash_resume reached.
+$ vh run --workload corpus-resume-replay --seed 0xD1CE --universe 1
+  FAIL: resume replayed completed work: step 0 applied 2 times, step 1
+  applied 2 times ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-resume-replay". make gate ALL PASS;
+identities unchanged.
+
+Corpus count: 9/25 (5 seeded + 4 HARVESTED). Sprint: 4/5.

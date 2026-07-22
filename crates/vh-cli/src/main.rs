@@ -64,7 +64,8 @@ WORKLOADS:
     corpus-*         seeded vibe-bug corpus classes (corpus/entries/):
                      lost-update, retry-double-apply, dirty-read,
                      crash-toctou, fsync-lie, stale-redispatch,
-                     unvalidated-checkpoint, transient-fatal-abort
+                     unvalidated-checkpoint, transient-fatal-abort,
+                     resume-replay
 
 `vh run` exits 0 only if the multiverse is CLEAN: divergence-checked, no
 always-failure, no divergence, every declared sometimes reached, every

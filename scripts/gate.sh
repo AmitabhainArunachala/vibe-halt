@@ -241,6 +241,19 @@ if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
 fi
 echo "gate: corpus-transient-fatal-abort recalled (exit 1, oracle:session_complete)"
 
+echo "== corpus recall gate: corpus-resume-replay must be FOUND (exact exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-resume-replay --seed 0xD1CE --universes 100)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:resume_at_most_once')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
+  echo "GATE FAIL: corpus-resume-replay expected exit 1 + FINDINGS + anchored oracle:resume_at_most_once, got exit $code / $verdicts / $fails"
+  exit 1
+fi
+echo "gate: corpus-resume-replay recalled (exit 1, oracle:resume_at_most_once)"
+
 echo "== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 50)

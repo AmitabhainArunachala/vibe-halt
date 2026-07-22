@@ -10,7 +10,8 @@
 //! dirty read (VB-003), crash-window TOCTOU (VB-004), stale-sweep
 //! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417),
 //! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491),
-//! transient-fatal abort (VB-009, HARVESTED from OpenHands#12064).
+//! transient-fatal abort (VB-009, HARVESTED from OpenHands#12064),
+//! resume-becomes-replay (VB-010, HARVESTED from langgraph#7361).
 //! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
 //! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
 //! the C2 same-timestamp race (convergence charter §4).
@@ -944,6 +945,139 @@ impl Workload for TransientFatalAbort {
             rt.declare_end(
                 &format!("completed:{task}"),
                 &completed[task as usize].to_string(),
+            );
+        }
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-010
+
+const RR_NODE: u32 = 0;
+const RR_STEPS: u64 = 5;
+const RR_STEP_SPACING: u64 = 30_000;
+
+/// VB-010 resume-becomes-replay (HARVESTED — langchain-ai/langgraph
+/// issue #7361, 2026-03-31, regression in 1.1.x): resuming a graph
+/// from a specific `checkpoint_id` re-executes from the BEGINNING
+/// instead of continuing at the interrupt point — "the second run for
+/// resume still run from the beginning of the graph, not interrupt
+/// trigger point" — though the checkpoint with the progress exists
+/// (removing checkpoint_id from config is a workaround: the data was
+/// fine, the resume path misuses it). Reduced mechanism: a pipeline
+/// applies side-effecting steps and durably fsyncs a progress cursor
+/// after each; on crash-recovery it READS the cursor back — and
+/// restarts from step 0 anyway. Every pre-crash side effect lands a
+/// second time.
+pub struct ResumeReplay;
+
+fn resume_at_most_once_oracle(end: &EndState) -> Result<(), String> {
+    let mut violations = Vec::new();
+    for step in 0..RR_STEPS {
+        let applied = end
+            .get(&format!("applied:{step}"))
+            .cloned()
+            .unwrap_or_else(|| "0".to_string());
+        let n: u64 = applied.parse().unwrap_or(0);
+        if n > 1 {
+            violations.push(format!("step {step} applied {n} times"));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "resume replayed completed work: {} (durable cursor read then ignored; resume restarted from step 0)",
+            violations.join(", ")
+        ))
+    }
+}
+
+impl Workload for ResumeReplay {
+    fn name(&self) -> &str {
+        "corpus-resume-replay"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &["crash_resume"]).with_oracles(&["resume_at_most_once"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "resume_at_most_once",
+            check: resume_at_most_once_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.declare_sometimes("crash_resume");
+        let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| {
+            // Crashes only (0..=2 — crash-free universes exist and must
+            // PASS, vacuous-failure doctrine): the cursor is fsynced
+            // before each crash can matter, so recovery ALWAYS has the
+            // truth on disk — every duplicate application is the resume
+            // path ignoring it.
+            let count = gremlin.next_below(3);
+            let horizon = RR_STEPS * RR_STEP_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
+            FaultPlan::new(
+                (0..count)
+                    .map(|_| FaultInjection {
+                        at_nanos: gremlin.next_below(horizon),
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::CrashRestart
+                        },
+                    })
+                    .collect(),
+            )
+        });
+
+        // applied[] is the OUTSIDE WORLD (emails sent, tools invoked):
+        // it survives crashes. The progress cursor is durably fsynced
+        // after every step — recovery genuinely has it.
+        let mut applied = [0u64; RR_STEPS as usize];
+        for step in 0..RR_STEPS {
+            rt.set_timer(step * RR_STEP_SPACING, step);
+        }
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    let step = token as usize;
+                    applied[step] += 1;
+                    let _ = rt.disk_write(RR_NODE, &format!("cursor={}", step + 1));
+                    let _ = rt.disk_flush(RR_NODE);
+                    let _ = rt.disk_fsync(RR_NODE);
+                }
+                StepEvent::Crashed => {
+                    // Recovery: the durable cursor is read back — and
+                    // then ignored (the bug): the resume schedules the
+                    // pipeline from step 0, replaying completed work.
+                    rt.sometimes("crash_resume");
+                    let durable = rt.disk_read_durable(RR_NODE);
+                    let _resume_from = durable
+                        .iter()
+                        .filter_map(|r| r.strip_prefix("cursor=")?.parse::<u64>().ok())
+                        .max()
+                        .unwrap_or(0);
+                    let now = rt.now_nanos();
+                    for step in 0..RR_STEPS {
+                        rt.set_timer(now + (step + 1) * RR_STEP_SPACING, step);
+                    }
+                }
+                StepEvent::Delivered { .. } => unreachable!("no messages"),
+            }
+        }
+        for step in 0..RR_STEPS {
+            rt.declare_end(
+                &format!("applied:{step}"),
+                &applied[step as usize].to_string(),
             );
         }
         rt.finish();
