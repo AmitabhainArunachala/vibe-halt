@@ -1,0 +1,88 @@
+# C0 — re-anchor + governance registration: command receipt (2026-07-22)
+# Executor session, fresh clone of amitabhainarunachala/vibe-halt @ e36b15b.
+
+$ git log --oneline -8 origin/main
+e36b15b Merge pull request #15 from AmitabhainArunachala/claude/convergence-campaign-spec
+610fd43 docs: add convergence campaign executor dispatch spec
+2e47386 Merge pull request #14 from AmitabhainArunachala/claude/track2-w2-decision-tape
+e2db597 Merge pull request #13 from AmitabhainArunachala/claude/track2-w1-swarm-palette
+c49afbd track2: add decision tape substrate
+e36b3bb track2: add opt-in swarm palette bakeoff
+5e58772 Merge pull request #12 from AmitabhainArunachala/claude/track2-w0-housekeeping
+d0679e1 track2: register exploration and fix W0 housekeeping
+
+$ make onboard        # on main @ e36b15b, before any edit
+...
+Governance (docs/governance/ACTIVE_TRACK.yaml — declared intent):
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+  tracks: 3 ACTIVE (wip_max 3)
+    - vibe-halt-verify-2026-07
+    - vibe-bug-corpus-2026-07
+    - vibe-halt-1000x-exploration
+Gates (run now, mechanically):
+  deny-list self-test: PASS
+  deny-list scan: PASS
+Verdict: READY
+
+$ make gate           # on main @ e36b15b, before any edit
+...
+== doctor: frozen Tier-1 complete-observable identity ==
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+== divergence gate: 200 universes, each run twice, full-observable-compared ==
+  verdict: CLEAN
+... (Tier-2 sandbox gates, live/negative demo gates, 5 corpus recall gates,
+     seeded-bug / nondet / zero-universe / UNCHECKED / quarantine negatives)
+== gate battery: ALL PASS ==
+
+# §0 anchor re-verification (point-of-use):
+$ grep -n "self.sched.pop()" crates/vh-multiverse/src/runtime.rs
+547:            let (at, ev) = self.sched.pop()?;
+
+$ grep -n "pub fn pop_recorded" crates/vh-core/src/sched.rs
+121:    pub fn pop_recorded(
+
+$ grep -n "pub struct DecisionTape\|vh-decision-tape-v1\|pub fn digest_hex" crates/vh-trace/src/lib.rs
+44:pub struct DecisionTape {
+109:    pub const SCHEMA: &'static str = "vh-decision-tape-v1";
+137:    pub fn digest_hex(&self) -> String {
+
+$ grep -n "ClockSkew" crates/vh-multiverse/src/runtime.rs | head -3
+37:...offered-and-skipped by the v1 runtime...
+713:            FaultKind::ClockSkew { .. } => {   # -> trace "fault.skipped"
+
+$ grep -n "ClockSkew" crates/vh-gremlin/src/lib.rs | tail -1
+315:        _ => FaultKind::ClockSkew {
+
+$ sed -n '27p' CLAUDE.md
+  under `~/.vibe-halt/`, not the repo.
+$ grep -rn "\.vibe-halt" --include="*.rs" --include="*.py" --include="*.sh" --include="Makefile" .
+(no matches — no writer exists; phantom confirmed)
+
+$ ls corpus/entries/
+VB-001-lost-update.md VB-002-retry-double-apply.md VB-003-dirty-read.md
+VB-004-crash-toctou.md VB-005-fsync-lie-hole.md
+
+$ grep -c . docs/audits/antithesis-dst-2026-07-21/EVIDENCE_LEDGER.jsonl
+29                     # last entry: VH-TRACK2-NULL-001 (W1 kill, 0/5 classes, 16 seeds)
+
+$ grep -n "palette: FaultPalette::V0" crates/vh-cli/src/main.rs
+93:        palette: FaultPalette::V0,
+
+# Interface request (PR #13 comment 5040630656, OWNER, 2026-07-22T00:57:49Z):
+# pop_recorded("runtime.step", "fifo-v0", |d| decision_tape.record_decision(...));
+# tape digest as separate printed line / UniverseResult observable;
+# doctor hash + fingerprint frozen; >5% overhead -> --record-tape.
+
+# Post-edit verification (branch claude/convergence-c0-governance):
+# make onboard -> READY, governance self-test PASS, ownership-overlap clean
+# make gate    -> ALL PASS (appended below after run)
+
+$ make onboard        # branch claude/convergence-c0-governance, post-edit
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+  tracks: 3 ACTIVE (wip_max 3)
+Verdict: READY
+
+$ make gate           # branch claude/convergence-c0-governance, post-edit
+== gate battery: ALL PASS ==
