@@ -13,7 +13,7 @@
 
 use std::collections::BTreeMap;
 
-use vh_gremlin::{FaultInjection, FaultKind, FaultPlan};
+use vh_gremlin::{FaultInjection, FaultKind, FaultPalette, FaultPlan, PaletteChooser};
 use vh_multiverse::{
     EndState, EndStateOracle, PropertyContract, RunOutcome, StepEvent, UniverseCtx, Workload,
 };
@@ -63,18 +63,26 @@ impl Workload for LostUpdate {
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
         let mut rt = ctx.runtime(|| {
             // Delays only: every message eventually delivers, so a
             // serialized history always counts to LU_REQUESTED — any
             // shortfall is the overlap bug, never message loss.
             let count = 2 + gremlin.next_below(3);
             let horizon = LU_ROUNDS * LU_ROUND_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
             FaultPlan::new(
                 (0..count)
                     .map(|_| FaultInjection {
                         at_nanos: gremlin.next_below(horizon),
-                        fault: FaultKind::NetworkDelay {
-                            delay_nanos: 5_000 + gremlin.next_below(45_000),
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::NetworkDelay {
+                                delay_nanos: 5_000 + gremlin.next_below(45_000),
+                            }
                         },
                     })
                     .collect(),
@@ -173,17 +181,20 @@ impl Workload for RetryDoubleApply {
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
         let mut rt = ctx.runtime(|| {
             // Blackout budget: <=4 partitions x <=50k = 200k, under the
             // 6x40k=240k retry budget — every item is eventually acked,
             // so the only exactly-once violations are OVER-application.
             let count = 2 + gremlin.next_below(3);
             let horizon = DA_ITEMS * DA_ITEM_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 3);
             FaultPlan::new(
                 (0..count)
                     .map(|_| {
                         let at_nanos = gremlin.next_below(horizon);
-                        let fault = match gremlin.next_below(3) {
+                        let fault = match chooser.choose(&mut gremlin) {
                             0 => FaultKind::NetworkPartition {
                                 duration_nanos: 20_000 + gremlin.next_below(30_000),
                             },
@@ -296,14 +307,22 @@ impl Workload for DirtyRead {
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         let mut values = ctx.stream("values");
         let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
         let mut rt = ctx.runtime(|| {
             let count = 1 + gremlin.next_below(3);
             let horizon = DR_OPS * DR_OP_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
             FaultPlan::new(
                 (0..count)
                     .map(|_| FaultInjection {
                         at_nanos: gremlin.next_below(horizon),
-                        fault: FaultKind::CrashRestart,
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::CrashRestart
+                        },
                     })
                     .collect(),
             )
@@ -419,14 +438,22 @@ impl Workload for CrashToctou {
 
     fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
         let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
         let horizon = TT_CHECK_BASE + TT_PAIRS * TT_PAIR_SPACING;
         let mut rt = ctx.runtime(|| {
             let count = 1 + gremlin.next_below(3);
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 1);
             FaultPlan::new(
                 (0..count)
                     .map(|_| FaultInjection {
                         at_nanos: gremlin.next_below(horizon),
-                        fault: FaultKind::CrashRestart,
+                        fault: {
+                            if fault_palette == FaultPalette::Swarm {
+                                let _ = chooser.choose(&mut gremlin);
+                            }
+                            FaultKind::CrashRestart
+                        },
                     })
                     .collect(),
             )

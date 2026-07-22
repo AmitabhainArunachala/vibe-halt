@@ -1,0 +1,31 @@
+$ cargo test --workspace --all-features --locked --offline
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.34s
+test result: ok. 4 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test result: ok. 23 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.01s
+exit 0
+
+$ PATH=/opt/homebrew/bin:$PATH make gate
+== gate 0: determinism deny-list ==
+denylist self-test: PASS (18 regex samples x src/tests, 21 manifest fixtures, 7 root fixtures, 22 boundary cases)
+determinism deny-list: PASS (9 crates, 33 files scanned, 2 declared boundary files skipped; manifests tomllib-validated hermetic with name+version-bound deps and crate-confined build/target paths, members bound to crates/, no [patch]/[replace]/.cargo-config, lockfile name+version-bound source-free, workspace unsafe_code = "forbid" inherited by every crate)
+== gate G: governance admission (strict schema, ownership, WIP) ==
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+governance: PASS (4 tracks, 3 ACTIVE, strict schema, canonical ownership, WIP within limit)
+== doctor: frozen Tier-1 complete-observable identity ==
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+vibe-halt: workload=demo seed=0xd1ce universes=200 palette=v0 divergence-check=true
+== gate battery: ALL PASS ==
+exit 0
+
+$ python3 scripts/track2_swarm_bakeoff.py --seeds 16 --max-budget 100
+SUMMARY	corpus-lost-update	class_pass=False	median_swarm_over_v0=1.032967032967033	wins=0/6	speedup_threshold=0.25
+SUMMARY	corpus-retry-double-apply	class_pass=False	median_swarm_over_v0=NA	wins=0/1	speedup_threshold=0.25
+SUMMARY	corpus-dirty-read	class_pass=False	median_swarm_over_v0=NA	wins=0/1	speedup_threshold=0.25
+SUMMARY	corpus-crash-toctou	class_pass=False	median_swarm_over_v0=1.0168539325842696	wins=0/12	speedup_threshold=0.25
+SUMMARY	corpus-fsync-lie	class_pass=False	median_swarm_over_v0=NA	wins=0/14	speedup_threshold=0.25
+OVERALL	class_passes=0/5	required=4	enforced=False
+exit 0

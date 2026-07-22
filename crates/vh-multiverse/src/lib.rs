@@ -35,7 +35,7 @@ use std::fmt;
 use std::num::NonZeroU64;
 
 use vh_core::{SeedTree, VirtualClock, VirtualTime, Xoshiro256pp};
-use vh_gremlin::FaultPlan;
+use vh_gremlin::{FaultPalette, FaultPlan};
 use vh_props::{AlwaysCheck, AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
@@ -78,10 +78,16 @@ pub struct UniverseCtx {
     /// record trace events; their verdicts enter the always transcript
     /// as `oracle:<name>` entries.
     pub(crate) end_state: EndState,
+    fault_palette: FaultPalette,
 }
 
 impl UniverseCtx {
-    fn new(root_seed: u64, universe_id: u64, fault_plan_override: Option<FaultPlan>) -> Self {
+    fn new(
+        root_seed: u64,
+        universe_id: u64,
+        fault_plan_override: Option<FaultPlan>,
+        fault_palette: FaultPalette,
+    ) -> Self {
         let mut plan_digest_trace = Trace::new();
         plan_digest_trace.record(0, "schema", FAULT_PLAN_DIGEST_SCHEMA);
         Self {
@@ -95,6 +101,7 @@ impl UniverseCtx {
             plan_digest_trace,
             runtime_evidence: None,
             end_state: EndState::new(),
+            fault_palette,
         }
     }
 
@@ -142,6 +149,18 @@ impl UniverseCtx {
     /// A named, independent PRNG stream for this universe.
     pub fn stream(&self, name: &str) -> Xoshiro256pp {
         self.seed_tree.stream(self.universe_id, name)
+    }
+
+    /// Deterministic per-universe seed. Palette masks and future schedule
+    /// choice streams derive from this without perturbing existing named
+    /// streams.
+    pub fn universe_seed(&self) -> u64 {
+        self.seed_tree.universe_seed(self.universe_id)
+    }
+
+    /// Active fault-plan palette for this universe. v0 remains the default.
+    pub fn fault_palette(&self) -> FaultPalette {
+        self.fault_palette
     }
 
     /// Record a trace event stamped with the current virtual time.
@@ -516,7 +535,17 @@ pub struct UniverseObservation<'a> {
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
-    run_universe_inner(root_seed, universe_id, workload, None)
+    run_universe_with_palette(root_seed, universe_id, workload, FaultPalette::V0)
+}
+
+/// Run one universe with an explicit fault palette.
+pub fn run_universe_with_palette(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+) -> UniverseResult {
+    run_universe_inner(root_seed, universe_id, workload, None, fault_palette)
 }
 
 /// Replay a universe with an externally supplied fault plan instead of the
@@ -538,7 +567,13 @@ pub fn run_universe_with_fault_plan(
     workload: &dyn Workload,
     plan: FaultPlan,
 ) -> UniverseResult {
-    run_universe_inner(root_seed, universe_id, workload, Some(plan))
+    run_universe_inner(
+        root_seed,
+        universe_id,
+        workload,
+        Some(plan),
+        FaultPalette::V0,
+    )
 }
 
 fn run_universe_inner(
@@ -546,9 +581,10 @@ fn run_universe_inner(
     universe_id: u64,
     workload: &dyn Workload,
     fault_plan_override: Option<FaultPlan>,
+    fault_palette: FaultPalette,
 ) -> UniverseResult {
     let override_supplied = fault_plan_override.is_some();
-    let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override);
+    let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override, fault_palette);
     let outcome = workload.run(&mut ctx);
     // Post-run oracle judgment: runner-owned, over the immutable declared
     // end state, one transcript entry per oracle in list order. Judged
@@ -852,6 +888,16 @@ impl MultiverseReport {
 /// in `tests/divergence.rs`), which is why the evidence is named
 /// [`ReplayEvidence::PairwiseReplayAgreement`], never "proof".
 pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> MultiverseReport {
+    run_multiverse_with_palette(cfg, workload, FaultPalette::V0)
+}
+
+/// Run a campaign with an explicit fault palette. v0 is the default path
+/// used by [`run_multiverse`]; swarm is opt-in for the Track-2 bakeoff.
+pub fn run_multiverse_with_palette(
+    cfg: &MultiverseConfig,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+) -> MultiverseReport {
     let universes = cfg.universes.get();
     // UniverseCount::MAX bounds this preallocation; the typed constructor
     // rejects anything larger before we get here.
@@ -862,7 +908,7 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
     let mut contract_violations: Vec<(u64, String)> = Vec::new();
 
     for universe_id in 0..universes {
-        let first = run_universe(cfg.root_seed, universe_id, workload);
+        let first = run_universe_with_palette(cfg.root_seed, universe_id, workload, fault_palette);
         merged.absorb(universe_id, &props_of(&first));
         for v in contract.violations(&first) {
             contract_violations.push((universe_id, v));
@@ -871,7 +917,8 @@ pub fn run_multiverse(cfg: &MultiverseConfig, workload: &dyn Workload) -> Multiv
     }
     if cfg.check_divergence {
         for universe_id in 0..universes {
-            let second = run_universe(cfg.root_seed, universe_id, workload);
+            let second =
+                run_universe_with_palette(cfg.root_seed, universe_id, workload, fault_palette);
             if !second.observably_equal(&results[universe_id as usize]) {
                 divergent.push(universe_id);
             }

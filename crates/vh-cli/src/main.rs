@@ -7,8 +7,10 @@
 mod sandbox_demo;
 
 use vh_cli::workloads;
+use vh_gremlin::FaultPalette;
 use vh_multiverse::{
-    run_multiverse, run_universe, MultiverseConfig, UniverseCount, UniverseResult, Verdict,
+    run_multiverse_with_palette, run_universe, MultiverseConfig, UniverseCount, UniverseResult,
+    Verdict,
 };
 
 const DEFAULT_SEED: u64 = 0xD1CE;
@@ -41,7 +43,7 @@ vh — Mega Hyper Vibration Multiverse Halting Machine
 
 USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
-           [--no-divergence-check]
+           [--palette v0|swarm] [--no-divergence-check]
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh doctor
 
@@ -78,6 +80,7 @@ struct RunArgs {
     universes: Option<u64>,
     single_universe: Option<u64>,
     check_divergence: bool,
+    palette: FaultPalette,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -87,6 +90,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         universes: None,
         single_universe: None,
         check_divergence: true,
+        palette: FaultPalette::V0,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -107,6 +111,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
                 out.single_universe = Some(parse_u64(&value_for("--universe")?)?);
             }
             "--no-divergence-check" => out.check_divergence = false,
+            "--palette" => out.palette = parse_palette(&value_for("--palette")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -118,6 +123,14 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         return Err("--universes conflicts with --universe (a replay has no campaign size)".into());
     }
     Ok(out)
+}
+
+fn parse_palette(s: &str) -> Result<FaultPalette, String> {
+    match s {
+        "v0" => Ok(FaultPalette::V0),
+        "swarm" => Ok(FaultPalette::Swarm),
+        other => Err(format!("unknown palette {other:?}; expected v0 or swarm")),
+    }
 }
 
 fn parse_u64(s: &str) -> Result<u64, String> {
@@ -207,15 +220,16 @@ fn cmd_run(args: &[String]) -> i32 {
         universes,
         check_divergence: run.check_divergence,
     };
-    let report = run_multiverse(&cfg, workload.as_ref());
+    let report = run_multiverse_with_palette(&cfg, workload.as_ref(), run.palette);
 
     let failing = report.failing_universes();
     let invalid = report.invalid_universes();
     println!(
-        "vibe-halt: workload={} seed=0x{:x} universes={} divergence-check={}",
+        "vibe-halt: workload={} seed=0x{:x} universes={} palette={} divergence-check={}",
         report.workload(),
         report.root_seed(),
         requested,
+        run.palette.name(),
         run.check_divergence
     );
     println!(
