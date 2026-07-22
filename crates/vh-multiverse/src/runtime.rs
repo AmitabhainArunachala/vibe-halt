@@ -757,7 +757,14 @@ impl<'a> SimRuntime<'a> {
             FaultKind::ClockSkew { skew_nanos } => {
                 self.mark(index, LifecycleStage::Armed, now);
                 self.clock_skew_nanos = self.clock_skew_nanos.saturating_add(skew_nanos);
-                self.pending_skew_reads.push(index);
+                // A zero-magnitude skew can be generated
+                // (next_below(horizon/20 + 1) includes 0) and cannot
+                // diverge any reading: it honestly stays Armed forever
+                // instead of claiming a manifestation that never
+                // happened (review finding on this PR).
+                if skew_nanos > 0 {
+                    self.pending_skew_reads.push(index);
+                }
                 self.ctx.trace.record(
                     now,
                     "clock.skew",

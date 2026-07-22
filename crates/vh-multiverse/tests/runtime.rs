@@ -628,3 +628,38 @@ fn clock_skew_accumulates_and_replays_bit_identically() {
     assert_eq!(ev.injections()[1].injected_at(), Some(3_000));
     assert_eq!(ev.injections()[1].manifested_at(), Some(3_000));
 }
+
+#[test]
+fn zero_magnitude_clock_skew_honestly_stays_armed() {
+    // next_below(horizon/20 + 1) can draw 0: a skew that cannot diverge
+    // any reading must never claim interception or manifestation, even
+    // when the clock is read (review finding: phantom-effect
+    // over-claim, the exact dishonesty this change removes).
+    let w = Scripted {
+        plan: vec![
+            inj(1_000, FaultKind::ClockSkew { skew_nanos: 0 }),
+            inj(2_000, FaultKind::ClockSkew { skew_nanos: 40 }),
+        ],
+        script: |rt| {
+            rt.set_timer(3_000, 1);
+            while let Some(ev) = rt.step() {
+                if let StepEvent::Timer { .. } = ev {
+                    // Only the non-zero skew contributes.
+                    assert_eq!(rt.now_nanos(), 3_040);
+                }
+            }
+        },
+    };
+    let r = run_universe(24, 0, &w);
+    let ev = r.runtime_evidence().unwrap();
+    let zero = &ev.injections()[0];
+    assert_eq!(zero.armed_at(), Some(1_000));
+    assert!(zero.injected_at().is_none(), "zero skew must not inject");
+    assert!(
+        zero.manifested_at().is_none(),
+        "zero skew must not manifest"
+    );
+    let real = &ev.injections()[1];
+    assert_eq!(real.injected_at(), Some(3_000));
+    assert_eq!(real.manifested_at(), Some(3_000));
+}
