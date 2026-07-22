@@ -472,3 +472,103 @@ fn shrink_exit_contract_is_typed() {
     ]);
     assert_eq!(code, 2);
 }
+
+// ---- decision tape (convergence C1, W2/RFC-003) ----
+
+/// The W2 acceptance: two PROCESSES, same seed, same universe -> same
+/// tape digest; the tape is additive (separate stream + line) and the
+/// legacy demo path never grows one.
+#[test]
+fn decision_tape_digest_is_identical_across_processes() {
+    let args = [
+        "run",
+        "--workload",
+        "demo-net",
+        "--seed",
+        "0xD1CE",
+        "--universe",
+        "3",
+        "--record-tape",
+    ];
+    let (_, out_a, _) = vh(&args);
+    let (_, out_b, _) = vh(&args);
+    let tape_line = |out: &str| -> String {
+        out.lines()
+            .find(|l| l.starts_with("  decision tape: "))
+            .unwrap_or_else(|| panic!("missing decision tape line:\n{out}"))
+            .to_string()
+    };
+    let a = tape_line(&out_a);
+    let b = tape_line(&out_b);
+    assert_eq!(a, b, "two processes must agree on the tape digest");
+    assert!(
+        a.contains("(vh-decision-tape-v1)"),
+        "tape line must carry its schema: {a}"
+    );
+    // The digest is a real 32-hex digest, not a placeholder.
+    let digest = a
+        .trim_start_matches("  decision tape: ")
+        .split_whitespace()
+        .next()
+        .unwrap();
+    assert_eq!(digest.len(), 32, "expected 32-hex digest, got {digest:?}");
+    assert!(digest.chars().all(|c| c.is_ascii_hexdigit()));
+}
+
+/// Leak test half 1: the LEGACY (non-runtime) demo path must never
+/// print a tape line — a tape there would mean the frozen demo
+/// universe silently migrated onto the sim runtime.
+#[test]
+fn legacy_demo_universe_has_no_decision_tape() {
+    let (_, out, _) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--seed",
+        "0xD1CE",
+        "--universe",
+        "0",
+        "--record-tape",
+    ]);
+    assert!(
+        !out.contains("decision tape:"),
+        "legacy demo must not grow a tape:\n{out}"
+    );
+    assert!(out.contains("hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45"));
+}
+
+/// Leak test half 2: recording the tape must not perturb the execution
+/// trace — a runtime universe's trace hash with tape recording live is
+/// compared against the whole-observable replay agreement (two in-process
+/// runs), and the tape digest differs between different universes while
+/// the same universe's digest is stable.
+#[test]
+fn decision_tape_is_additive_and_universe_specific() {
+    use vh_gremlin::FaultPalette;
+    let w = vh_cli::workloads::by_name("demo-net").unwrap();
+    let rec =
+        |u| vh_multiverse::run_universe_recorded(0xD1CE, u, w.as_ref(), FaultPalette::V0, true);
+    let a = rec(3);
+    let b = rec(3);
+    assert!(a.observably_equal(&b));
+    assert_eq!(a.decision_tape_digest(), b.decision_tape_digest());
+    assert!(a.decision_tape_digest().is_some());
+    let other = rec(4);
+    assert_ne!(
+        a.decision_tape_digest(),
+        other.decision_tape_digest(),
+        "different universes make different scheduling decisions"
+    );
+    // The default (un-recorded) path stays the C1-kill-criterion
+    // fallback: no tape, and every OTHER observable identical to the
+    // recorded run — the tape is purely additive.
+    let plain = vh_multiverse::run_universe(0xD1CE, 3, w.as_ref());
+    assert!(plain.decision_tape_digest().is_none());
+    assert_eq!(plain.trace_hash(), a.trace_hash());
+    assert_eq!(plain.trace_events(), a.trace_events());
+    // Legacy path: no runtime, no tape, flag or not.
+    let demo = vh_cli::workloads::by_name("demo").unwrap();
+    let legacy =
+        vh_multiverse::run_universe_recorded(0xD1CE, 0, demo.as_ref(), FaultPalette::V0, true);
+    assert!(legacy.decision_tape_digest().is_none());
+}

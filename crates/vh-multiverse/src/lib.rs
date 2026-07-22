@@ -73,6 +73,18 @@ pub struct UniverseCtx {
     /// Phase-1 sim runtime ([`UniverseCtx::runtime`]); `None` for
     /// universes that never constructed the runtime.
     pub(crate) runtime_evidence: Option<RuntimeEvidence>,
+    /// Digest of the runtime's decision tape (`vh-decision-tape-v1` —
+    /// a SEPARATE additive stream; never enters the frozen execution
+    /// trace or its hash), finalized by the sim runtime alongside the
+    /// evidence ledger; `None` for universes that never constructed the
+    /// runtime (convergence C1, Track-2 W2 / RFC-003).
+    pub(crate) decision_tape_digest: Option<String>,
+    /// Whether the sim runtime records its scheduler decision tape.
+    /// OFF by default: the tape's per-pop candidate digest costs ~50%
+    /// wall at the 200-universe runtime demo (convergence C1 kill
+    /// criterion fired; numbers in the C1 receipt), so recording is
+    /// opt-in until a cheaper substrate lands.
+    pub(crate) record_tape: bool,
     /// The workload's declared end state, judged post-run by the
     /// workload's [`EndStateOracle`]s. Oracles read state and never
     /// record trace events; their verdicts enter the always transcript
@@ -100,6 +112,8 @@ impl UniverseCtx {
             fault_plan_retrievals: 0,
             plan_digest_trace,
             runtime_evidence: None,
+            decision_tape_digest: None,
+            record_tape: false,
             end_state: EndState::new(),
             fault_palette,
         }
@@ -415,6 +429,7 @@ pub struct UniverseResult {
     lifecycle: UniverseLifecycle,
     fault_plan_digest: Option<String>,
     runtime_evidence: Option<RuntimeEvidence>,
+    decision_tape_digest: Option<String>,
 }
 
 impl UniverseResult {
@@ -474,6 +489,15 @@ impl UniverseResult {
         self.runtime_evidence.as_ref()
     }
 
+    /// Digest of the sim runtime's scheduler decision tape
+    /// (`vh-decision-tape-v1`) — the replay/causality substrate's
+    /// identity, bound into the observable result as a SEPARATE stream
+    /// so the frozen execution-trace hash is untouched. `None` iff this
+    /// universe never constructed the runtime. In observable equality.
+    pub fn decision_tape_digest(&self) -> Option<&str> {
+        self.decision_tape_digest.as_deref()
+    }
+
     /// Two replays are the same run iff EVERY observable agrees. Struct
     /// equality is the definition on purpose: adding an observable field
     /// automatically strengthens the divergence check.
@@ -503,6 +527,7 @@ impl UniverseResult {
             lifecycle,
             fault_plan_digest,
             runtime_evidence,
+            decision_tape_digest,
         } = self;
         UniverseObservation {
             universe_id: *universe_id,
@@ -514,6 +539,7 @@ impl UniverseResult {
             lifecycle,
             fault_plan_digest: fault_plan_digest.as_deref(),
             runtime_evidence: runtime_evidence.as_ref(),
+            decision_tape_digest: decision_tape_digest.as_deref(),
         }
     }
 }
@@ -532,6 +558,7 @@ pub struct UniverseObservation<'a> {
     pub lifecycle: &'a UniverseLifecycle,
     pub fault_plan_digest: Option<&'a str>,
     pub runtime_evidence: Option<&'a RuntimeEvidence>,
+    pub decision_tape_digest: Option<&'a str>,
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
@@ -576,6 +603,30 @@ pub fn run_universe_with_fault_plan(
     )
 }
 
+/// Run one universe with an explicit palette AND the decision-tape
+/// recorder toggled (convergence C1). `record_tape: false` is
+/// bit-identical to [`run_universe_with_palette`]; `true` additionally
+/// binds the `vh-decision-tape-v1` digest into the observable result
+/// for universes that construct the sim runtime. Opt-in because the C1
+/// overhead kill criterion fired (>5% at the 200-universe runtime
+/// demo); the frozen execution trace is untouched either way.
+pub fn run_universe_recorded(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+) -> UniverseResult {
+    run_universe_inner_recorded(
+        root_seed,
+        universe_id,
+        workload,
+        None,
+        fault_palette,
+        record_tape,
+    )
+}
+
 fn run_universe_inner(
     root_seed: u64,
     universe_id: u64,
@@ -583,8 +634,27 @@ fn run_universe_inner(
     fault_plan_override: Option<FaultPlan>,
     fault_palette: FaultPalette,
 ) -> UniverseResult {
+    run_universe_inner_recorded(
+        root_seed,
+        universe_id,
+        workload,
+        fault_plan_override,
+        fault_palette,
+        false,
+    )
+}
+
+fn run_universe_inner_recorded(
+    root_seed: u64,
+    universe_id: u64,
+    workload: &dyn Workload,
+    fault_plan_override: Option<FaultPlan>,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+) -> UniverseResult {
     let override_supplied = fault_plan_override.is_some();
     let mut ctx = UniverseCtx::new(root_seed, universe_id, fault_plan_override, fault_palette);
+    ctx.record_tape = record_tape;
     let outcome = workload.run(&mut ctx);
     // Post-run oracle judgment: runner-owned, over the immutable declared
     // end state, one transcript entry per oracle in list order. Judged
@@ -621,6 +691,7 @@ fn run_universe_inner(
         },
         fault_plan_digest,
         runtime_evidence: ctx.runtime_evidence,
+        decision_tape_digest: ctx.decision_tape_digest,
     }
 }
 
@@ -898,6 +969,17 @@ pub fn run_multiverse_with_palette(
     workload: &dyn Workload,
     fault_palette: FaultPalette,
 ) -> MultiverseReport {
+    run_multiverse_recorded(cfg, workload, fault_palette, false)
+}
+
+/// [`run_multiverse_with_palette`] with the decision-tape recorder
+/// toggled (convergence C1; opt-in — see [`run_universe_recorded`]).
+pub fn run_multiverse_recorded(
+    cfg: &MultiverseConfig,
+    workload: &dyn Workload,
+    fault_palette: FaultPalette,
+    record_tape: bool,
+) -> MultiverseReport {
     let universes = cfg.universes.get();
     // UniverseCount::MAX bounds this preallocation; the typed constructor
     // rejects anything larger before we get here.
@@ -908,7 +990,13 @@ pub fn run_multiverse_with_palette(
     let mut contract_violations: Vec<(u64, String)> = Vec::new();
 
     for universe_id in 0..universes {
-        let first = run_universe_with_palette(cfg.root_seed, universe_id, workload, fault_palette);
+        let first = run_universe_recorded(
+            cfg.root_seed,
+            universe_id,
+            workload,
+            fault_palette,
+            record_tape,
+        );
         merged.absorb(universe_id, &props_of(&first));
         for v in contract.violations(&first) {
             contract_violations.push((universe_id, v));
@@ -917,8 +1005,13 @@ pub fn run_multiverse_with_palette(
     }
     if cfg.check_divergence {
         for universe_id in 0..universes {
-            let second =
-                run_universe_with_palette(cfg.root_seed, universe_id, workload, fault_palette);
+            let second = run_universe_recorded(
+                cfg.root_seed,
+                universe_id,
+                workload,
+                fault_palette,
+                record_tape,
+            );
             if !second.observably_equal(&results[universe_id as usize]) {
                 divergent.push(universe_id);
             }

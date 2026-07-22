@@ -107,3 +107,32 @@ rebase later-merging PRs (known trivial conflicts: ACTIVE_TRACK.yaml
 #19/#20/#21), then C1 the moment the grant is ratified, then C2 — the
 guided-exploration thesis' final disposition (promoted or
 falsification-completed) rides on C2's bakeoff.
+
+---
+
+## 2026-07-22 — Merge wave 1 + C1 (decision tape) executed
+
+- MERGED by operator: C0 (#16, 55e806d — the runtime.rs grant is
+  ratified) and C7 (#17, 947dba9). Dispositions upgraded merged.
+- #18 (C3) rebased onto post-merge main (ACTIVE_TRACK.yaml conflict
+  resolved, runtime.rs surface line deduped; C3 grant comment now
+  says EXTENDS the C0 grant) and hardened per two independent review
+  findings (Devin + Codex, same defect): a generated zero-magnitude
+  ClockSkew could claim Injected+Manifested with no divergence —
+  fixed in df10304 (zero skews honestly stay Armed), regression test
+  added, reviewer confirmed resolved.
+- C1 EXECUTED on the ratified grant (branch
+  claude/convergence-c1-decision-tape): pop site wired exactly per the
+  interface request; digest bound as a new observable through the
+  UniverseObservation compile-time ratchet (which fired as designed).
+  KILL CRITERION FIRED: recording costs ~+48% release / ~+90% debug at
+  the 200-universe demo-net demo (>5%); per the charter the tape went
+  behind `vh run --record-tape`, the default arm is the original pop
+  bit-for-bit (release default 12ms vs main 13-15ms — no measurable
+  overhead), numbers published in
+  commands/convergence-c1-decision-tape.txt. C2 proceeds with the flag
+  on. Gate gained the two-process tape-agreement gate and the
+  tape-leak negative (default + legacy runs must print no tape;
+  frozen demo identity asserted under the flag).
+- Coupling note for C2/C4: the tape digest rides UniverseResult now;
+  C4's run.ndjson/bundles gain the field additively at their rebase.
