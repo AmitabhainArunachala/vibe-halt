@@ -36,6 +36,22 @@ pub struct Trace {
     state: u128,
 }
 
+/// Additive Track-2 decision-tape stream. This is deliberately NOT the v0
+/// execution trace: it has its own schema record and digest so scheduler
+/// choice recording can land without mutating `TRACE_FORMAT_V0.md` or any
+/// frozen trace hash.
+#[derive(Debug, Clone)]
+pub struct DecisionTape {
+    trace: Trace,
+    decisions: u64,
+}
+
+impl Default for DecisionTape {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Default for Trace {
     fn default() -> Self {
         Self::new()
@@ -86,6 +102,52 @@ impl Trace {
 
     pub fn is_empty(&self) -> bool {
         self.events.is_empty()
+    }
+}
+
+impl DecisionTape {
+    pub const SCHEMA: &'static str = "vh-decision-tape-v1";
+
+    pub fn new() -> Self {
+        let mut trace = Trace::new();
+        trace.record(0, "schema", Self::SCHEMA);
+        Self {
+            trace,
+            decisions: 0,
+        }
+    }
+
+    pub fn record_decision(
+        &mut self,
+        site_id: &str,
+        candidate_set_digest: &str,
+        chosen_index: u64,
+        policy_id: &str,
+    ) {
+        self.decisions += 1;
+        self.trace.record(
+            self.decisions,
+            "decision",
+            &format!(
+                "site={site_id} candidates={candidate_set_digest} chosen={chosen_index} policy={policy_id}"
+            ),
+        );
+    }
+
+    pub fn digest_hex(&self) -> String {
+        self.trace.hash_hex()
+    }
+
+    pub fn len(&self) -> u64 {
+        self.decisions
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.decisions == 0
+    }
+
+    pub fn events(&self) -> &[TraceEvent] {
+        self.trace.events()
     }
 }
 
@@ -155,5 +217,27 @@ mod tests {
         let mut b = Trace::new();
         b.record(1, "k", "d");
         assert_ne!(a.hash_hex(), b.hash_hex());
+    }
+
+    #[test]
+    fn decision_tape_has_stable_separate_digest() {
+        fn tape() -> DecisionTape {
+            let mut t = DecisionTape::new();
+            t.record_decision("runtime.step", "abc", 0, "fifo-v0");
+            t.record_decision("runtime.step", "def", 0, "fifo-v0");
+            t
+        }
+
+        let a = tape();
+        let b = tape();
+        assert_eq!(a.digest_hex(), b.digest_hex());
+        assert_eq!(a.len(), 2);
+        assert_eq!(a.events()[0].kind, "schema");
+        assert_eq!(a.events()[0].data, DecisionTape::SCHEMA);
+    }
+
+    #[test]
+    fn decision_tape_digest_is_not_the_empty_trace_hash() {
+        assert_ne!(DecisionTape::new().digest_hex(), Trace::new().hash_hex());
     }
 }
