@@ -55,6 +55,15 @@ from __future__ import annotations
 import os
 import re
 import sys
+
+if sys.version_info < (3, 11):
+    print(
+        "Python >= 3.11 required: scripts/check_determinism_denylist.py "
+        "uses the standard-library tomllib module",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 import tomllib
 from pathlib import Path
 

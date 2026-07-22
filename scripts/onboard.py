@@ -19,6 +19,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+if sys.version_info < (3, 11):
+    print(
+        "Python >= 3.11 required: scripts/onboard.py imports the "
+        "tomllib-backed determinism/governance gates",
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
 # The strict-schema governance checker is the single implementation
 # (hardening-loop-4 BLOCKER 4: the onboard-embedded yaml-lite parser
 # absorbed nested metadata and compared uncanonicalized paths; it is

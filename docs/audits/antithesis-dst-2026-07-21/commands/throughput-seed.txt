@@ -1,0 +1,16 @@
+=== timing: 200 universes demo (includes divergence re-run = 400 executions) ===
+$ time cargo run -q --release -p vh-cli -- run --workload demo --universes 200
+vibe-halt: workload=demo seed=0xd1ce universes=200 divergence-check=true
+  always-failures: 0 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  evidence: pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)
+  verdict: CLEAN
+
+real	0m0.428s
+user	0m0.020s
+sys	0m0.009s
+EXIT=0
+
+=== seed sensitivity: different seed, same workload ===
+10
+failing-universes at seed 0xBEEF (count of printed, capped at 10) vs seed 0xD1CE
+  always-failures: 38 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0

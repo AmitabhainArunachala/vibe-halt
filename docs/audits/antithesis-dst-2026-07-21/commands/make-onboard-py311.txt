@@ -1,0 +1,27 @@
+$ PATH=/opt/homebrew/opt/python@3.11/bin:$PATH make onboard  (python3.11 shim)
+python3 scripts/onboard.py
+=== vibe-halt onboard ===
+
+Checkout:
+  branch: claude/vibe-halt-phase1-sandbox-goal
+  head: 3e2a5ed
+  dirty files: 1
+
+Toolchain (pinned):
+  rustc 1.94.1 (e408947bf 2026-03-25) (pinned 1.94.1: OK)
+  cargo 1.94.1 (29ea6fb6a 2026-03-24)
+
+Governance (docs/governance/ACTIVE_TRACK.yaml — declared intent):
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+  tracks: 3 ACTIVE (wip_max 3)
+    - vibe-halt-core-2026-07
+    - vibe-halt-verify-2026-07
+    - vibe-bug-corpus-2026-07
+
+Gates (run now, mechanically):
+  deny-list self-test: PASS
+  deny-list scan: PASS
+
+Verdict: READY
+Next: make gate   (full truth, not this digest)
+EXIT=0

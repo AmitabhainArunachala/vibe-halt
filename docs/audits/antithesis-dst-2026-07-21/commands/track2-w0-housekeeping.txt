@@ -1,0 +1,44 @@
+$ git log --oneline -3 origin/main
+84f911e [TRACK 1] Phase-1 remainder goal spec: Tier-2/D1 hermetic sandbox MVP (docs only) (#10)
+41f741c Merge pull request #8 from AmitabhainArunachala/claude/vibe-halt-restack-verifier
+4893a8f restack: migrate verifier crates to the loop-4 + night kernel API
+exit 0
+
+$ make onboard
+python3 scripts/onboard.py
+Python >= 3.11 required: scripts/onboard.py imports the tomllib-backed determinism/governance gates
+make: *** [onboard] Error 2
+exit 2
+
+$ PATH=/opt/homebrew/bin:$PATH make onboard
+python3 scripts/onboard.py
+=== vibe-halt onboard ===
+  branch: claude/track2-w0-housekeeping
+  head: 84f911e
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+  tracks: 3 ACTIVE (wip_max 3)
+    - vibe-halt-verify-2026-07
+    - vibe-bug-corpus-2026-07
+    - vibe-halt-1000x-exploration
+  deny-list self-test: PASS
+  deny-list scan: PASS
+Verdict: READY
+exit 0
+
+$ PATH=/opt/homebrew/bin:$PATH make gate
+== gate 0: determinism deny-list ==
+denylist self-test: PASS (18 regex samples x src/tests, 21 manifest fixtures, 7 root fixtures, 12 boundary cases)
+determinism deny-list: PASS (8 crates, 30 files scanned, 2 declared boundary files skipped; manifests tomllib-validated hermetic with name+version-bound deps and crate-confined build/target paths, members bound to crates/, no [patch]/[replace]/.cargo-config, lockfile name+version-bound source-free, workspace unsafe_code = "forbid" inherited by every crate)
+== gate G: governance admission (strict schema, ownership, WIP) ==
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+governance: PASS (4 tracks, 3 ACTIVE, strict schema, canonical ownership, WIP within limit)
+== doctor: frozen Tier-1 complete-observable identity ==
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+== gate battery: ALL PASS ==
+exit 0
+
+$ gh repo view AmitabhainArunachala/vibe-halt --json licenseInfo
+{"licenseInfo":null}
+exit 0
