@@ -23,8 +23,10 @@ merge approval, or proof any acceptance criterion holds.
   or conclusion carries a `file:line` citation or a runnable command.
   Uncited claims carry zero weight regardless of fluency. Prefer
   uncharmable mechanical checks over reviewer vigilance.
-- **Runtime receipts never enter git.** Universe reports and corpus runs go
-  under `~/.vibe-halt/`, not the repo.
+- **Runtime receipts never enter git.** Receipts are written only where
+  `vh run --out DIR` points (`run.ndjson` + `findings/*/finding.ndjson`;
+  replay with `vh replay-bundle`) — conventionally under `~/.vibe-halt/`,
+  never the repo. Nothing writes `~/.vibe-halt/` implicitly.
 
 ## The Determinism Deny-List (this repo's #1 law)
 

@@ -224,3 +224,117 @@ fn unknown_palette_is_usage_error() {
         "{stderr}"
     );
 }
+
+// ---- evidence store + replay bundles (convergence C4, audit R4) ----
+
+fn unique_tmp(label: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("vh-c4-{label}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create tmp");
+    dir
+}
+
+/// The full C4 acceptance in one flow: receipts are byte-deterministic
+/// across two runs; a finding bundle copied OUT of the out-dir replays
+/// standalone after the out-dirs are deleted (exit 0, anchored
+/// REPRODUCED); a tampered bundle fails closed (exit 1, anchored
+/// MISMATCH); an unreadable path is a usage error (exit 2).
+#[test]
+fn run_out_receipts_are_deterministic_and_bundles_replay_standalone() {
+    let tmp = unique_tmp("roundtrip");
+    let a = tmp.join("A");
+    let b = tmp.join("B");
+    for out in [&a, &b] {
+        let (code, stdout, _) = vh(&[
+            "run",
+            "--workload",
+            "demo-buggy",
+            "--seed",
+            "0xD1CE",
+            "--universes",
+            "100",
+            "--out",
+            out.to_str().unwrap(),
+        ]);
+        assert_eq!(code, 1, "demo-buggy must still exit 1 with --out");
+        assert!(
+            stdout.contains("receipts: ") && stdout.contains("vh-run-receipts-v1"),
+            "missing receipts summary line:\n{stdout}"
+        );
+    }
+    let run_a = std::fs::read_to_string(a.join("run.ndjson")).unwrap();
+    let run_b = std::fs::read_to_string(b.join("run.ndjson")).unwrap();
+    assert_eq!(run_a, run_b, "run.ndjson must be byte-deterministic");
+
+    // Find the first bundle through the receipt index itself.
+    let rel_path = run_a
+        .lines()
+        .filter_map(|l| vh_cli::receipts::parse_line(l).ok())
+        .find_map(|fields| {
+            let rec = fields.iter().find(|(k, _)| k == "record")?.1.as_str()?;
+            if rec != "finding" {
+                return None;
+            }
+            fields
+                .iter()
+                .find(|(k, _)| k == "path")?
+                .1
+                .as_str()
+                .map(str::to_string)
+        })
+        .expect("demo-buggy run must index at least one finding bundle");
+    let bundle_a = std::fs::read_to_string(a.join(&rel_path)).unwrap();
+    let bundle_b = std::fs::read_to_string(b.join(&rel_path)).unwrap();
+    assert_eq!(bundle_a, bundle_b, "bundles must be byte-deterministic");
+
+    // Standalone: copy the bundle out, delete BOTH out-dirs entirely.
+    let standalone = tmp.join("standalone.ndjson");
+    std::fs::write(&standalone, &bundle_a).unwrap();
+    std::fs::remove_dir_all(&a).unwrap();
+    std::fs::remove_dir_all(&b).unwrap();
+
+    let (code, stdout, _) = vh(&["replay-bundle", standalone.to_str().unwrap()]);
+    assert_eq!(code, 0, "standalone replay must exit 0:\n{stdout}");
+    assert!(
+        stdout.contains("replay-bundle: REPRODUCED"),
+        "missing anchored REPRODUCED verdict:\n{stdout}"
+    );
+
+    // Tamper: flip the recorded trace hash — fail closed.
+    let bundle = vh_cli::receipts::FindingBundle::parse(&bundle_a).unwrap();
+    let tampered_text = bundle_a.replace(&bundle.trace_hash, "00000000000000000000000000000000");
+    let tampered = tmp.join("tampered.ndjson");
+    std::fs::write(&tampered, tampered_text).unwrap();
+    let (code, stdout, _) = vh(&["replay-bundle", tampered.to_str().unwrap()]);
+    assert_eq!(code, 1, "tampered bundle must exit 1:\n{stdout}");
+    assert!(
+        stdout.contains("replay-bundle: MISMATCH"),
+        "missing anchored MISMATCH verdict:\n{stdout}"
+    );
+
+    // Unreadable path: usage error, never a verdict.
+    let (code, _, stderr) = vh(&["replay-bundle", tmp.join("nope").to_str().unwrap()]);
+    assert_eq!(code, 2, "unreadable bundle must exit 2:\n{stderr}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// --out is a campaign receipt writer; the single-universe repro path
+/// must reject it rather than silently write a one-universe "campaign".
+#[test]
+fn out_conflicts_with_single_universe_replay() {
+    let (code, _, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--universe",
+        "0",
+        "--out",
+        "/tmp/never-written",
+    ]);
+    assert_eq!(code, 2, "--out with --universe must be a usage error");
+    assert!(
+        stderr.contains("--out conflicts with --universe"),
+        "missing typed diagnostic:\n{stderr}"
+    );
+}

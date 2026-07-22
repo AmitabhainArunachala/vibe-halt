@@ -4,6 +4,7 @@
 //! process exit code, and nothing inside the kernel crates may. Arg parsing
 //! is manual to keep the workspace zero-dependency.
 
+mod bundle;
 mod sandbox_demo;
 
 use vh_cli::workloads;
@@ -28,6 +29,7 @@ fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let code = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
+        Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
         Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
         Some("doctor") => cmd_doctor(),
         _ => {
@@ -43,7 +45,8 @@ vh — Mega Hyper Vibration Multiverse Halting Machine
 
 USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
-           [--palette v0|swarm] [--no-divergence-check]
+           [--palette v0|swarm] [--no-divergence-check] [--out DIR]
+    vh replay-bundle PATH
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh doctor
 
@@ -69,6 +72,20 @@ is likewise UNCHECKED (exit 3) when finding-free — one execution proves
 nothing about reproducibility. --universes must be nonzero and within the
 v0 resource bound; --universes conflicts with --universe.
 
+`vh run --out DIR` additionally writes NDJSON receipts (vh-run-receipts-v1:
+manifest, per-universe outcomes, finding index) and one self-contained
+replay bundle per finding under DIR/findings/. stdout and exit codes are
+unchanged; receipts are written only where --out points (conventionally
+under ~/.vibe-halt/, never the repo). --out applies to multiverse runs
+only (conflicts with --universe).
+
+`vh replay-bundle PATH` re-executes a finding bundle (a finding.ndjson
+file or its directory) with no other repo state: exit 0 iff two replays
+agree with each other AND with every recorded observable (trace hash,
+event count, failures, contract violations, lifecycle validity, plan
+digest); exit 1 on any mismatch or divergence; exit 2 on usage or a
+malformed bundle.
+
 `vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
 universes with env scrubbing, pinned Python env, fixture cassette replay,
 run-twice divergence reporting, and an explicit unmanaged-channel ledger.
@@ -81,6 +98,7 @@ struct RunArgs {
     single_universe: Option<u64>,
     check_divergence: bool,
     palette: FaultPalette,
+    out: Option<String>,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -91,6 +109,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         single_universe: None,
         check_divergence: true,
         palette: FaultPalette::V0,
+        out: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -112,6 +131,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             }
             "--no-divergence-check" => out.check_divergence = false,
             "--palette" => out.palette = parse_palette(&value_for("--palette")?)?,
+            "--out" => out.out = Some(value_for("--out")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -121,6 +141,11 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     // (hardening-loop-2 BLOCKER).
     if out.universes.is_some() && out.single_universe.is_some() {
         return Err("--universes conflicts with --universe (a replay has no campaign size)".into());
+    }
+    // Receipts describe a CAMPAIGN; the single-universe repro path is the
+    // thing bundles point AT, not a receipt producer.
+    if out.out.is_some() && out.single_universe.is_some() {
+        return Err("--out conflicts with --universe (receipts describe a multiverse run)".into());
     }
     Ok(out)
 }
@@ -280,14 +305,14 @@ fn cmd_run(args: &[String]) -> i32 {
         );
     }
 
-    match report.verdict() {
+    let (label, code) = match report.verdict() {
         Verdict::Clean => {
             println!("  verdict: CLEAN");
-            0
+            ("CLEAN", 0)
         }
         Verdict::Findings => {
             println!("  verdict: FINDINGS (see above)");
-            1
+            ("FINDINGS", 1)
         }
         Verdict::Unchecked => {
             let mut reasons: Vec<&str> = Vec::new();
@@ -301,9 +326,28 @@ fn cmd_run(args: &[String]) -> i32 {
                 "  verdict: UNCHECKED (no findings, but {} — inconclusive)",
                 reasons.join(" and ")
             );
-            3
+            ("UNCHECKED", 3)
+        }
+    };
+    // Receipts are written AFTER the verdict is known (the manifest binds
+    // it) and fail closed: a run whose requested evidence could not be
+    // written exits 2, never the blessed code.
+    if let Some(dir) = &run.out {
+        let identity = bundle::RunIdentity {
+            palette_name: run.palette.name(),
+            universes_requested: requested,
+            check_divergence: run.check_divergence,
+            verdict_label: label,
+        };
+        match bundle::write_run_receipts(dir, &report, &identity) {
+            Ok(summary) => println!("  {summary}"),
+            Err(e) => {
+                eprintln!("error: {e}");
+                return 2;
+            }
         }
     }
+    code
 }
 
 /// Render the COMPLETE public observation of a universe result into a

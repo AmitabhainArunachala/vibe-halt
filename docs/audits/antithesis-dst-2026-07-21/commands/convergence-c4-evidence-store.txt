@@ -1,0 +1,72 @@
+# C4 — evidence store + replay bundles: command receipt (2026-07-22)
+# Branch claude/convergence-c4-evidence-store off origin/main @ e36b15b.
+
+## Shape
+
+- vh_cli::receipts (crates/vh-cli/src/receipts.rs): PURE NDJSON codec —
+  schemas vh-run-receipts-v1 (run.ndjson: manifest + per-universe +
+  finding index) and vh-finding-bundle-v1 (self-contained replay bundle).
+  No fs/clock/env; strict flat-record parser (rejects nesting, arrays,
+  trailing garbage). 4 unit tests incl. hostile-detail escaping.
+- crates/vh-cli/src/bundle.rs: boundary I/O — write_run_receipts +
+  cmd_replay_bundle. Deny-list per-file exemption {std::fs} added with
+  rationale in scripts/check_determinism_denylist.py (standing law §4:
+  same-PR amendment, never a workaround); every other denied pattern
+  still binds. Scan: PASS (9 crates, 35 files, 2 boundary skipped).
+- vh run gains --out DIR (stdout + exit contract unchanged; --out
+  conflicts with --universe, typed usage error). vh replay-bundle PATH:
+  exit 0 REPRODUCED / 1 MISMATCH-or-DIVERGENT / 2 usage-or-malformed.
+  Replay runs the universe TWICE and requires self-agreement before
+  comparing to the recorded identity.
+- Divergent universes are recorded in run.ndjson but never bundled — a
+  bundle is a replay promise divergence cannot make.
+- Tape digests (C1) not yet present: schema is additive; the field lands
+  with C1 (§5 coupling noted in ledger).
+- CLAUDE.md phantom retired: receipts written only where --out points,
+  conventionally ~/.vibe-halt/, nothing implicit. Doc now matches a
+  writer that exists.
+
+## Verification
+
+$ cargo test -q --locked --offline -p vh-cli --lib        # receipts codec
+test result: ok. 4 passed; 0 failed
+$ cargo test -q --locked --offline -p vh-cli --test cli_contract
+running 11 tests ... ok. 11 passed; 0 failed
+  (new: run_out_receipts_are_deterministic_and_bundles_replay_standalone,
+        out_conflicts_with_single_universe_replay)
+
+## Acceptance (audit R4), demonstrated live and pinned in gate.sh
+
+$ vh run --workload demo-buggy --seed 0xD1CE --universes 100 --out A   # exit 1
+  receipts: A (100 universes, 30 finding bundle(s), vh-run-receipts-v1)
+$ vh run ... --out B; diff -r A B                # -> IDENTICAL (byte-stable)
+$ cp A/findings/u10-f500cb99ee46/finding.ndjson standalone.ndjson
+$ rm -rf A B                                    # delete the out-dir parents
+$ vh replay-bundle standalone.ndjson
+replay-bundle: REPRODUCED u10-f500cb99ee46 (workload demo-buggy seed 0xd1ce
+  universe 10 hash f500cb99ee46b8f22ffe23d456d3f82e events 46 ...)  # exit 0
+$ sed 's/<hash>/000...dead/' standalone.ndjson > tampered.ndjson
+$ vh replay-bundle tampered.ndjson              # exit 1
+replay-bundle: MISMATCH u10-f500cb99ee46 — trace_hash: got f500cb..., bundle 0000...
+
+Cross-family falsification (SimRuntime workload, different oracle):
+$ vh run --workload demo-net-buggy ... --out N; cp <first bundle>; rm -rf N
+$ vh replay-bundle net-standalone.ndjson        # exit 0
+replay-bundle: REPRODUCED u1-821daae2785c (... hash 821daae2785c49ac3746bf95bff63ca7 events 34 ...)
+
+## Gate
+
+scripts/gate.sh gains two anchored gates (run by make gate AND CI):
+- evidence-store gate: two runs byte-identical (diff -r), first bundle
+  copied out, out-dirs DELETED, standalone replay must exit 0 with
+  exactly one anchored '^replay-bundle: REPRODUCED' line.
+- negative gate: sed-tampered trace_hash must exit exactly 1 with one
+  anchored '^replay-bundle: MISMATCH' line (fail-closed proof).
+
+$ make gate       # pre-commit, full battery
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+  all five corpus recall gates green (unmoved)
+  gate: receipts deterministic; standalone bundle replay REPRODUCED (exit 0)
+  gate: tampered bundle correctly fails closed (exit 1, MISMATCH)
+== gate battery: ALL PASS ==
