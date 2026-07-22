@@ -1,5 +1,7 @@
 VIBE-HALT — CODEX NIGHT ADDENDUM (extends CODEX_PR2_MASTER_SPEC + continuation charter)
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 You are Codex on codex/vibe-halt-verify (PR #2). Tonight, Track 1 executes docs/plans/VIBE_HALT_PHASE1_NIGHT_PLAN_2026-07-20.md on its branch — read it, plus PR #2 comments 5023197685 (loop-4 migration map) and 5021566209 (your granted observation-view ratchet). Standing law unchanged: onboard first, gates are law, citation-or-silence, tier every claim, never touch Claude-owned surfaces, never merge.
 
 NIGHT SEQUENCE:

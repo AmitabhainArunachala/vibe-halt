@@ -1,5 +1,7 @@
 # VIBE-HALT — TRACK 2: THE 1000x INSTANTIATION (guided exploration + finding depth)
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 Authored 2026-07-21 by the Grand Orchestrator, grounded in the full
 Antithesis-class audit at `docs/audits/antithesis-dst-2026-07-21/`
 (pinned public commit `84f911e`, validator gate: 0 errors, 0 warnings).

@@ -33,7 +33,7 @@ spine_objectives:
 tracks:
   - id: vibe-halt-core-2026-07
     title: "vibe-halt core — deterministic multiverse engine (Phases 0-4)"
-    status: PAUSED
+    status: ACTIVE
     serves: deterministic-truth
     opened: 2026-07-20
     # Narrowed 2026-07-20 (hardening-loop GAP): exact surfaces, no broad
@@ -47,14 +47,17 @@ tracks:
       - crates/vh-multiverse/**
       - crates/vh-sandbox/**
       - crates/vh-cli/**
+      - crates/vh-digest/**
       - clients/**
       - scripts/onboard.py
       - scripts/check_determinism_denylist.py
       - docs/specs/**
+      - docs/audits/**
       - docs/plans/**
       - docs/prompts/**
       - Makefile
       - .github/workflows/ci.yml
+      - DESIGN.md
       - CLAUDE.md
       - README.md
     acceptance:
@@ -67,14 +70,14 @@ tracks:
       - ">=1000 Tier-1 universes/hour/reference-workload on the build box"
       - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
     next:
-      - "PAUSED 2026-07-22 under wip_max law while Track 2 occupies audited core exploration surfaces; resume only after Track 2 ships or narrows ownership"
-      - "Phase 0 (wk 1-2): trace format freeze, seed-tree hardening, divergence gate in CI (DONE at scaffold)"
-      - "Phase 1 (wk 3-5): Tier-1 sim runtime (net/disk/process gremlins on the scheduler); Tier-2 hermetic subprocess sandbox + LLM cassette layer"
-      - "Phase 2 (wk 6-8): end-state oracles, fault-plan shrinker, vibe-bug corpus >=25"
-      - "Phase 3 (wk 9-10): parallel fan-out matching sequential hashes; bandit seed scheduling; failure fingerprint dedup"
-      - "Phase 4 (wk 11-12): gRPC surface, Python client, dharma_swarm gate adapter, live-fire demo"
+      - "RESUMED 2026-07-22 after Track 2 closeout: close issue #24's audit truth gaps, deliver child-visible cassette-backed Tier-2/D2 reach, and preserve every open channel as D2/UNCHECKED"
+      - "implement only the safe C1-C6 and CD packages admitted by docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md; verifier-owned surfaces still require an interface request"
+      - "core package split: C1 observation identity; C2-core oracle and gate truth; C3 evidence v2 and safe digest; C4 sandbox truth envelope; C5 cassette transport; C6 measured D2 reach; CD doctrine and observation documentation"
+      - "prepare a docs-only C7 decision packet for the capped Linux supervisor spike only after safe foundations merge; no helper implementation begins without separate human ratification"
+      - "serialize integration writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer"
     non_goals:
-      - "Tier 3 (deterministic hypervisor) — out of scope for the 12-week build; trace/oracle layer stays substrate-agnostic so a backend can slot in later"
+      - "a general Tier 3 hypervisor or arbitrary multithreaded-binary determinism promise; the only supervisor work permitted here is a docs-only proposal for a separately human-ratified Linux x86-64 one-process/one-thread spike"
+      - "C0 grants no unsafe code, external dependency, helper implementation, sibling repository creation, public-harness execution, credential use, spending, paid-provider call, merge, approval, or self-approval authority"
       - "replacing dharma_swarm governance — this repo imports the lean subset only"
 
   - id: vibe-halt-verify-2026-07
@@ -101,6 +104,7 @@ tracks:
       - "keep vh-verify fully deny-listed except its telemetry-only binary boundary"
       - "ratchet every discovered false-confidence path into an independent model, frozen vector, or negative regression before closing it"
       - "retain typed shrink failure/report receipts and cross-OS frozen Tier-1 verification as future implementations evolve"
+      - "V1 owns independent verifier ratchets for C1/C3 observation and evidence contracts on verifier surfaces; core coordinates only through an exact interface request"
 
   - id: vibe-bug-corpus-2026-07
     title: "vibe-bug corpus — seeded real-bug classes with pinned recall gates"
@@ -122,6 +126,7 @@ tracks:
       - "seed the corpus with the five Phase-1 bug classes (lost update, retry double-apply, dirty read, crash-window TOCTOU, fsync-lie hole)"
       - "harvest real vibe-coded bugs from public AI-generated PRs per the playbook"
       - "C6 (convergence 2026-07-22) harvest sprint: admit >=5 new entries harvested from real AI-generated code (public repos, merged AI PRs, agent-framework issue trackers), each modeled as a seeded workload + oracle per corpus/PLAYBOOK.md and corpus/SCHEMA.md, with a pinned one-command repro, an anchored recall gate in scripts/gate.sh, and cited provenance (source repo, PR/commit, defect description); kill (audit R7): <3 admissible real bugs after 4 weeks of sustained harvesting falsifies rig REALISM -> stop exploration investment and propose fidelity fixes"
+      - "K1 owns exact recall/control corpus contracts for C2-core; any later K2 or public-target corpus admission requires its own typed provenance, pinned oracle, and human-ratified execution authority"
     non_goals:
       - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
       - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
@@ -129,7 +134,7 @@ tracks:
 
   - id: vibe-halt-1000x-exploration
     title: "Track 2 — 1000x guided exploration and finding depth"
-    status: ACTIVE
+    status: SHIPPED
     serves: real-bugs-found
     opened: 2026-07-22
     owned_surfaces:
@@ -167,6 +172,8 @@ tracks:
       - "W2/RFC-003: decision tape records scheduler choice points without moving frozen doctor identities"
       - "W4/D6: ClockSkew is implemented as observable virtual-clock divergence or removed from generated offers"
       - "W5/R1: shrink wiring remains an INTERFACE REQUEST only unless ownership is reassigned"
+      - "W1 DISPOSITION: the opt-in swarm palette lost the pinned bakeoff, so palette guidance was falsified and v0 remained the default"
+      - "C2 DISPOSITION: event-priority (PCT-inspired) scheduling and the decision tape shipped opt-in; on VB-006's first-failing-universe metric it showed no measured advantage over uniform, while the saturated depth-1 instrument cannot support a general schedule-guidance null"
     next:
       - "W0: ship housekeeping first, citing INTEGRATION_ROADMAP.md R0 acceptance and kill criterion"
       - "W1: first code touch is crates/vh-gremlin; keep --palette v0 default and bit-identical"
@@ -177,6 +184,9 @@ tracks:
       - "C2 (convergence 2026-07-22): PCT (Burckhardt 2010; attribute shuttle pct.rs@c8a46d3965, shapes only, zero deps) over same-timestamp choice points + seeded VB-006 race red on FIFO v0 by construction; opt-in, FIFO default; kill: PCT no faster than uniform-with-random-tiebreak over 32 seeds -> drop PCT, keep tape, publish the null as completion of the guided-exploration falsification"
       - "C3 (convergence 2026-07-22): ClockSkew honesty fix (W4/D6) — remove from generated offers or implement observable virtual-clock divergence; fault ledger stops recording skips as budget spent; re-run all five corpus recall pins and re-pin same-PR with before/after receipts if any move"
       - "convergence campaign ledger (append-only): docs/audits/antithesis-dst-2026-07-21/CONVERGENCE_LEDGER_2026-07-22.md; per-package command receipts: docs/audits/antithesis-dst-2026-07-21/commands/convergence-c<N>-<slug>.txt"
+      - "SHIPPED 2026-07-22 closes the bounded experiment package with a palette null and an unmeasurable narrow schedule result; it does not mean guided exploration was validated or a capability shipped"
+      - "investment remains stopped; event-priority stays opt-in as a reproducible schedule-diversity harness and the decision tape remains replay/causality substrate"
+      - "revival requires a new human-ratified track and a depth>=2 ordered-causal-chain instrument with one opportunity per universe, stable logical actor identity, an independent required-key oracle, FIFO clean, dispersed paired roots, recorded policy/tape, and a uniform hit rate low enough to discriminate; guidance investment resumes only after a predeclared paired bakeoff passes its advantage threshold over uniform"
     non_goals:
       - "no edits to crates/vh-verify/** or crates/vh-shrink/** without explicit ownership reassignment"
       - "no edits to crates/vh-multiverse/src/runtime.rs while the Track-1 sandbox surface is live without an interface request"

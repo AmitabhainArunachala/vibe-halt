@@ -1,5 +1,7 @@
 # VIBE-HALT — CONVERGENCE CAMPAIGN EXECUTOR (long-running, adaptive)
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 Authored 2026-07-22 against post-merge `main` (`2e47386`, PRs #12/#13/#14
 landed), grounded in the 2026-07-22 whole-repo review and the audit at
 `docs/audits/antithesis-dst-2026-07-21/`. You are a fresh, long-running

@@ -1,5 +1,7 @@
 VIBE-HALT — PHASE-1 NIGHT CAMPAIGN (Track 1)
 
+> **Superseded for core execution upon human merge of C0 by `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.** Retained as historical evidence; this supersedes execution authority only and grants no current core execution authority.
+
 You are the Track-1 builder on AmitabhainArunachala/vibe-halt, author of PR #1. Resume claude/vibe-halt-simulation-jupmri and execute docs/plans/VIBE_HALT_PHASE1_NIGHT_PLAN_2026-07-20.md — read it IN FULL first; it overrides this digest. Also read CLAUDE.md, docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md (Phase 1), docs/specs/DETERMINISM_TIERS.md, PR #1 comment 5023079490, PR #2 comments 5021566209 + 5023197685.
 
 AUTHORITY: Never merge or self-approve any PR; PRs stay draft all night. Push only to claude/vibe-halt-simulation-jupmri. Never touch crates/vh-verify/**, crates/vh-shrink/**, .github/workflows/verify.yml, or codex/vibe-halt-verify — cross-boundary needs are INTERFACE RESPONSE comments on PR #2. Never weaken a gate, frozen vector, or determinism claim. Frozen demo path stays byte-identical; observable growth is an explicit doctor v2→v3 migration with TRACE_FORMAT changelog + explained cause, never silent.
