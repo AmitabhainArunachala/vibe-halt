@@ -123,6 +123,12 @@ EXEMPT: dict[str, set[str]] = {
     # campaign only. It spawns nothing directly (the crate does) and stays
     # under the full pattern set for everything else.
     "crates/vh-cli/src/sandbox_demo.rs": {r"std::env", r"std::fs"},
+    # Evidence-store boundary (convergence C4, audit R4): receipt/bundle
+    # file I/O for `vh run --out` and `vh replay-bundle`. Receipt CONTENT
+    # is built and parsed by the pure vh_cli::receipts module (fully
+    # deny-listed); this file only reads/writes those bytes, so clock,
+    # env, net, process, and hash-order rules all still bind here.
+    "crates/vh-cli/src/bundle.rs": {r"std::fs"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.

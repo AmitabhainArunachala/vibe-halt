@@ -269,4 +269,53 @@ if [ "$runner_code" -eq 0 ] || [ "$cli_code" -ne 2 ]; then
 fi
 echo "gate: python client quarantine holds (runner refuses, cli exit 2)"
 
+echo "== evidence-store gate: receipts deterministic + bundle replays standalone (C4/R4) =="
+bundle_tmp="$(mktemp -d)"
+trap 'rm -rf "$bundle_tmp"' EXIT
+set +e
+cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 100 --out "$bundle_tmp/A" >/dev/null
+a_code=$?
+cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 100 --out "$bundle_tmp/B" >/dev/null
+b_code=$?
+set -e
+if [ "$a_code" -ne 1 ] || [ "$b_code" -ne 1 ]; then
+  echo "GATE FAIL: --out must not change the exit contract (got $a_code / $b_code, expected 1)"
+  exit 1
+fi
+if ! diff -r "$bundle_tmp/A" "$bundle_tmp/B" >/dev/null; then
+  echo "GATE FAIL: two identical runs wrote different receipt bytes (bundle digests unstable)"
+  exit 1
+fi
+first_bundle=$(find "$bundle_tmp/A/findings" -name finding.ndjson | sort | head -1)
+if [ -z "$first_bundle" ]; then
+  echo "GATE FAIL: demo-buggy run wrote no finding bundles"
+  exit 1
+fi
+cp "$first_bundle" "$bundle_tmp/standalone.ndjson"
+rm -rf "$bundle_tmp/A" "$bundle_tmp/B"
+set +e
+out=$(cargo run -q --locked --offline --all-features -p vh-cli -- replay-bundle "$bundle_tmp/standalone.ndjson")
+code=$?
+set -e
+reproduced=$(printf '%s\n' "$out" | grep -c '^replay-bundle: REPRODUCED')
+if [ "$code" -ne 0 ] || [ "$reproduced" -ne 1 ]; then
+  echo "GATE FAIL: standalone bundle replay expected exit 0 + anchored REPRODUCED, got exit $code / $reproduced"
+  exit 1
+fi
+echo "gate: receipts deterministic; standalone bundle replay REPRODUCED (exit 0)"
+
+echo "== negative gate: tampered bundle must fail closed (exact exit 1 + anchored MISMATCH) =="
+sed 's/"trace_hash":"[0-9a-f]*"/"trace_hash":"00000000000000000000000000000000"/' \
+  "$bundle_tmp/standalone.ndjson" > "$bundle_tmp/tampered.ndjson"
+set +e
+out=$(cargo run -q --locked --offline --all-features -p vh-cli -- replay-bundle "$bundle_tmp/tampered.ndjson")
+code=$?
+set -e
+mismatch=$(printf '%s\n' "$out" | grep -c '^replay-bundle: MISMATCH')
+if [ "$code" -ne 1 ] || [ "$mismatch" -ne 1 ]; then
+  echo "GATE FAIL: tampered bundle expected exit 1 + anchored MISMATCH, got exit $code / $mismatch"
+  exit 1
+fi
+echo "gate: tampered bundle correctly fails closed (exit 1, MISMATCH)"
+
 echo "== gate battery: ALL PASS =="
