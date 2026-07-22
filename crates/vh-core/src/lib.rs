@@ -13,5 +13,5 @@ pub mod seed;
 
 pub use clock::{VirtualClock, VirtualTime};
 pub use rng::Xoshiro256pp;
-pub use sched::Scheduler;
+pub use sched::{Scheduler, SchedulerDecision};
 pub use seed::SeedTree;

@@ -1,0 +1,50 @@
+$ PATH=/opt/homebrew/bin:$PATH make onboard
+=== vibe-halt onboard ===
+  branch: claude/track2-w2-decision-tape
+  head: 5e58772
+  dirty files: 0
+  tracks: 3 ACTIVE (wip_max 3)
+    - vibe-halt-verify-2026-07
+    - vibe-bug-corpus-2026-07
+    - vibe-halt-1000x-exploration
+  deny-list self-test: PASS
+  deny-list scan: PASS
+Verdict: READY
+exit 0
+
+$ cargo test -p vh-core -p vh-trace --locked --offline
+test sched::recorded_pop_preserves_fifo_order_and_records_choice_points ... ok
+test sched::decision_candidate_digest_is_stable_for_same_schedule ... ok
+test tests::decision_tape_has_stable_separate_digest ... ok
+test tests::decision_tape_digest_is_not_the_empty_trace_hash ... ok
+test result: ok. 20 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+test result: ok. 8 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+exit 0
+
+$ cargo run -q --locked --offline -p vh-cli -- doctor
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+exit 0
+
+$ gh pr comment 13 --body-file -   # INTERFACE REQUEST posted
+https://github.com/AmitabhainArunachala/vibe-halt/pull/13#issuecomment-5040630656
+exit 0
+
+$ PATH=/opt/homebrew/bin:$PATH make gate
+== gate 0: determinism deny-list ==
+denylist self-test: PASS (18 regex samples x src/tests, 21 manifest fixtures, 7 root fixtures, 22 boundary cases)
+determinism deny-list: PASS (9 crates, 33 files scanned, 2 declared boundary files skipped; manifests tomllib-validated hermetic with name+version-bound deps and crate-confined build/target paths, members bound to crates/, no [patch]/[replace]/.cargo-config, lockfile name+version-bound source-free, workspace unsafe_code = "forbid" inherited by every crate)
+== gate G: governance admission (strict schema, ownership, WIP) ==
+governance self-test: PASS (4 bypass reproductions, 10 schema cases)
+governance: PASS (4 tracks, 3 ACTIVE, strict schema, canonical ownership, WIP within limit)
+test sched::recorded_pop_preserves_fifo_order_and_records_choice_points ... ok
+test sched::decision_candidate_digest_is_stable_for_same_schedule ... ok
+test tests::decision_tape_has_stable_separate_digest ... ok
+test tests::decision_tape_digest_is_not_the_empty_trace_hash ... ok
+== doctor: frozen Tier-1 complete-observable identity ==
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+== gate battery: ALL PASS ==
+exit 0
