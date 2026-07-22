@@ -9,7 +9,8 @@
 //! Classes here: lost update (VB-001), retry double-apply (VB-002),
 //! dirty read (VB-003), crash-window TOCTOU (VB-004), stale-sweep
 //! re-dispatch (VB-007, HARVESTED from langchain-ai/langgraph#7417),
-//! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491).
+//! unvalidated checkpoint (VB-008, HARVESTED from langgraph#6491),
+//! transient-fatal abort (VB-009, HARVESTED from OpenHands#12064).
 //! VB-005 (fsync-lie durability hole) lives in `disk.rs` as the
 //! paranoid WAL under a lying-hardware palette. VB-006 is reserved for
 //! the C2 same-timestamp race (convergence charter §4).
@@ -795,6 +796,155 @@ impl Workload for UnvalidatedCheckpoint {
                 let recovered = durable.iter().any(|r| r == want);
                 rt.declare_end(&format!("recovered:{ckpt}"), &recovered.to_string());
             }
+        }
+        rt.finish();
+        RunOutcome::Completed
+    }
+}
+
+// ---------------------------------------------------------------- VB-009
+
+const SA_CLIENT: u32 = 0;
+const SA_BACKEND: u32 = 1;
+const SA_TASKS: u64 = 5;
+const SA_TASK_SPACING: u64 = 80_000;
+/// Reply deadline: normal round trip is 2 x BASE_LATENCY (2_000); armed
+/// delays reach 50_000 and partitions eat messages outright — the bug
+/// window is any transient failure outliving this deadline.
+const SA_TIMEOUT: u64 = 30_000;
+
+/// VB-009 transient-fatal abort (HARVESTED — OpenHands/OpenHands issue
+/// #12064, 2025-12-16, fixed by PR #12117): a LiteLLM-proxy 502 Bad
+/// Gateway surfaces as `litellm.APIError`, which is MISSING from
+/// `LLM_RETRY_EXCEPTIONS` in openhands/llm/llm.py — the retry logic
+/// does not recognize the transient error, the agent controller
+/// catches the unhandled exception, and the whole agent crashes,
+/// abandoning the session and every remaining accepted task. Reduced
+/// mechanism: a client awaits each backend reply under a deadline; on
+/// deadline it classifies the failure as FATAL (the missing retriable
+/// entry) and aborts the entire session — though the fault was a
+/// transient partition or a merely-slow reply and the network heals.
+/// Distinct from demo-net-buggy (fire-and-forget never LEARNS of
+/// failure): this client learns, misclassifies, and takes the whole
+/// session down with it — blast radius, not blindness.
+pub struct TransientFatalAbort;
+
+fn session_complete_oracle(end: &EndState) -> Result<(), String> {
+    let mut violations = Vec::new();
+    for task in 0..SA_TASKS {
+        if end.get(&format!("completed:{task}")).map(String::as_str) != Some("true") {
+            violations.push(format!("task {task}"));
+        }
+    }
+    if violations.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "accepted work abandoned: {} never completed (transient failure classified as fatal; session aborted instead of retried)",
+            violations.join(", ")
+        ))
+    }
+}
+
+impl Workload for TransientFatalAbort {
+    fn name(&self) -> &str {
+        "corpus-transient-fatal-abort"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &["session_aborted"]).with_oracles(&["session_complete"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<EndStateOracle> {
+        vec![EndStateOracle {
+            name: "session_complete",
+            check: session_complete_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.declare_sometimes("session_aborted");
+        let mut gremlin = ctx.stream("gremlin");
+        let fault_palette = ctx.fault_palette();
+        let universe_seed = ctx.universe_seed();
+        let mut rt = ctx.runtime(|| {
+            // Transient faults only: partitions heal and delays deliver,
+            // so a retrying client would always finish the session —
+            // every abandonment is the fatal misclassification, never a
+            // permanently dead backend.
+            let count = 2 + gremlin.next_below(3);
+            let horizon = SA_TASKS * SA_TASK_SPACING;
+            let chooser = PaletteChooser::new(fault_palette, universe_seed, 2);
+            FaultPlan::new(
+                (0..count)
+                    .map(|_| {
+                        let at_nanos = gremlin.next_below(horizon);
+                        let fault = match chooser.choose(&mut gremlin) {
+                            0 => FaultKind::NetworkPartition {
+                                duration_nanos: 20_000 + gremlin.next_below(30_000),
+                            },
+                            _ => FaultKind::NetworkDelay {
+                                delay_nanos: 5_000 + gremlin.next_below(45_000),
+                            },
+                        };
+                        FaultInjection { at_nanos, fault }
+                    })
+                    .collect(),
+            )
+        });
+
+        // Even tokens dispatch task token/2; odd tokens are that task's
+        // reply deadline. All SA_TASKS are accepted up front — the
+        // session's promise is to complete them all.
+        let mut completed = [false; SA_TASKS as usize];
+        let mut aborted = false;
+        for task in 0..SA_TASKS {
+            rt.set_timer(task * SA_TASK_SPACING, task * 2);
+        }
+        while let Some(ev) = rt.step() {
+            match ev {
+                StepEvent::Timer { token } => {
+                    let task = token / 2;
+                    if aborted {
+                        // The crashed controller steps nothing further.
+                        continue;
+                    }
+                    if token % 2 == 0 {
+                        rt.send(SA_CLIENT, SA_BACKEND, &format!("req:{task}"));
+                        let now = rt.now_nanos();
+                        rt.set_timer(now + SA_TIMEOUT, task * 2 + 1);
+                    } else if !completed[task as usize] {
+                        // The bug: the transient failure is not in the
+                        // retriable set — the unhandled classification
+                        // kills the whole session, not the one call.
+                        rt.sometimes("session_aborted");
+                        aborted = true;
+                    }
+                }
+                StepEvent::Delivered { to, payload, .. } => {
+                    if to == SA_BACKEND {
+                        if let Some(task) = payload.strip_prefix("req:") {
+                            let task: u64 = task.parse().expect("deterministic payload");
+                            let reply = format!("ok:{task}");
+                            rt.send(SA_BACKEND, SA_CLIENT, &reply);
+                        }
+                    } else if let Some(task) = payload.strip_prefix("ok:") {
+                        if !aborted {
+                            let task: u64 = task.parse().expect("deterministic payload");
+                            completed[task as usize] = true;
+                        }
+                        // After the abort the controller is gone; late
+                        // replies fall on the floor.
+                    }
+                }
+                StepEvent::Crashed => unreachable!("no CrashRestart in palette"),
+            }
+        }
+        for task in 0..SA_TASKS {
+            rt.declare_end(
+                &format!("completed:{task}"),
+                &completed[task as usize].to_string(),
+            );
         }
         rt.finish();
         RunOutcome::Completed

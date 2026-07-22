@@ -80,3 +80,35 @@ Gate: "corpus recall gate: corpus-unvalidated-checkpoint" (exact exit 1
 + anchored oracle line). make gate ALL PASS; identities unchanged.
 
 Corpus count: 7/25 (5 seeded + 2 HARVESTED). Sprint: 2/5.
+
+## Increment 3 (same PR): VB-009 transient-fatal abort
+
+Provenance: OpenHands/OpenHands issue #12064 (2025-12-16; FIXED by PR
+#12117) — 502 Bad Gateway surfaces as litellm.APIError, missing from
+LLM_RETRY_EXCEPTIONS in openhands/llm/llm.py; retry logic doesn't
+recognize it; agent controller catches the unhandled exception and the
+agent crashes, abandoning the session. Verified from the issue at point
+of use.
+
+Reduced: corpus-transient-fatal-abort — client awaits each reply under
+a deadline; transient-only palette (healing partitions, delivering
+delays) so a RETRYING client always finishes; the buggy client
+classifies a missed deadline as fatal and aborts the WHOLE session
+(later timers step nothing, late replies dropped). Distinct from
+demo-net-buggy: learns-and-misclassifies (blast radius) vs never-learns
+(blindness).
+
+Oracle session_complete: completed:<task> == true for all accepted;
+detail names abandoned tasks.
+
+Recall measured then pinned: found 79/100 at seed 0xD1CE, budget 100;
+divergent 0; 21 fault-light universes PASS; sometimes session_aborted
+reached.
+$ vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universe 0
+  FAIL: accepted work abandoned: task 2, task 3, task 4 ...  (exit 1)
+
+Gate: "corpus recall gate: corpus-transient-fatal-abort" (exact exit 1
++ anchored oracle:session_complete). make gate ALL PASS; identities
+unchanged.
+
+Corpus count: 8/25 (5 seeded + 3 HARVESTED). Sprint: 3/5.

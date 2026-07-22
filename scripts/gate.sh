@@ -228,6 +228,19 @@ if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
 fi
 echo "gate: corpus-unvalidated-checkpoint recalled (exit 1, oracle:checkpoint_recoverable)"
 
+echo "== corpus recall gate: corpus-transient-fatal-abort must be FOUND (exact exit 1) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-transient-fatal-abort --seed 0xD1CE --universes 100)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
+fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:session_complete')
+if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
+  echo "GATE FAIL: corpus-transient-fatal-abort expected exit 1 + FINDINGS + anchored oracle:session_complete, got exit $code / $verdicts / $fails"
+  exit 1
+fi
+echo "gate: corpus-transient-fatal-abort recalled (exit 1, oracle:session_complete)"
+
 echo "== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 50)
