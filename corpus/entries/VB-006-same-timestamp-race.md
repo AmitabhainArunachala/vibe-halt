@@ -33,14 +33,22 @@ base.
 
 ## Bakeoff disposition (C2 kill criterion — FIRED)
 
-Over 32 seeds at budget 1000 (`scripts/track2_pct_bakeoff.py`): PCT d=3
-first-finding median 0, uniform-with-random-tiebreak median 0; PCT wins
-0, losses 8, ties 24 — PCT is NOT faster than uniform. Per the charter,
-PCT is DROPPED as a guided-exploration bet (it remains in-tree, opt-in,
-as the reproducible falsification harness — the W1 swarm-palette
-precedent); the decision tape stays (replay/causality substrate). This
-completes the falsification of the audit's guided-exploration thesis:
-what VB-006 needed was ANY same-timestamp diversity, not guidance.
+Over 32 seeds at budget 1000 (`scripts/track2_pct_bakeoff.py`):
+event-priority (PCT-inspired) d=3 first-finding median 0,
+uniform-with-random-tiebreak median 0; wins 0, losses 8, ties 24 — not
+faster than uniform. Per the charter the strategy is DROPPED as a
+guided-exploration bet (it remains in-tree, opt-in, as the reproducible
+falsification harness — the W1 swarm-palette precedent); the decision
+tape stays (replay/causality substrate).
+
+**Claim scope (narrowed 2026-07-22, Codex audit C.1 / issue #24):** this
+bakeoff is a floor effect — VB-006's 6 independent two-way races give
+uniform a ~98.4% per-universe hit rate (observed 96/100), saturating the
+metric at 0/0. It supports only the NARROW null (no advantage on this
+workload/metric), not a general falsification of guided exploration.
+What VB-006 needed was ANY same-timestamp diversity, not guidance; a
+future depth->=2 entry with a low uniform hit rate is the instrument
+that could actually discriminate.
 Evidence: `docs/audits/antithesis-dst-2026-07-21/commands/convergence-c2-pct.txt`.
 
 Seeded entry: lower-bound evidence only (corpus/SCHEMA.md law 3).

@@ -25,8 +25,18 @@ def first_finding(seed: int, schedule: str, budget: int) -> int | None:
         "--seed", hex(seed), "--universes", str(budget),
         "--schedule", schedule,
     ]
-    out = subprocess.run(cmd, capture_output=True, text=True).stdout
-    hits = FAIL_RE.findall(out)
+    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # Fail-closed (Codex audit C.3): a broken build or crashed run must
+    # abort the bakeoff loudly, never masquerade as "no finding within
+    # budget". Only the rig's own verdict exits (0=CLEAN, 1=FINDINGS)
+    # with an anchored verdict line are admissible measurements.
+    if proc.returncode not in (0, 1) or "  verdict: " not in proc.stdout:
+        sys.stderr.write(
+            f"bakeoff ABORT: seed=0x{seed:x} schedule={schedule} "
+            f"exit={proc.returncode} — not a rig verdict\n{proc.stderr}"
+        )
+        raise SystemExit(3)
+    hits = FAIL_RE.findall(proc.stdout)
     return int(hits[0]) if hits else None
 
 

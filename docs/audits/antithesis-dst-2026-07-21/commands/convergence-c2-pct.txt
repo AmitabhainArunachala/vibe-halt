@@ -53,7 +53,7 @@ receipt's stronger one-off.)
 $ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 100 --schedule pct:3 --record-tape
 vibe-halt: workload=corpus-same-timestamp-race seed=0xd1ce universes=100 palette=v0 divergence-check=true
   always-failures: 76 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
-  FAIL universe 0: oracle:init_before_commit — commit applied before its init: round 3 (same-timestamp delivery order assumed, never guarded)
+  FAIL universe 0: oracle:init_before_commit — commit applied before its init: round 3 (base=missing-init) (same-timestamp delivery order assumed, never guarded)
     repro: vh run --workload corpus-same-timestamp-race --seed 0xd1ce --universe 0 --schedule pct:3
   ...
   verdict: FINDINGS (see above)
@@ -150,3 +150,36 @@ $ make gate    # ALL PASS incl. the three new C2 gates:
                #   PCT replay byte-identical across two processes
 Doctor identities FROZEN: 9ce6199f133f4d3c9dd0da0075e352d2 / 45 events;
 fingerprint 1684e7c347e645f43a80a30abc46adb7 (vh-doctor-observable-v3).
+
+## ADDENDUM (2026-07-22, post-review — Codex audit, issue #24)
+
+Four findings from the independent Codex audit were fixed in this same
+PR before merge; all measurements above were re-run and are unchanged:
+
+- C.1 CLAIM NARROWED: the bakeoff is a floor effect. VB-006 exposes 6
+  independent two-way races per universe, so uniform tiebreak alone
+  finds it with per-universe probability 1-(1/2)^6 ~= 98.4% (observed
+  96/100); both medians saturate at 0 and the first-failing-universe
+  metric has NO discriminating power here. The published claim is
+  therefore the NARROW null (no advantage on this workload/metric,
+  0 wins / 8 losses), NOT a general falsification of guided
+  exploration. Joint Track-2 verdict revised to: guided exploration
+  UNPROVEN on this corpus (falsified on the palette axis by W1's
+  discriminating instrument; unmeasurable on the schedule axis pending
+  a depth>=2 instrument). PLAYBOOK, EVIDENCE_LEDGER
+  VH-TRACK2-NULL-002, VB-006 entry, and the campaign closeout all
+  carry the narrowed wording.
+- C.2 NAMING: claims now say "event-priority (PCT-inspired)"
+  scheduling — event-frontier scheduling borrowing PCT's shapes, not
+  thread-based PCT; it inherits none of PCT's probabilistic
+  guarantees (strategy.rs doc states this).
+- C.3 HARNESS FAIL-CLOSED: track2_pct_bakeoff.py now aborts (exit 3)
+  on any child exit outside {0,1} or missing anchored verdict line — a
+  broken build can no longer masquerade as a null. Re-run post-fix:
+  output byte-identical to the pre-fix table above.
+- B.2 ORACLE FAIL-CLOSED: init_before_commit now requires every
+  round's base fact PRESENT and == "ok" (absent keys and any non-ok
+  value are violations). Recall unchanged: 76/100, first=0; FIFO
+  10k CLEAN unchanged. B.1 (this gate's scope): the PCT gate now pins
+  exactly 76/100 with first at universe 0 — drift in either direction
+  fails the gate.

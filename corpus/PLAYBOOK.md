@@ -89,12 +89,25 @@ python3 scripts/track2_pct_bakeoff.py --seeds 32 --budget 1000
 ```
 
 Result: **null**. `median_pct=0 median_uniform=0 pct_wins=0 losses=8
-ties=24` — PCT is not faster than uniform tiebreak. The kill criterion
-FIRED: PCT is dropped as a guided-exploration bet (kept in-tree opt-in
-as the reproducible falsification harness), the decision tape stays as
-the replay/causality substrate, and — combined with W1's swarm-palette
-0/5 — **the audit's guided-exploration thesis is now falsification-
-complete**: on this rig's bug population, schedule/palette DIVERSITY
-finds what FIFO cannot, but GUIDANCE has not beaten uniform randomness
-anywhere it was measured. Evidence:
+ties=24` — event-priority (PCT-inspired) scheduling is not faster than
+uniform tiebreak, and the kill criterion FIRED: it is dropped as a
+guided-exploration bet (kept in-tree opt-in as the reproducible
+falsification harness) and the decision tape stays as the
+replay/causality substrate.
+
+**Scope of the claim (narrowed 2026-07-22 per Codex audit C.1, issue
+#24).** This measurement is a FLOOR EFFECT: VB-006 exposes 6
+independent two-way races per universe, so uniform tiebreak alone finds
+it with per-universe probability 1-(1/2)^6 ≈ 98.4% (observed 96/100) —
+both medians saturate at 0 and the first-failing-universe metric has no
+discriminating power on this instrument. The defensible claim is
+therefore NARROW: on this workload and metric, event-priority
+scheduling showed no advantage over uniform randomness (and lost 8
+head-to-heads outright). It is NOT a general falsification of guided
+exploration. Combined with W1's swarm-palette 0/5 (which DID have a
+discriminating instrument), the honest joint verdict is: **guided
+exploration remains unproven on this rig and investment stops**; the
+recorded revival falsifier is a depth>=2 bug class whose uniform
+per-universe hit probability is low enough for the metric to
+discriminate. Evidence:
 `docs/audits/antithesis-dst-2026-07-21/commands/convergence-c2-pct.txt`.

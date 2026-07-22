@@ -165,12 +165,16 @@ numbers: commands/convergence-c2-pct.txt.
   pct_wins=0 losses=8 ties=24 → `pct_faster_than_uniform=false`.
   Cross-check: uniform alone finds VB-006 in 96/100 universes vs PCT's
   76 — PCT's change points sometimes RESTORE FIFO-like order on
-  depth-1 bugs. Disposition per charter: PCT dropped as investment,
-  kept in-tree opt-in as the reproducible falsification harness (W1
-  precedent); tape kept; null published in corpus/PLAYBOOK.md +
-  EVIDENCE_LEDGER VH-TRACK2-NULL-002 (same PR), with the recorded
-  falsifier (a depth≥2 bug class where PCT beats uniform) as the only
-  revival path.
+  depth-1 bugs. Disposition per charter: PCT-inspired scheduling
+  dropped as investment, kept in-tree opt-in as the reproducible
+  falsification harness (W1 precedent); tape kept; null published in
+  corpus/PLAYBOOK.md + EVIDENCE_LEDGER VH-TRACK2-NULL-002 (same PR).
+  CLAIM NARROWED post-review (Codex audit C.1, issue #24): the metric
+  was saturated (uniform hits VB-006 at ~98.4%/universe — a floor
+  effect), so the null is NARROW (no advantage on this
+  workload/metric), not a general falsification; revival falsifier: a
+  depth≥2 class with low uniform hit rate where the metric can
+  discriminate.
 - Gates added (scripts/gate.sh): VB-006-invisible-to-FIFO (exit 0,
   CLEAN, 2000u), PCT-finds-within-100 (exit 1, anchored oracle),
   PCT-replay-byte-identical across two processes. `make gate` ALL
@@ -233,14 +237,23 @@ Exit 0. Intact on every branch at every gate run of the campaign.
    `--schedule` against `--shrink`/`--out` until their replay formats
    record a policy.
 
-### (e) Guided-exploration thesis — final status: FALSIFICATION COMPLETED
+### (e) Guided-exploration thesis — final status: UNPROVEN; INVESTMENT STOPS
+### (revised 2026-07-22 per Codex audit C.1, issue #24 — was "FALSIFICATION COMPLETED")
 
-W1 swarm palette: 0/5 corpus wins vs v0 (merged wave 1). C2 PCT d=3:
-0/32 seeds faster than uniform tiebreak. Both nulls published with
-recorded falsifiers (depth≥2 ordering bug class; corpus entries whose
-faults live outside v0's families). On this corpus, the 1000x
-guided-exploration thesis is falsified — exploration mechanisms stay
-in-tree, opt-in, as reproducible harnesses; investment stops.
+W1 swarm palette: 0/5 corpus wins vs v0 (merged wave 1) over a
+DISCRIMINATING instrument (real spread in the medians) — that null
+stands as measured falsification on its axis. C2 event-priority
+(PCT-inspired) d=3: 0/32 seeds faster than uniform tiebreak, but the
+instrument was SATURATED (VB-006 floor effect: 6 independent two-way
+races give uniform a ~98.4% per-universe hit rate, observed 96/100) —
+that null is NARROW: no advantage shown; generalization not supported.
+Honest joint verdict: the 1000x guided-exploration thesis is UNPROVEN
+on this corpus — falsified on the palette axis, unmeasurable on the
+schedule axis pending a depth≥2 instrument. Exploration mechanisms
+stay in-tree, opt-in, as reproducible harnesses; investment stops.
+Recorded revival falsifiers: a depth≥2 ordering class with low uniform
+hit rate where the metric can discriminate; corpus entries whose
+faults live outside v0's families.
 
 ### (f) Corpus count and realism verdict
 

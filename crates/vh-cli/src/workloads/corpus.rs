@@ -1236,10 +1236,15 @@ const ST_ROUND_SPACING: u64 = 40_000;
 pub struct SameTimestampRace;
 
 fn init_before_commit_oracle(end: &EndState) -> Result<(), String> {
+    // Fail-closed (Codex audit B.2): every round must declare its base
+    // fact AND it must be "ok". An absent key or any non-ok value is a
+    // violation — the oracle never passes by omission.
     let mut violations = Vec::new();
     for round in 0..ST_ROUNDS {
-        if end.get(&format!("commit_base:{round}")).map(String::as_str) == Some("missing-init") {
-            violations.push(format!("round {round}"));
+        match end.get(&format!("commit_base:{round}")).map(String::as_str) {
+            Some("ok") => {}
+            Some(other) => violations.push(format!("round {round} (base={other})")),
+            None => violations.push(format!("round {round} (base fact missing)")),
         }
     }
     if violations.is_empty() {

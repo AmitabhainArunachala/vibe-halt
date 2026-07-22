@@ -14,6 +14,12 @@
 //! pop history)`: same seed, same choices, byte-for-byte — replay
 //! equivalence is checked at the runtime layer and witnessed by the
 //! decision tape digest.
+//!
+//! Naming honesty (Codex audit C.2): in claims and publications this
+//! is "event-priority (PCT-inspired)" scheduling — it borrows PCT's
+//! priority + change-point SHAPES but schedules same-timestamp EVENTS,
+//! not threads, and inherits none of PCT's probabilistic bug-finding
+//! guarantees (those are proven for the thread model only).
 
 use crate::clock::VirtualTime;
 use crate::rng::Xoshiro256pp;
