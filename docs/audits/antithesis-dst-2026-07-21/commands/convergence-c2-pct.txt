@@ -1,0 +1,152 @@
+# C2 — PCT scheduler + VB-006 same-timestamp race: receipt (2026-07-22)
+# Branch claude/convergence-c2-pct off origin/main @ fb0ca58 (post-#22:
+# the decision tape and --record-tape exist; C1->C2 is the campaign's
+# only sanctioned dependency).
+#
+# VERDICT UP FRONT: the C2 kill criterion FIRED. Over 32 seeds PCT d=3
+# is not faster than uniform-with-random-tiebreak on the pinned corpus
+# (pct_wins=0). Per the charter: PCT stays in-tree as an opt-in,
+# reproducible falsification harness (W1 swarm-palette precedent), the
+# tape stays, and the null is published as COMPLETION of the Track-2
+# guided-exploration falsification (PLAYBOOK + EVIDENCE_LEDGER
+# VH-TRACK2-NULL-002, same PR).
+
+## Wiring
+
+- vh-core sched.rs: Scheduler::pop_chosen(site_id, policy_id, choose,
+  record) — drains the same-timestamp frontier, seq-sorts, lets a
+  strategy choose (index clamped), records a SchedulerDecision, re-pushes
+  the rest with original seqs. FIFO pop()/pop_recorded() untouched.
+- vh-core strategy.rs (new): PctStrategy — keyed-hash (fnv64) priorities
+  per event seq; change points drawn over PCT_CHANGE_HORIZON=256 demote
+  the current leader (Burckhardt et al., ASPLOS 2010; shapes follow
+  Shuttle pct.rs @ c8a46d3965 — reimplemented dependency-free, zero
+  imports). UniformTiebreakStrategy — uniform draw over the frontier,
+  the null hypothesis PCT must beat. 4 unit tests.
+- vh-multiverse: SchedulePolicy {Fifo, Pct{depth}, UniformTiebreak};
+  run_universe_scheduled / run_multiverse_scheduled; runtime.rs pop site
+  (the sole one, C0-granted) dispatches through ActiveStrategy. Fifo
+  default arm is the ORIGINAL pop path — bit-for-bit, zero new cost.
+- vh-cli: `vh run --schedule fifo|pct:<d>|uniform` (OPT-IN; fifo
+  default). Fail-closed conflict: non-FIFO --schedule with --shrink or
+  --out is a usage error (their replay paths do not carry a schedule
+  policy yet — no silent FIFO replay of a non-FIFO finding).
+- VB-006 workload corpus-same-timestamp-race: per round a timer sends
+  init:<k> then commit:<k> back-to-back at the SAME virtual timestamp;
+  the store applies commit without an init-arrived guard; oracle
+  init_before_commit. Empty fault plan: the bug is pure ordering, so it
+  is INVISIBLE to FIFO v0 by construction and only a same-timestamp
+  reorder can surface it.
+
+## Red check: VB-006 invisible to FIFO v0 (10,000 universes)
+
+$ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 10000
+vibe-halt: workload=corpus-same-timestamp-race seed=0xd1ce universes=10000 palette=v0 divergence-check=true
+  always-failures: 0 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  evidence: pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)
+  verdict: CLEAN
+(exit 0. Gate pins 2,000 universes on every run; the 10k sweep is this
+receipt's stronger one-off.)
+
+## Acceptance: PCT d=3 finds VB-006 within 100 universes
+
+$ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 100 --schedule pct:3 --record-tape
+vibe-halt: workload=corpus-same-timestamp-race seed=0xd1ce universes=100 palette=v0 divergence-check=true
+  always-failures: 76 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0
+  FAIL universe 0: oracle:init_before_commit — commit applied before its init: round 3 (same-timestamp delivery order assumed, never guarded)
+    repro: vh run --workload corpus-same-timestamp-race --seed 0xd1ce --universe 0 --schedule pct:3
+  ...
+  verdict: FINDINGS (see above)
+(exit 1; first failing universe = 0; 76/100 universes fail; divergent=0
+— PCT replays deterministically under the divergence checker.)
+
+Defect found and fixed during this package: the printed repro line
+omitted the schedule flag, so a PCT finding's repro would silently
+replay under FIFO — where VB-006 is CLEAN. Repro lines now carry
+`--schedule pct:<d>` / `--schedule uniform` for non-FIFO runs (FIFO
+lines byte-identical); pinned by cli_contract.rs
+pct_repro_line_carries_schedule_and_reproduces, which EXECUTES the
+printed repro and asserts exit 1 + FINDINGS.
+
+## Replay identity: (seed, policy) -> byte-identical, two processes
+
+$ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universe 0 --schedule pct:3 --record-tape
+universe 0 (seed 0xd1ce, workload corpus-same-timestamp-race): hash 6f82d84d6d634ba9f885e0dc17db82dd events 31 [single execution — no replay agreement sampled]
+  decision tape: 4fac47fe998a6b61b690b3564a9e4940 (vh-decision-tape-v1)
+(identical on the second process run: same trace hash, same tape
+digest. Gate "PCT replay is byte-identical" pins this on every run.)
+
+## KILL CRITERION: 32-seed bakeoff, PCT d=3 vs uniform tiebreak
+
+$ python3 scripts/track2_pct_bakeoff.py   (budget 1000 universes/seed,
+metric: first failing universe on corpus-same-timestamp-race; run twice,
+identical output both times)
+
+seed 0xd1ce: pct:3 first=0 uniform first=0
+seed 0xd1cf: pct:3 first=0 uniform first=0
+seed 0xd1d0: pct:3 first=0 uniform first=0
+seed 0xd1d1: pct:3 first=0 uniform first=0
+seed 0xd1d2: pct:3 first=0 uniform first=0
+seed 0xd1d3: pct:3 first=0 uniform first=0
+seed 0xd1d4: pct:3 first=2 uniform first=0
+seed 0xd1d5: pct:3 first=0 uniform first=0
+seed 0xd1d6: pct:3 first=1 uniform first=0
+seed 0xd1d7: pct:3 first=0 uniform first=0
+seed 0xd1d8: pct:3 first=0 uniform first=0
+seed 0xd1d9: pct:3 first=0 uniform first=0
+seed 0xd1da: pct:3 first=0 uniform first=0
+seed 0xd1db: pct:3 first=0 uniform first=0
+seed 0xd1dc: pct:3 first=0 uniform first=0
+seed 0xd1dd: pct:3 first=0 uniform first=0
+seed 0xd1de: pct:3 first=2 uniform first=0
+seed 0xd1df: pct:3 first=0 uniform first=0
+seed 0xd1e0: pct:3 first=0 uniform first=0
+seed 0xd1e1: pct:3 first=1 uniform first=0
+seed 0xd1e2: pct:3 first=0 uniform first=0
+seed 0xd1e3: pct:3 first=1 uniform first=0
+seed 0xd1e4: pct:3 first=0 uniform first=0
+seed 0xd1e5: pct:3 first=1 uniform first=0
+seed 0xd1e6: pct:3 first=0 uniform first=0
+seed 0xd1e7: pct:3 first=0 uniform first=0
+seed 0xd1e8: pct:3 first=0 uniform first=0
+seed 0xd1e9: pct:3 first=0 uniform first=0
+seed 0xd1ea: pct:3 first=0 uniform first=0
+seed 0xd1eb: pct:3 first=1 uniform first=0
+seed 0xd1ec: pct:3 first=0 uniform first=0
+seed 0xd1ed: pct:3 first=1 uniform first=0
+OVERALL seeds=32 budget=1000 median_pct=0.0 median_uniform=0.0 pct_wins=0 losses=8 ties=24
+verdict: pct_faster_than_uniform=false (kill fires when false)
+
+Reading: on a depth-1 ordering bug ANY same-timestamp reorder finds it
+immediately (both medians 0). PCT's change points actively DEMOTE the
+leader and sometimes restore FIFO-like order — 8 seeds where PCT is
+strictly slower, 0 where it is faster. The charter's comparator is
+exactly this null hypothesis; it wins. Counterevidence caveat
+(published, VH-TRACK2-NULL-002): VB-006 is depth-1; a depth>=2 bug
+class where PCT's priority discipline beats uniform would falsify the
+null — that is the recorded falsifier, not a reason to keep investing.
+
+## Disposition (charter C2 kill clause, verbatim honored)
+
+- PCT dropped as an exploration investment; --schedule stays opt-in
+  in-tree so the null is reproducible by one command (W1 precedent).
+- Decision tape KEPT (C1 surface, orthogonal to the null).
+- Null PUBLISHED as completion of the guided-exploration falsification:
+  corpus/PLAYBOOK.md "Track-2 PCT bakeoff result" + EVIDENCE_LEDGER
+  VH-TRACK2-NULL-002 (combined with the W1 swarm-palette 0/5 null, the
+  Track-2 1000x thesis is now falsification-COMPLETE on this corpus).
+- FIFO v0 remains the forever-available default; frozen identities
+  untouched.
+
+## Verification
+
+$ cargo clippy --workspace --all-targets -- -D warnings   # clean
+$ make test    # 32 test binaries, 0 failed (21 cli_contract tests,
+               # incl. 4 new C2: vb006 red/found, byte-identical replay,
+               # typed --schedule contract, repro-carries-schedule)
+$ make gate    # ALL PASS incl. the three new C2 gates:
+               #   VB-006 invisible to FIFO v0 (exit 0, CLEAN, 2000)
+               #   PCT d=3 finds VB-006 within 100 (exit 1, anchored oracle)
+               #   PCT replay byte-identical across two processes
+Doctor identities FROZEN: 9ce6199f133f4d3c9dd0da0075e352d2 / 45 events;
+fingerprint 1684e7c347e645f43a80a30abc46adb7 (vh-doctor-observable-v3).

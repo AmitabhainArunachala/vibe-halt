@@ -136,3 +136,130 @@ falsification-completed) rides on C2's bakeoff.
   frozen demo identity asserted under the flag).
 - Coupling note for C2/C4: the tape digest rides UniverseResult now;
   C4's run.ndjson/bundles gain the field additively at their rebase.
+
+---
+
+## 2026-07-22 — C2 (PCT + VB-006) executed: KILL CRITERION FIRED, null published
+
+Branch `claude/convergence-c2-pct` off fb0ca58 (#22 merged — C1→C2 is
+the campaign's only sanctioned stack, dissolved by merge). Full
+numbers: commands/convergence-c2-pct.txt.
+
+- Wired: `Scheduler::pop_chosen` (vh-core sched.rs) + `PctStrategy` /
+  `UniformTiebreakStrategy` (vh-core strategy.rs, NEW — Burckhardt
+  ASPLOS 2010; Shuttle pct.rs@c8a46d3965 shapes only, zero deps);
+  `SchedulePolicy` threading through vh-multiverse; CLI
+  `--schedule fifo|pct:<d>|uniform` (opt-in, fifo default byte-for-byte
+  — falsified explicitly: default vs `--schedule fifo` on demo/50u is
+  byte-identical). Fail-closed: non-FIFO `--schedule` conflicts with
+  `--shrink`/`--out` (their replay paths carry no schedule policy).
+- VB-006 `corpus-same-timestamp-race` seeded red-by-construction:
+  invisible to FIFO v0 over 10,000 universes (CLEAN, exit 0); PCT d=3
+  finds it at universe 0, 76/100 failing, divergent=0.
+- Repro-honesty defect found+fixed in-package: printed repro lines
+  omitted the schedule flag — a PCT finding's repro silently replayed
+  CLEAN under FIFO. Repro now carries `--schedule …`; pinned by a
+  contract test that EXECUTES the printed repro (exit 1 + FINDINGS).
+- KILL FIRED: 32-seed bakeoff (budget 1000/seed, first-failing-universe
+  metric, run twice, identical): median_pct=0.0 median_uniform=0.0
+  pct_wins=0 losses=8 ties=24 → `pct_faster_than_uniform=false`.
+  Cross-check: uniform alone finds VB-006 in 96/100 universes vs PCT's
+  76 — PCT's change points sometimes RESTORE FIFO-like order on
+  depth-1 bugs. Disposition per charter: PCT dropped as investment,
+  kept in-tree opt-in as the reproducible falsification harness (W1
+  precedent); tape kept; null published in corpus/PLAYBOOK.md +
+  EVIDENCE_LEDGER VH-TRACK2-NULL-002 (same PR), with the recorded
+  falsifier (a depth≥2 bug class where PCT beats uniform) as the only
+  revival path.
+- Gates added (scripts/gate.sh): VB-006-invisible-to-FIFO (exit 0,
+  CLEAN, 2000u), PCT-finds-within-100 (exit 1, anchored oracle),
+  PCT-replay-byte-identical across two processes. `make gate` ALL
+  PASS; `make test` 32 binaries 0 failed; clippy -D warnings clean.
+
+---
+
+## 2026-07-22 — CAMPAIGN CLOSEOUT (charter §6)
+
+### (a) Per-package disposition — numbers, not adjectives
+
+| Pkg | Disposition | PR | Numbers |
+|---|---|---|---|
+| C0 | MERGED (55e806d) | #16 | portfolio re-anchored; runtime.rs pop-site grant ratified by merge; onboard READY; overlap gate clean |
+| C1 | MERGED (fb0ca58) | #22 | tape wired at the sole pop site; KILL fired (+48% release / +90% debug at 200u demo-net) → opt-in `--record-tape`; default arm 12ms vs main 13–15ms; two-process digest agreement gated (639f6e14d27806cf5c9094d04ebb3fe9) |
+| C2 | EXECUTED, this PR (draft) | — | KILL fired: pct_wins=0/32 (losses 8, ties 24); VB-006 0/10000 on FIFO, 76/100 first=0 under PCT d=3; replay identity 6f82d84d6d634ba9f885e0dc17db82dd / tape 4fac47fe998a6b61b690b3564a9e4940 across processes; null published (PLAYBOOK + VH-TRACK2-NULL-002) |
+| C3 | MERGED | #18 | ClockSkew implemented as observable virtual-clock divergence; zero-magnitude guard (df10304) after 2 independent reviews; 0 of 5 corpus pins moved; 5-workload stdout byte-identical vs main |
+| C4 | MERGED | #19 | vh-run-receipts-v1 / vh-finding-bundle-v1; standalone bundle replay REPRODUCED after out-dir deletion; tampered bundle exit 1 MISMATCH; receipts byte-deterministic (diff -r) |
+| C5 | MERGED | #20 | `--shrink` MINIMIZED 3→1 injection @ demo-buggy 0xD1CE; kill margin ~60x under threshold (0.4s vs 60s); provenance binding incl. fingerprint-digest (vh-shrink-fingerprint-v1); PR #2 open contract closed |
+| C6 | MERGED | #21 | 5/5 harvested (VB-007..011; recalls 91, 96, 79, 70, 58 /100 @0xD1CE); five distinct fault families; R7 kill NOT fired |
+| C7 | MERGED (947dba9) | #17 | DESIGN.md:1-25 annotated historical-in-place; OPEN QUESTION escalated in PR body |
+
+### (b) Frozen identities — doctor output, this branch, post-C2
+
+```
+vh 0.1.0 — determinism self-check [Tier 1]
+  replay check: OK (universe 0 hash 9ce6199f133f4d3c9dd0da0075e352d2 events 45)
+  observable fingerprint: OK (1684e7c347e645f43a80a30abc46adb7 vh-doctor-observable-v3)
+```
+Exit 0. Intact on every branch at every gate run of the campaign.
+
+### (c) Kill criteria fired, and what was done
+
+1. **C1 tape overhead** (>5%): fired at +48% release → tape moved
+   behind `--record-tape`, default arm is the original pop
+   bit-for-bit, numbers published (convergence-c1-decision-tape.txt).
+2. **C2 PCT-vs-uniform** (32 seeds): fired at pct_wins=0 → PCT dropped
+   as investment, kept as opt-in falsification harness, null published
+   same-PR (PLAYBOOK + VH-TRACK2-NULL-002).
+3. **VB-010 anti-gaming** (guaranteed-crash palette, 100/100 recall):
+   fired → palette widened to 0..=2 crashes, re-pinned 70/100,
+   counterevidence published in the entry + PR #21.
+4. C5 (shrink >60s) and C6 (R7 realism) measured and NOT fired.
+
+### (d) Couplings discovered beyond charter §5
+
+1. Runtime-path workloads retrieve fault plans inside
+   `UniverseCtx::runtime` — boundary-side shrink capture can't reach
+   them without a kernel API (typed exit-2 meanwhile; future
+   INTERFACE REQUEST).
+2. Held-reorder expiry makes NetworkReorder lossy at stream-end —
+   eos-trailer idiom (VB-011) is the reusable fix.
+3. demo-buggy u0 shares trace hash 9ce6199f… with the doctor universe:
+   trace hashes identify EXECUTIONS, not workload variants.
+4. Tape digest rides UniverseResult → C4 receipts/bundles gained the
+   field additively at rebase.
+5. **New (C2):** printed repro lines must carry the schedule policy or
+   non-FIFO findings replay CLEAN — repro honesty is policy-coupled
+   (fixed + contract-tested this PR). Same coupling fail-closes
+   `--schedule` against `--shrink`/`--out` until their replay formats
+   record a policy.
+
+### (e) Guided-exploration thesis — final status: FALSIFICATION COMPLETED
+
+W1 swarm palette: 0/5 corpus wins vs v0 (merged wave 1). C2 PCT d=3:
+0/32 seeds faster than uniform tiebreak. Both nulls published with
+recorded falsifiers (depth≥2 ordering bug class; corpus entries whose
+faults live outside v0's families). On this corpus, the 1000x
+guided-exploration thesis is falsified — exploration mechanisms stay
+in-tree, opt-in, as reproducible harnesses; investment stops.
+
+### (f) Corpus count and realism verdict
+
+11/25 (VB-001..005 seeded Phase-1 classes; VB-007..011 harvested from
+real AI-generated code; VB-006 seeded-by-construction for C2's
+falsification). R7 realism kill NOT fired: 5 admissible real-code
+entries landed in one sprint, recalls 58–96/100 within pinned budgets.
+
+### (g) Crate maturity after the campaign
+
+| Crate | Before | After | Evidence |
+|---|---|---|---|
+| vh-core | scheduler FIFO-only | choice-point substrate: `pop_recorded` + `pop_chosen`, strategies module (PCT, uniform), pure/deny-listed | sched.rs, strategy.rs; 24 unit tests |
+| vh-multiverse | single implicit schedule | policy-parameterized runner (`run_*_scheduled`), tape + digest observable, observable ClockSkew, compile-time observation ratchet exercised twice | lib.rs, runtime.rs, evidence.rs |
+| vh-cli | run/replay/doctor | + `--record-tape`, `--schedule`, `--out` receipts+bundles, `--shrink`, `replay-bundle`, 11 corpus workloads; 21-test process contract | main.rs, workloads/, cli_contract.rs |
+| vh-trace | trace + tape (W2) | tape digest is a two-process-stable identity (gated) | C1 gate |
+| vh-gremlin | ClockSkew phantom | every generated fault has observable manifestation or honestly stays Armed | #18 |
+
+Campaign verdict: 8/8 packages executed to disposition — 7 merged, 1
+(C2) escalated as draft with its kill criterion fired and published.
+No frozen-identity drift. No radioactive surface touched. Two-key law
+held throughout: every merge was the operator's.

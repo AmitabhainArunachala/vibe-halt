@@ -75,3 +75,26 @@ Action: keep `--palette v0` as the default and treat all
 "guided exploration" claims based on swarm masks as **unproven** until a
 new algorithm passes the same harness. Evidence:
 `docs/audits/antithesis-dst-2026-07-21/commands/track2-w1-swarm-bakeoff.txt`.
+
+## Track-2 PCT bakeoff result (2026-07-22, convergence C2)
+
+C2 built VB-006 (`corpus-same-timestamp-race`): a bug INVISIBLE to FIFO
+v0 by construction (0/10000 universes at seed 0xD1CE) that any
+same-timestamp schedule strategy exposes. PCT d=3 finds it at universe
+0 (76/100 universes red). The kill-criterion bakeoff then compared PCT
+against uniform-with-random-tiebreak over 32 seeds at budget 1000:
+
+```bash
+python3 scripts/track2_pct_bakeoff.py --seeds 32 --budget 1000
+```
+
+Result: **null**. `median_pct=0 median_uniform=0 pct_wins=0 losses=8
+ties=24` — PCT is not faster than uniform tiebreak. The kill criterion
+FIRED: PCT is dropped as a guided-exploration bet (kept in-tree opt-in
+as the reproducible falsification harness), the decision tape stays as
+the replay/causality substrate, and — combined with W1's swarm-palette
+0/5 — **the audit's guided-exploration thesis is now falsification-
+complete**: on this rig's bug population, schedule/palette DIVERSITY
+finds what FIFO cannot, but GUIDANCE has not beaten uniform randomness
+anywhere it was measured. Evidence:
+`docs/audits/antithesis-dst-2026-07-21/commands/convergence-c2-pct.txt`.

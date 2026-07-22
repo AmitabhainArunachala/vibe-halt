@@ -572,3 +572,152 @@ fn decision_tape_is_additive_and_universe_specific() {
         vh_multiverse::run_universe_recorded(0xD1CE, 0, demo.as_ref(), FaultPalette::V0, true);
     assert!(legacy.decision_tape_digest().is_none());
 }
+
+// ---- schedule strategies + VB-006 (convergence C2, W3) ----
+
+/// The C2 acceptance pair: VB-006 is INVISIBLE to FIFO v0 (red-on-v0,
+/// in-process 1000-universe check; 10k pinned in the receipt) and PCT
+/// d=3 finds it within 100 universes at the pinned seed.
+#[test]
+fn vb006_invisible_to_fifo_and_found_by_pct() {
+    use vh_gremlin::FaultPalette;
+    use vh_multiverse::SchedulePolicy;
+    let w = vh_cli::workloads::by_name("corpus-same-timestamp-race").unwrap();
+    let cfg = vh_multiverse::MultiverseConfig {
+        root_seed: 0xD1CE,
+        universes: vh_multiverse::UniverseCount::try_from(1000).unwrap(),
+        check_divergence: false,
+    };
+    let fifo = vh_multiverse::run_multiverse(&cfg, w.as_ref());
+    assert!(
+        fifo.failing_universes().is_empty(),
+        "VB-006 must be invisible to FIFO v0"
+    );
+    let cfg100 = vh_multiverse::MultiverseConfig {
+        root_seed: 0xD1CE,
+        universes: vh_multiverse::UniverseCount::try_from(100).unwrap(),
+        check_divergence: true,
+    };
+    let pct = vh_multiverse::run_multiverse_scheduled(
+        &cfg100,
+        w.as_ref(),
+        FaultPalette::V0,
+        true,
+        SchedulePolicy::Pct { depth: 3 },
+    );
+    assert!(
+        !pct.failing_universes().is_empty(),
+        "PCT d=3 must find VB-006 within 100 universes"
+    );
+    assert!(
+        pct.divergent_universes().is_empty(),
+        "PCT must replay deterministically"
+    );
+}
+
+/// Exploratory schedules replay byte-identically: same (seed, universe,
+/// policy) -> same observable result INCLUDING the tape digest.
+#[test]
+fn scheduled_universe_replays_byte_identically_with_tape() {
+    use vh_gremlin::FaultPalette;
+    use vh_multiverse::SchedulePolicy;
+    let w = vh_cli::workloads::by_name("corpus-same-timestamp-race").unwrap();
+    let run = || {
+        vh_multiverse::run_universe_scheduled(
+            0xD1CE,
+            0,
+            w.as_ref(),
+            FaultPalette::V0,
+            true,
+            SchedulePolicy::Pct { depth: 3 },
+        )
+    };
+    let a = run();
+    let b = run();
+    assert!(a.observably_equal(&b));
+    assert!(a.decision_tape_digest().is_some());
+    assert_eq!(a.decision_tape_digest(), b.decision_tape_digest());
+    // And the uniform comparator is likewise deterministic.
+    let u = || {
+        vh_multiverse::run_universe_scheduled(
+            0xD1CE,
+            0,
+            w.as_ref(),
+            FaultPalette::V0,
+            true,
+            SchedulePolicy::UniformTiebreak,
+        )
+    };
+    assert!(u().observably_equal(&u()));
+}
+
+/// The schedule flag's typed edges: unknown value, and the fail-closed
+/// conflicts with the policy-less replay paths (--out, --shrink).
+#[test]
+fn schedule_flag_contract_is_typed() {
+    let (code, _, stderr) = vh(&["run", "--schedule", "chaotic"]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("unknown schedule"));
+    let (code, _, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--schedule",
+        "pct:3",
+        "--out",
+        "/tmp/never",
+    ]);
+    assert_eq!(code, 2);
+    assert!(stderr.contains("conflicts with --shrink and --out"));
+    let (code, _, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--schedule",
+        "uniform",
+        "--shrink",
+    ]);
+    assert_eq!(code, 2);
+}
+
+/// A non-FIFO finding's printed repro must carry the schedule flag and
+/// actually reproduce (C2): a flagless repro replays under the FIFO
+/// default, where VB-006 is invisible by construction — the
+/// one-command-repro law would break silently.
+#[test]
+fn pct_repro_line_carries_schedule_and_reproduces() {
+    let (code, stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "corpus-same-timestamp-race",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--schedule",
+        "pct:3",
+    ]);
+    assert_eq!(code, 1, "PCT d=3 must find VB-006:\n{stdout}");
+    let repro = stdout
+        .lines()
+        .find(|l| l.trim_start().starts_with("repro: vh run "))
+        .expect("a printed repro line");
+    assert!(
+        repro.contains("--schedule pct:3"),
+        "repro must carry the schedule policy (FIFO replay hides VB-006): {repro}"
+    );
+    let args: Vec<&str> = repro
+        .trim_start()
+        .trim_start_matches("repro: vh ")
+        .split_whitespace()
+        .collect();
+    let (rcode, rout, _) = vh(&args);
+    assert_eq!(
+        rcode, 1,
+        "printed repro must reproduce the finding:\n{rout}"
+    );
+    assert!(
+        rout.contains("replay verdict: FINDINGS"),
+        "repro must end in FINDINGS:\n{rout}"
+    );
+}

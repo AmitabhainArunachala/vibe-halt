@@ -9,7 +9,9 @@ mod sandbox_demo;
 
 use vh_cli::workloads;
 use vh_gremlin::FaultPalette;
-use vh_multiverse::{run_universe, MultiverseConfig, UniverseCount, UniverseResult, Verdict};
+use vh_multiverse::{
+    run_universe, MultiverseConfig, SchedulePolicy, UniverseCount, UniverseResult, Verdict,
+};
 
 const DEFAULT_SEED: u64 = 0xD1CE;
 const DEFAULT_UNIVERSES: u64 = 100;
@@ -45,7 +47,7 @@ USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
            [--palette v0|swarm] [--no-divergence-check] [--out DIR]
            [--shrink]
-           [--record-tape]
+           [--record-tape] [--schedule fifo|pct:<d>|uniform]
     vh replay-bundle PATH
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
@@ -106,6 +108,14 @@ single-universe output. OPT-IN: recording costs ~50% wall at the
 default path is the original pop, bit-for-bit). The frozen execution
 trace and doctor identity are untouched either way.
 
+`vh run --schedule pct:<d>|uniform` (convergence C2, OPT-IN — fifo is
+and stays the default) pops same-timestamp scheduler frontiers by a PCT
+priority strategy with <d> change points (Burckhardt 2010; Shuttle
+shapes reimplemented dependency-free) or by uniform random tiebreak.
+Deterministic per (seed, universe); decisions enter the decision tape
+under --record-tape. Conflicts with --shrink and --out (their replay
+paths do not carry a policy yet).
+
 `vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
 universes with env scrubbing, pinned Python env, fixture cassette replay,
 run-twice divergence reporting, and an explicit unmanaged-channel ledger.
@@ -121,6 +131,7 @@ struct RunArgs {
     out: Option<String>,
     shrink: bool,
     record_tape: bool,
+    schedule: SchedulePolicy,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -134,6 +145,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         out: None,
         shrink: false,
         record_tape: false,
+        schedule: SchedulePolicy::Fifo,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -158,6 +170,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             "--out" => out.out = Some(value_for("--out")?),
             "--shrink" => out.shrink = true,
             "--record-tape" => out.record_tape = true,
+            "--schedule" => out.schedule = parse_schedule(&value_for("--schedule")?)?,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -178,12 +191,36 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     if out.shrink && out.single_universe.is_some() {
         return Err("--shrink conflicts with --universe (use `vh shrink --universe K`)".into());
     }
+    // Exploratory schedules are for finding; the shrink/replay-bundle
+    // evidence paths replay FIFO and do not yet carry a policy: fail
+    // closed instead of producing unreproducible receipts (coupling
+    // recorded in the convergence ledger).
+    if out.schedule != SchedulePolicy::Fifo && (out.shrink || out.out.is_some()) {
+        return Err(
+            "--schedule pct/uniform conflicts with --shrink and --out (their replay paths do not carry a schedule policy yet)".into(),
+        );
+    }
     if out.shrink && out.palette != FaultPalette::V0 {
         return Err(
             "--shrink supports --palette v0 only (the oracle replays override plans)".into(),
         );
     }
     Ok(out)
+}
+
+fn parse_schedule(s: &str) -> Result<SchedulePolicy, String> {
+    match s {
+        "fifo" => Ok(SchedulePolicy::Fifo),
+        "uniform" => Ok(SchedulePolicy::UniformTiebreak),
+        other => match other.strip_prefix("pct:") {
+            Some(d) => Ok(SchedulePolicy::Pct {
+                depth: parse_u64(d)?,
+            }),
+            None => Err(format!(
+                "unknown schedule {other:?}; expected fifo, pct:<depth>, or uniform"
+            )),
+        },
+    }
 }
 
 fn parse_palette(s: &str) -> Result<FaultPalette, String> {
@@ -223,12 +260,13 @@ fn cmd_run(args: &[String]) -> i32 {
     // finding-free replay is UNCHECKED (exit 3), never exit 0
     // (hardening-loop-2 BLOCKER: this path used to exit 0).
     if let Some(universe_id) = run.single_universe {
-        let result = vh_multiverse::run_universe_recorded(
+        let result = vh_multiverse::run_universe_scheduled(
             run.seed,
             universe_id,
             workload.as_ref(),
             run.palette,
             run.record_tape,
+            run.schedule,
         );
         println!(
             "universe {universe_id} (seed 0x{:x}, workload {}): hash {} events {} [single execution — no replay agreement sampled]",
@@ -290,11 +328,12 @@ fn cmd_run(args: &[String]) -> i32 {
         universes,
         check_divergence: run.check_divergence,
     };
-    let report = vh_multiverse::run_multiverse_recorded(
+    let report = vh_multiverse::run_multiverse_scheduled(
         &cfg,
         workload.as_ref(),
         run.palette,
         run.record_tape,
+        run.schedule,
     );
 
     let failing = report.failing_universes();
@@ -317,13 +356,21 @@ fn cmd_run(args: &[String]) -> i32 {
     );
     println!("  evidence: {}", report.replay_evidence().label());
 
+    // Non-FIFO findings only reproduce under the same schedule policy,
+    // so the repro command must carry the flag (FIFO stays flagless —
+    // legacy repro lines are byte-identical).
+    let sched_suffix = match run.schedule {
+        SchedulePolicy::Fifo => String::new(),
+        SchedulePolicy::Pct { depth } => format!(" --schedule pct:{depth}"),
+        SchedulePolicy::UniformTiebreak => " --schedule uniform".to_string(),
+    };
     for &u in failing.iter().take(10) {
         let r = &report.results()[u as usize];
         for f in r.always_failures() {
             println!("  FAIL universe {u}: {} — {}", f.name, f.detail);
         }
         println!(
-            "    repro: vh run --workload {} --seed 0x{:x} --universe {u}",
+            "    repro: vh run --workload {} --seed 0x{:x} --universe {u}{sched_suffix}",
             report.workload(),
             report.root_seed()
         );

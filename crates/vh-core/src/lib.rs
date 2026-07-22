@@ -10,8 +10,10 @@ pub mod clock;
 pub mod rng;
 pub mod sched;
 pub mod seed;
+pub mod strategy;
 
 pub use clock::{VirtualClock, VirtualTime};
 pub use rng::Xoshiro256pp;
 pub use sched::{Scheduler, SchedulerDecision};
 pub use seed::SeedTree;
+pub use strategy::{PctStrategy, UniformTiebreakStrategy};
