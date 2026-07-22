@@ -1,3 +1,14 @@
+> **HISTORICAL — SUPERSEDED (2026-07-22, convergence C7).** The sign-off
+> requirement in this section (≥7 frontier LLMs at ≥90% confidence) predates
+> the ratified evidence doctrine and is **no longer operative**. The
+> 2026-07-21 audit (`docs/audits/antithesis-dst-2026-07-21/`, finding D4)
+> and Track-2 standing law §7 (`docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md`)
+> reject multi-LLM sign-off percentages as evidence: claims are admitted by
+> mechanical receipts — `make gate` exits, pinned one-command repros,
+> `file:line` citations — never by model confidence votes. The requirement
+> text and the recorded sign-offs below are preserved unchanged as project
+> history; do not add new sign-offs here.
+
 ## Review & Sign-off
 
 **Status**: Draft — Seeking multi-model technical review and sign-off via this Pull Request

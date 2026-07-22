@@ -1,0 +1,27 @@
+# C7 — doctrine reconciliation: command receipt (2026-07-22)
+# Branch claude/convergence-c7-doctrine off origin/main @ e36b15b.
+
+# Conflict verified at point of use (charter cited DESIGN.md:1-25; actual
+# section spans further — requirement at :1-22, recorded sign-offs to :58;
+# anchor drift noted, content identical to charter's description):
+$ sed -n '1,5p' DESIGN.md          # before edit
+## Review & Sign-off
+**Status**: Draft — Seeking multi-model technical review and sign-off via this Pull Request
+**Requirement**: This plan requires sign-off from **at least 7 frontier LLMs**
+(Claude 4 / Opus, o3 / GPT-4o, Grok 4, Gemini 2.5, etc.) with **>= 90% confidence** ...
+
+# The contradiction: audit D4 + Track-2/campaign standing law §7 reject
+# sign-off percentages as evidence (docs/audits/antithesis-dst-2026-07-21/;
+# docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md §2.7).
+
+# Fix: annotate-in-place banner marking the section HISTORICAL — SUPERSEDED;
+# requirement text and both recorded sign-offs (Grok 2026-07-20, Claude
+# 2026-07-20) preserved byte-for-byte; nothing deleted.
+
+$ git diff --stat
+ DESIGN.md | 12 ++++++++++++
+ 1 file changed, 12 insertions(+)
+
+$ make gate     # pre-commit, per standing law §3
+== gate battery: ALL PASS ==   (docs-only change; doctor hash
+9ce6199f133f4d3c9dd0da0075e352d2, fingerprint 1684e7c347e645f43a80a30abc46adb7)
