@@ -46,6 +46,7 @@ use std::collections::{BTreeMap, VecDeque};
 
 use vh_core::{Scheduler, VirtualTime};
 use vh_gremlin::{FaultKind, FaultPlan};
+use vh_trace::DecisionTape;
 
 use crate::evidence::{InjectionOutcome, RuntimeEvidence};
 use crate::UniverseCtx;
@@ -139,6 +140,12 @@ enum LifecycleStage {
 pub struct SimRuntime<'a> {
     ctx: &'a mut UniverseCtx,
     sched: Scheduler<RtEvent>,
+    /// Scheduler choice-point tape (`vh-decision-tape-v1`): a SEPARATE
+    /// additive stream recording (site, candidate-set digest, chosen
+    /// index, policy) per pop. Its digest is finalized into the
+    /// universe result; the frozen execution trace never sees it
+    /// (convergence C1, the standing W2 interface request).
+    tape: DecisionTape,
     faults: Vec<FaultKind>,
     outcomes: Vec<InjectionOutcome>,
     epoch: u64,
@@ -202,6 +209,7 @@ impl<'a> SimRuntime<'a> {
         Self {
             ctx,
             sched,
+            tape: DecisionTape::new(),
             faults,
             outcomes,
             epoch: 0,
@@ -588,7 +596,26 @@ impl<'a> SimRuntime<'a> {
     /// faults along the way. `None` when the scheduler is drained.
     pub fn step(&mut self) -> Option<StepEvent> {
         loop {
-            let (at, ev) = self.sched.pop()?;
+            // The sole runtime pop site (C0-granted wiring). Recording
+            // is OPT-IN: the per-pop candidate digest costs ~50% wall
+            // at the 200-universe runtime demo, so the C1 kill
+            // criterion put the tape behind the flag; the un-recorded
+            // arm is the original pop, bit-for-bit.
+            let Self {
+                sched, tape, ctx, ..
+            } = self;
+            let (at, ev) = if ctx.record_tape {
+                sched.pop_recorded("runtime.step", "fifo-v0", |d| {
+                    tape.record_decision(
+                        &d.site_id,
+                        &d.candidate_set_digest,
+                        d.chosen_index,
+                        &d.policy_id,
+                    );
+                })?
+            } else {
+                sched.pop()?
+            };
             let now = at.nanos();
             self.ctx.clock.advance_to(at);
             match ev {
@@ -877,6 +904,9 @@ impl<'a> SimRuntime<'a> {
             ),
         );
         self.ctx.runtime_evidence = Some(RuntimeEvidence::new(std::mem::take(&mut self.outcomes)));
+        if self.ctx.record_tape {
+            self.ctx.decision_tape_digest = Some(self.tape.digest_hex());
+        }
     }
 }
 

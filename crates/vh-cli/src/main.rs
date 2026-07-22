@@ -9,10 +9,7 @@ mod sandbox_demo;
 
 use vh_cli::workloads;
 use vh_gremlin::FaultPalette;
-use vh_multiverse::{
-    run_multiverse_with_palette, run_universe, MultiverseConfig, UniverseCount, UniverseResult,
-    Verdict,
-};
+use vh_multiverse::{run_universe, MultiverseConfig, UniverseCount, UniverseResult, Verdict};
 
 const DEFAULT_SEED: u64 = 0xD1CE;
 const DEFAULT_UNIVERSES: u64 = 100;
@@ -48,6 +45,7 @@ USAGE:
     vh run [--workload NAME] [--seed N] [--universes N | --universe K]
            [--palette v0|swarm] [--no-divergence-check] [--out DIR]
            [--shrink]
+           [--record-tape]
     vh replay-bundle PATH
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
@@ -100,6 +98,14 @@ shrink that cannot run prints an anchored `shrink: UNAVAILABLE` line.
 universe has no finding or diverges, 2 = usage/unsupported workload.
 v0 palette only; capture support today: demo, demo-buggy.
 
+`vh run --record-tape` additionally records the sim runtime's scheduler
+decision tape (vh-decision-tape-v1, a SEPARATE additive stream) and
+binds its digest into each runtime universe's observable result and the
+single-universe output. OPT-IN: recording costs ~50% wall at the
+200-universe runtime demo (the C1 overhead kill criterion fired; the
+default path is the original pop, bit-for-bit). The frozen execution
+trace and doctor identity are untouched either way.
+
 `vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
 universes with env scrubbing, pinned Python env, fixture cassette replay,
 run-twice divergence reporting, and an explicit unmanaged-channel ledger.
@@ -114,6 +120,7 @@ struct RunArgs {
     palette: FaultPalette,
     out: Option<String>,
     shrink: bool,
+    record_tape: bool,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -126,6 +133,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         palette: FaultPalette::V0,
         out: None,
         shrink: false,
+        record_tape: false,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -149,6 +157,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             "--palette" => out.palette = parse_palette(&value_for("--palette")?)?,
             "--out" => out.out = Some(value_for("--out")?),
             "--shrink" => out.shrink = true,
+            "--record-tape" => out.record_tape = true,
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -214,7 +223,13 @@ fn cmd_run(args: &[String]) -> i32 {
     // finding-free replay is UNCHECKED (exit 3), never exit 0
     // (hardening-loop-2 BLOCKER: this path used to exit 0).
     if let Some(universe_id) = run.single_universe {
-        let result = run_universe(run.seed, universe_id, workload.as_ref());
+        let result = vh_multiverse::run_universe_recorded(
+            run.seed,
+            universe_id,
+            workload.as_ref(),
+            run.palette,
+            run.record_tape,
+        );
         println!(
             "universe {universe_id} (seed 0x{:x}, workload {}): hash {} events {} [single execution — no replay agreement sampled]",
             run.seed,
@@ -227,6 +242,9 @@ fn cmd_run(args: &[String]) -> i32 {
             result.fault_plan_digest().unwrap_or("none"),
             vh_multiverse::FAULT_PLAN_DIGEST_SCHEMA
         );
+        if let Some(tape) = result.decision_tape_digest() {
+            println!("  decision tape: {tape} (vh-decision-tape-v1)");
+        }
         for f in result.always_failures() {
             println!("  ALWAYS-FAIL {}: {}", f.name, f.detail);
         }
@@ -272,7 +290,12 @@ fn cmd_run(args: &[String]) -> i32 {
         universes,
         check_divergence: run.check_divergence,
     };
-    let report = run_multiverse_with_palette(&cfg, workload.as_ref(), run.palette);
+    let report = vh_multiverse::run_multiverse_recorded(
+        &cfg,
+        workload.as_ref(),
+        run.palette,
+        run.record_tape,
+    );
 
     let failing = report.failing_universes();
     let invalid = report.invalid_universes();
@@ -609,6 +632,14 @@ fn cmd_doctor() -> i32 {
         semantic_failures.push(
             "runtime evidence present: the frozen demo universe runs the LEGACY \
              workload-drained path and must never silently migrate onto the sim runtime"
+                .to_string(),
+        );
+    }
+    if a.decision_tape_digest().is_some() {
+        semantic_failures.push(
+            "decision tape present: the frozen demo universe runs the LEGACY \
+             workload-drained path; a tape here means the demo silently migrated \
+             onto the sim runtime"
                 .to_string(),
         );
     }

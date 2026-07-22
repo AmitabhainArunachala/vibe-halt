@@ -1,0 +1,66 @@
+# C1 — decision tape wired (W2 completion, RFC-003): receipt (2026-07-22)
+# Branch claude/convergence-c1-decision-tape off origin/main @ 947dba9
+# (post #16/#17 merges — the runtime.rs grant is ratified).
+
+## Wiring (exactly the standing interface request, PR #13 c-5040630656)
+
+- runtime.rs:547 pop site -> Scheduler::pop_recorded("runtime.step",
+  "fifo-v0", ...) recording into a SimRuntime-carried vh_trace
+  DecisionTape (disjoint field borrows via destructuring); FIFO order
+  preserved bit-for-bit (pop_recorded delegates to pop()).
+- Digest finalized into UniverseCtx -> UniverseResult
+  decision_tape_digest (Option<String>): new accessor, in whole-struct
+  observable equality, threaded through the UniverseObservation
+  compile-time ratchet (the ratchet FIRED as designed: the exhaustive
+  destructure in crates/vh-multiverse/tests/divergence.rs:702 broke
+  until the view + its field-for-field test acknowledged the new
+  observable — one destructure line + one assert added there).
+- CLI: separate printed line "  decision tape: <digest>
+  (vh-decision-tape-v1)" on the single-universe path.
+
+## KILL CRITERION FIRED: >5% overhead -> tape behind --record-tape
+
+Measured at the 200-universe runtime demo (demo-net, seed 0xD1CE,
+divergence-checked; boundary wall clock, 3-5 runs each):
+
+  debug:   main 37-39 ms | taped 69-75 ms  (~ +90%)
+  release: main 13-15 ms | taped 20-21 ms  (~ +48%)
+
+Cause: pop_recorded digests the same-timestamp candidate frontier per
+pop (heap scan + sort + string digest + per-decision tape record) —
+substrate cost, not wiring cost. Disposition per the charter: the tape
+is OPT-IN behind `vh run --record-tape`; the default arm is the
+ORIGINAL `sched.pop()`, bit-for-bit:
+
+  release, default arm on this branch: 12 ms x5 (<= main's 13-15 ms —
+  no measurable overhead; the flag check is one bool per pop)
+  release, --record-tape: 20-21 ms (+~48%, published)
+
+C2 proceeds with the flag on (charter C1 kill clause).
+
+## Acceptance (Track 2 W2)
+
+- Two PROCESSES, same seed -> same tape digest: gate "decision-tape
+  gate" runs the CLI twice and compares the anchored line; also pinned
+  in cli_contract.rs (decision_tape_digest_is_identical_across_processes).
+  Observed digest for demo-net u3 @0xD1CE: 639f6e14d27806cf5c9094d04ebb3fe9.
+- Doctor identities FROZEN: make gate ALL PASS —
+  9ce6199f133f4d3c9dd0da0075e352d2 / 45 events;
+  1684e7c347e645f43a80a30abc46adb7 (vh-doctor-observable-v3). Doctor
+  additionally asserts the frozen demo universe never grows a tape.
+- Anchored tape-digest LEAK test in gate: default (un-flagged) run
+  prints no tape line; legacy demo under --record-tape prints no tape
+  line AND keeps hash 9ce6199f... events 45.
+- Overhead measured at the boundary in gate-adjacent receipts (this
+  file); wall clock never entered kernel crates.
+
+## Verification
+
+$ cargo clippy --workspace --all-targets -- -D warnings   # clean
+$ make test    # 32 test binaries, all 0 failed
+$ make gate    # ALL PASS incl. both new tape gates
+Tape purity cross-check (cli_contract.rs
+decision_tape_is_additive_and_universe_specific): recorded vs
+un-recorded runs of the same universe have identical trace hash and
+event count (the tape is purely additive); different universes yield
+different digests; run-twice observably_equal with recording on.
