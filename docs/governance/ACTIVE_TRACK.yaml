@@ -117,6 +117,7 @@ tracks:
     next:
       - "seed the corpus with the five Phase-1 bug classes (lost update, retry double-apply, dirty read, crash-window TOCTOU, fsync-lie hole)"
       - "harvest real vibe-coded bugs from public AI-generated PRs per the playbook"
+      - "C6 (convergence 2026-07-22) harvest sprint: admit >=5 new entries harvested from real AI-generated code (public repos, merged AI PRs, agent-framework issue trackers), each modeled as a seeded workload + oracle per corpus/PLAYBOOK.md and corpus/SCHEMA.md, with a pinned one-command repro, an anchored recall gate in scripts/gate.sh, and cited provenance (source repo, PR/commit, defect description); kill (audit R7): <3 admissible real bugs after 4 weeks of sustained harvesting falsifies rig REALISM -> stop exploration investment and propose fidelity fixes"
     non_goals:
       - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
       - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
@@ -139,7 +140,14 @@ tracks:
       - corpus/PLAYBOOK.md
       - docs/audits/**
       - docs/prompts/TRACK2_1000X_INSTANTIATION_2026-07-21.md
+      - docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md
       - CLAUDE.md
+      # C0 grant (2026-07-22): the operator's answer to the standing W2
+      # INTERFACE REQUEST — pop-site wiring only (runtime.rs:547 pop ->
+      # pop_recorded + DecisionTape carry + digest observable), nothing
+      # else in the file. Basis:
+      # https://github.com/AmitabhainArunachala/vibe-halt/pull/13#issuecomment-5040630656
+      - crates/vh-multiverse/src/runtime.rs
     acceptance:
       - "W0/R0: LICENSE proposed; Python <3.11 fails fast or onboard exits 0; CLAUDE.md crate map names vh-shrink/vh-verify"
       - "W1/R2: opt-in swarm palette beats v0 on the pinned corpus bakeoff before any default flip"
@@ -152,6 +160,10 @@ tracks:
       - "W2/W3: add tape before PCT; preserve doctor hash 9ce6199f133f4d3c9dd0da0075e352d2 and fingerprint 1684e7c347e645f43a80a30abc46adb7"
       - "W4: prefer the smaller honest ClockSkew fix that stops phantom budget spending"
       - "W5: post INTERFACE REQUEST for vh-shrink/vh-verify-owned surfaces, do not edit them"
+      - "C1 (convergence 2026-07-22): wire the sole runtime pop site (runtime.rs:547) to pop_recorded('runtime.step', 'fifo-v0') recording into a DecisionTape on the universe result path, tape digest as a SEPARATE printed line and observable; FIFO bit-for-bit; doctor hash and fingerprint frozen; kill: identity drift or >5% overhead at the 200-universe demo puts the tape behind --record-tape with numbers published"
+      - "C2 (convergence 2026-07-22): PCT (Burckhardt 2010; attribute shuttle pct.rs@c8a46d3965, shapes only, zero deps) over same-timestamp choice points + seeded VB-006 race red on FIFO v0 by construction; opt-in, FIFO default; kill: PCT no faster than uniform-with-random-tiebreak over 32 seeds -> drop PCT, keep tape, publish the null as completion of the guided-exploration falsification"
+      - "C3 (convergence 2026-07-22): ClockSkew honesty fix (W4/D6) — remove from generated offers or implement observable virtual-clock divergence; fault ledger stops recording skips as budget spent; re-run all five corpus recall pins and re-pin same-PR with before/after receipts if any move"
+      - "convergence campaign ledger (append-only): docs/audits/antithesis-dst-2026-07-21/CONVERGENCE_LEDGER_2026-07-22.md; per-package command receipts: docs/audits/antithesis-dst-2026-07-21/commands/convergence-c<N>-<slug>.txt"
     non_goals:
       - "no edits to crates/vh-verify/** or crates/vh-shrink/** without explicit ownership reassignment"
       - "no edits to crates/vh-multiverse/src/runtime.rs while the Track-1 sandbox surface is live without an interface request"
