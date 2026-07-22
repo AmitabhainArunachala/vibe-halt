@@ -34,8 +34,13 @@
 //! * `CrashRestart` wipes every node's volatile disk layers (buf+cache),
 //!   cancels in-flight deliveries and timers (epoch bump), and surfaces
 //!   as [`StepEvent::Crashed`]; durable disk state survives.
-//! * `ClockSkew` is offered-and-skipped by the v1 runtime (recorded in
-//!   the trace; no per-node clock surface yet).
+//! * `ClockSkew` advances the workload-visible LOCAL clock: after it
+//!   arms, [`SimRuntime::now_nanos`] reads (and the timestamps of
+//!   application [`SimRuntime::record`] events) diverge from the global
+//!   scheduler frame by the accumulated skew. Runtime effects, timers,
+//!   and lifecycle marks stay in the global frame — the divergence is
+//!   measurable in-trace by comparing the two (convergence C3, audit D6;
+//!   replaces the v1 offered-and-skipped no-op).
 
 use std::collections::{BTreeMap, VecDeque};
 
@@ -145,6 +150,9 @@ pub struct SimRuntime<'a> {
     pending_reorders: VecDeque<usize>,
     held: Option<HeldMsg>,
     drops: u64,
+    // clock
+    clock_skew_nanos: u64,
+    pending_skew_reads: Vec<usize>,
     // disk
     disks: BTreeMap<NodeId, NodeDisk>,
     pending_write_fails: VecDeque<usize>,
@@ -204,6 +212,8 @@ impl<'a> SimRuntime<'a> {
             pending_reorders: VecDeque::new(),
             held: None,
             drops: 0,
+            clock_skew_nanos: 0,
+            pending_skew_reads: Vec::new(),
             disks: BTreeMap::new(),
             pending_write_fails: VecDeque::new(),
             pending_torn: VecDeque::new(),
@@ -219,8 +229,38 @@ impl<'a> SimRuntime<'a> {
 
     // ---- capability delegation (ctx is exclusively borrowed) ----
 
-    pub fn now_nanos(&self) -> u64 {
+    /// The GLOBAL scheduler clock. Runtime effects, timers, and
+    /// lifecycle marks are stamped in this frame; `ClockSkew` never
+    /// touches it.
+    fn global_now(&self) -> u64 {
         self.ctx.clock.now().nanos()
+    }
+
+    /// The workload-visible LOCAL clock: the global frame plus any
+    /// accumulated `ClockSkew`. The first read observing a newly armed
+    /// skew is that fault's interception AND its workload-visible effect
+    /// at once (Injected and Manifested coincide, like a partition
+    /// drop); the divergence is measured into the trace as a
+    /// `clock.read` event. A workload that never reads its clock
+    /// honestly leaves the skew at Armed.
+    pub fn now_nanos(&mut self) -> u64 {
+        let global = self.global_now();
+        let local = global.saturating_add(self.clock_skew_nanos);
+        if !self.pending_skew_reads.is_empty() {
+            for index in std::mem::take(&mut self.pending_skew_reads) {
+                self.mark(index, LifecycleStage::Injected, global);
+                self.mark(index, LifecycleStage::Manifested, global);
+            }
+            self.ctx.trace.record(
+                global,
+                "clock.read",
+                &format!(
+                    "local={local} global={global} skew={}",
+                    self.clock_skew_nanos
+                ),
+            );
+        }
+        local
     }
 
     pub fn universe_id(&self) -> u64 {
@@ -228,7 +268,8 @@ impl<'a> SimRuntime<'a> {
     }
 
     /// Record an APPLICATION trace event (runtime effects are recorded by
-    /// the runtime itself).
+    /// the runtime itself). Stamped with the workload's LOCAL clock — a
+    /// skewed component honestly records skewed timestamps.
     pub fn record(&mut self, kind: &str, data: &str) {
         let now = self.now_nanos();
         self.ctx.trace.record(now, kind, data);
@@ -266,7 +307,7 @@ impl<'a> SimRuntime<'a> {
     /// delay, duplicate.
     pub fn send(&mut self, from: NodeId, to: NodeId, payload: &str) {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         self.ctx
             .trace
             .record(now, "net.send", &format!("{from}->{to} {payload}"));
@@ -388,13 +429,16 @@ impl<'a> SimRuntime<'a> {
     }
 
     /// Arm a workload timer at an absolute virtual time (`at >= now`).
-    /// Timers are process state: a crash cancels pending timers.
+    /// Timers are process state: a crash cancels pending timers. Timers
+    /// live in the GLOBAL frame: a skewed component computing `at` from
+    /// its local clock schedules further into the global future than it
+    /// believes — that drift IS the fault manifesting.
     pub fn set_timer(&mut self, at_nanos: u64, token: u64) {
         self.note_workload_op();
         assert!(
-            at_nanos >= self.now_nanos(),
+            at_nanos >= self.global_now(),
             "timer scheduled into the past: {at_nanos} < now {}",
-            self.now_nanos()
+            self.global_now()
         );
         self.sched.schedule(
             VirtualTime(at_nanos),
@@ -410,7 +454,7 @@ impl<'a> SimRuntime<'a> {
     /// Append a record to the node's application buffer (volatile).
     pub fn disk_write(&mut self, node: NodeId, record: &str) -> Result<(), DiskError> {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         if let Some(idx) = self.pending_write_fails.pop_front() {
             self.mark(idx, LifecycleStage::Injected, now);
             self.mark(idx, LifecycleStage::Manifested, now);
@@ -462,7 +506,7 @@ impl<'a> SimRuntime<'a> {
     /// Move the node's application buffer into the OS cache (volatile).
     pub fn disk_flush(&mut self, node: NodeId) -> Result<(), DiskError> {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         let d = self.disks.entry(node).or_default();
         let moved = d.buf.len();
         let entries: Vec<String> = d.buf.drain(..).collect();
@@ -479,7 +523,7 @@ impl<'a> SimRuntime<'a> {
     /// honest fsync persists it first.
     pub fn disk_fsync(&mut self, node: NodeId) -> Result<(), DiskError> {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         if let Some(idx) = self.pending_fsync_lies.pop_front() {
             let claimed = self.disks.entry(node).or_default().cache.clone();
             self.mark(idx, LifecycleStage::Injected, now);
@@ -512,7 +556,7 @@ impl<'a> SimRuntime<'a> {
     /// Read the node's full view: durable, then cache, then buffer.
     pub fn disk_read_all(&mut self, node: NodeId) -> Vec<String> {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         let d = self.disks.entry(node).or_default();
         let mut out = d.durable.clone();
         out.extend(d.cache.iter().cloned());
@@ -527,7 +571,7 @@ impl<'a> SimRuntime<'a> {
     /// Read only the node's durable layer (the post-crash recovery view).
     pub fn disk_read_durable(&mut self, node: NodeId) -> Vec<String> {
         self.note_workload_op();
-        let now = self.now_nanos();
+        let now = self.global_now();
         let out = self.disks.entry(node).or_default().durable.clone();
         self.ctx.trace.record(
             now,
@@ -710,11 +754,17 @@ impl<'a> SimRuntime<'a> {
                 self.mark(index, LifecycleStage::Armed, now);
                 self.pending_reorders.push_back(index);
             }
-            FaultKind::ClockSkew { .. } => {
+            FaultKind::ClockSkew { skew_nanos } => {
+                self.mark(index, LifecycleStage::Armed, now);
+                self.clock_skew_nanos = self.clock_skew_nanos.saturating_add(skew_nanos);
+                self.pending_skew_reads.push(index);
                 self.ctx.trace.record(
                     now,
-                    "fault.skipped",
-                    &format!("i={index} clock_skew unsupported in sim runtime v1"),
+                    "clock.skew",
+                    &format!(
+                        "i={index} +{skew_nanos} accumulated={}",
+                        self.clock_skew_nanos
+                    ),
                 );
             }
         }
@@ -787,7 +837,7 @@ impl<'a> SimRuntime<'a> {
     /// the process demonstrably resumed — the crash is Recovered.
     fn note_workload_op(&mut self) {
         if let Some(idx) = self.crash_awaiting_recovery.take() {
-            let now = self.now_nanos();
+            let now = self.global_now();
             self.mark(idx, LifecycleStage::Recovered, now);
         }
     }
@@ -797,7 +847,7 @@ impl<'a> SimRuntime<'a> {
             return;
         }
         self.finished = true;
-        let now = self.now_nanos();
+        let now = self.global_now();
         if let Some(held) = self.held.take() {
             self.drops += 1;
             self.ctx.trace.record(

@@ -148,6 +148,14 @@ tracks:
       # else in the file. Basis:
       # https://github.com/AmitabhainArunachala/vibe-halt/pull/13#issuecomment-5040630656
       - crates/vh-multiverse/src/runtime.rs
+      # C3 grant (2026-07-22): ClockSkew honesty fix (W4/D6, charter
+      # docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md §4/C3) —
+      # implement observable virtual-clock divergence. EXTENDS the
+      # runtime.rs grant above to the clock-skew arm + local-clock read
+      # surface, plus the evidence-ladder doc and runtime tests ONLY;
+      # ratified by human merge of the convergence C3 PR.
+      - crates/vh-multiverse/src/evidence.rs
+      - crates/vh-multiverse/tests/runtime.rs
     acceptance:
       - "W0/R0: LICENSE proposed; Python <3.11 fails fast or onboard exits 0; CLAUDE.md crate map names vh-shrink/vh-verify"
       - "W1/R2: opt-in swarm palette beats v0 on the pinned corpus bakeoff before any default flip"
