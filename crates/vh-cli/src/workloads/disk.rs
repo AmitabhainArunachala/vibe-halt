@@ -74,9 +74,11 @@ impl WalDemo {
 }
 
 fn wal_durability_oracle(end: &EndState) -> Result<(), String> {
+    let mut acked_count = 0usize;
     let mut violations = Vec::new();
     for (key, value) in end {
         if let Some(record) = key.strip_prefix("acked:") {
+            acked_count += 1;
             let stored = end.get(&format!("durable:{record}"));
             if stored != Some(value) {
                 violations.push(format!(
@@ -84,6 +86,18 @@ fn wal_durability_oracle(end: &EndState) -> Result<(), String> {
                 ));
             }
         }
+    }
+    // Required-progress (Codex audit B.2, shared with corpus-fsync-lie):
+    // a universe where nothing was ever acknowledged never exercised the
+    // durability law at all — that is not the same fact as "the law
+    // held", and must not be silently indistinguishable from a verified
+    // pass.
+    if acked_count == 0 {
+        return Err(
+            "required-progress violated: no record was ever acknowledged — the oracle had no \
+             acked:<record> fact to check"
+                .to_string(),
+        );
     }
     if violations.is_empty() {
         Ok(())
@@ -307,5 +321,45 @@ impl Workload for WalDemo {
         }
         rt.finish();
         RunOutcome::Completed
+    }
+}
+
+// ------------------------------------------------------------ oracle facts
+//
+// Adversarial regression (C2a, Codex audit B.2, shared with VB-005
+// corpus-fsync-lie): pre-fix, the loop only visited `acked:*` keys; an end
+// state with none produced zero violations and `Ok(())` — a universe that
+// never acknowledged anything never exercised the durability law, but was
+// indistinguishable from one that acknowledged and verified everything.
+
+#[cfg(test)]
+mod oracle_fact_tests {
+    use super::*;
+
+    fn end(pairs: &[(&str, &str)]) -> EndState {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn wal_durability_oracle_rejects_zero_progress() {
+        let e = end(&[]);
+        let r = wal_durability_oracle(&e);
+        assert!(r.is_err(), "no acknowledged record must fail closed");
+        assert!(r.unwrap_err().contains("required-progress violated"));
+    }
+
+    #[test]
+    fn wal_durability_oracle_still_passes_when_durable() {
+        let e = end(&[("acked:r0", "5"), ("durable:r0", "5")]);
+        assert_eq!(wal_durability_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn wal_durability_oracle_still_fails_on_lost_ack() {
+        let e = end(&[("acked:r0", "5")]);
+        assert!(wal_durability_oracle(&e).is_err());
     }
 }

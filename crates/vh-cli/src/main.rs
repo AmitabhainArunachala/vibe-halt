@@ -338,21 +338,61 @@ fn cmd_run(args: &[String]) -> i32 {
 
     let failing = report.failing_universes();
     let invalid = report.invalid_universes();
+
+    // Mechanically expose the schedule policy and tape requirement facts
+    // (C2a, criterion-3 evidence integrity, oracle-semantics half): the
+    // schedule a campaign ran under and whether decision-tape recording
+    // was in effect must be readable from the run's own output, not
+    // reconstructed from the invoking command line.
+    let schedule_label = match run.schedule {
+        SchedulePolicy::Fifo => "fifo".to_string(),
+        SchedulePolicy::Pct { depth } => format!("pct:{depth}"),
+        SchedulePolicy::UniformTiebreak => "uniform".to_string(),
+    };
     println!(
-        "vibe-halt: workload={} seed=0x{:x} universes={} palette={} divergence-check={}",
+        "vibe-halt: workload={} seed=0x{:x} universes={} palette={} divergence-check={} schedule={} tape={} fault-plan-schema={}",
         report.workload(),
         report.root_seed(),
         requested,
         run.palette.name(),
-        run.check_divergence
+        run.check_divergence,
+        schedule_label,
+        run.record_tape,
+        vh_multiverse::FAULT_PLAN_DIGEST_SCHEMA,
     );
+
+    // Mechanically expose the oracle schema fact: the exact named
+    // end-state oracles this campaign's property contract required, so a
+    // reader never has to infer "which law was actually checked" from
+    // workload source. An empty list is itself a fact (see the UNCHECKED
+    // reason line below), never silently absent.
     println!(
-        "  always-failures: {} universe(s); divergent: {}; sometimes unreached: {}; invalid completions: {}; contract violations: {}",
+        "  oracle contract: required_oracles=[{}] required_always=[{}] required_sometimes=[{}]",
+        report.contract().required_oracles().join(","),
+        report.contract().required_always().join(","),
+        report.contract().required_sometimes().join(","),
+    );
+
+    // Mechanically expose the exact clean-universe fact (C2a): "clean" is
+    // every universe touched by NONE of failing/invalid/divergent/contract
+    // violation — a set difference, not an inference the reader must
+    // reconstruct from the other counts (which are independent axes that
+    // can overlap on the same universe).
+    let mut non_clean: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
+    non_clean.extend(failing.iter().copied());
+    non_clean.extend(invalid.iter().copied());
+    non_clean.extend(report.divergent_universes().iter().copied());
+    non_clean.extend(report.contract_violations().iter().map(|(u, _)| *u));
+    let clean_count = report.results().len() - non_clean.len();
+
+    println!(
+        "  always-failures: {} universe(s); divergent: {}; sometimes unreached: {}; invalid completions: {}; contract violations: {}; clean: {}",
         failing.len(),
         report.divergent_universes().len(),
         report.merged().unreached_sometimes().len(),
         invalid.len(),
-        report.contract_violations().len()
+        report.contract_violations().len(),
+        clean_count
     );
     println!("  evidence: {}", report.replay_evidence().label());
 
