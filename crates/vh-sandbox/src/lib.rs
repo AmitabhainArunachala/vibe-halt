@@ -1,65 +1,83 @@
-//! vh-sandbox — Tier-2/D1 subprocess sandbox MVP.
+//! vh-sandbox — Tier-2 D2 subprocess sandbox MVP; D1 is a future backend.
 //!
 //! This crate is deliberately a **boundary crate**: it owns subprocess
 //! execution, environment scrubbing, artifact reads, and LLM cassette replay.
 //! It is not part of the Tier-1 deterministic kernel. Its identities are
 //! deterministic renderings of specs and observations; wall time and host I/O
 //! are boundary telemetry only and never enter identity digests.
+//!
+//! `capability` (see [`capability`]) owns the sealed capability receipt, the
+//! exhaustive channel inventory, the exact termination taxonomy, and the
+//! raw-count divergence report. This file owns the actual subprocess
+//! boundary logic that produces those types: spawning, a bounded
+//! deadline with no unbounded wait, bounded output capture, and world
+//! binding (executable bytes when resolvable, target OS/arch, declared
+//! artifacts and input files).
+//!
+//! Known, cited scope limits (not silently closed):
+//! - stdin writes are not themselves deadline-bounded — a child that
+//!   never reads stdin and never exits can still block the write inside
+//!   `run_once` past the configured deadline. Tracked here, not hidden.
+//! - "initial filesystem/fixtures" binding is the freshly created empty
+//!   workspace case only; fixture-seeded workspaces are a later package's
+//!   concern (C6 reference profile).
+//! - `CapabilityChannel::WallClock`/`MonotonicClock`/etc. staying `Open`
+//!   for every run is not a bug: this package implements no channel
+//!   interposition. That is C7's (separately authorized, unsafe-helper)
+//!   job; see `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md`.
 
 #![forbid(unsafe_code)]
 
+pub mod capability;
+
+pub use capability::{
+    CapabilityChannel, CapabilityReceipt, ChannelStatus, DivergenceReport, EvidenceGrade,
+    ExecutableIdentity, ProcessTreeState, StreamObservation, TerminationOutcome, CAPABILITY_SCHEMA,
+    DIVERGENCE_REPORT_SCHEMA,
+};
+
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant};
 
 use vh_trace::Trace;
 
-pub const SANDBOX_SPEC_SCHEMA: &str = "vh-sandbox-spec-v1";
+pub const SANDBOX_SPEC_SCHEMA: &str = "vh-sandbox-spec-v2";
 pub const CASSETTE_SCHEMA: &str = "vh-cassette-v1";
-pub const RUN_RECORD_SCHEMA: &str = "vh-sandbox-run-v1";
+pub const RUN_RECORD_SCHEMA: &str = "vh-sandbox-run-v2";
 
-/// Channels the MVP does not control. This ledger is part of every run
-/// record so callers cannot silently promote opaque subprocess execution to
-/// D1. D1 is reserved for future instrumented targets whose effect channels
-/// are controlled and replayed exactly; this MVP is normally D2-honest.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum HonestyChannel {
-    RealNetwork,
-    RealClockSyscalls,
-    FilesystemOutsideWorkspace,
-    ThreadScheduling,
-    OsProcessScheduler,
-}
+/// Compile-time target triple pieces used as boundary-wide world
+/// identity. This is the *build* target, not a live `uname` probe: this
+/// crate's determinism-denylist exemption
+/// (`scripts/check_determinism_denylist.py`) does not cover live
+/// environment-variable reads or platform-specific extension traits, and
+/// `cfg!` is a language-level compile-time construct rather than either
+/// of those, so it stays inside the allowed surface.
+const TARGET_OS: &str = if cfg!(target_os = "linux") {
+    "linux"
+} else if cfg!(target_os = "macos") {
+    "macos"
+} else if cfg!(target_os = "windows") {
+    "windows"
+} else {
+    "unknown-os"
+};
 
-impl HonestyChannel {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::RealNetwork => "real_network",
-            Self::RealClockSyscalls => "real_clock_syscalls",
-            Self::FilesystemOutsideWorkspace => "filesystem_outside_workspace",
-            Self::ThreadScheduling => "thread_scheduling",
-            Self::OsProcessScheduler => "os_process_scheduler",
-        }
-    }
-}
+const TARGET_ARCH: &str = if cfg!(target_arch = "x86_64") {
+    "x86_64"
+} else if cfg!(target_arch = "aarch64") {
+    "aarch64"
+} else {
+    "unknown-arch"
+};
 
-/// Tier-2 evidence grade. The MVP can honestly report D2 for arbitrary
-/// subprocesses; D1 requires an empty unmanaged-channel ledger.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EvidenceGrade {
-    D1,
-    D2,
-}
-
-impl EvidenceGrade {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::D1 => "D1",
-            Self::D2 => "D2",
-        }
-    }
-}
+/// Reason recorded against every channel in a freshly produced capability
+/// receipt. Uniform on purpose: nothing in this package closes any
+/// channel, so there is exactly one honest reason to give.
+const OPEN_CHANNEL_REASON: &str =
+    "not controlled or replayed by the Tier-2/D2 safe-Rust subprocess runner in this package; \
+     channel closure requires a separately authorized unsafe-helper package (C7)";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactSpec {
@@ -74,15 +92,69 @@ impl ArtifactSpec {
     }
 }
 
+/// Explicit controller-configured execution budget. Every safe-runner
+/// execution has one; there is no unbounded wait. `max_output_bytes`
+/// bounds each of stdout/stderr independently.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SandboxBudget {
+    pub deadline: Duration,
+    pub max_output_bytes: usize,
+}
+
+impl SandboxBudget {
+    pub const DEFAULT_DEADLINE: Duration = Duration::from_secs(30);
+    pub const DEFAULT_MAX_OUTPUT_BYTES: usize = 1 << 20;
+
+    pub fn new(deadline: Duration, max_output_bytes: usize) -> Result<Self, SandboxError> {
+        if deadline.is_zero() {
+            return Err(SandboxError::InvalidSpec(
+                "sandbox budget deadline must be nonzero — an unbounded wait is never permitted"
+                    .into(),
+            ));
+        }
+        if max_output_bytes == 0 {
+            return Err(SandboxError::InvalidSpec(
+                "sandbox budget max_output_bytes must be nonzero".into(),
+            ));
+        }
+        Ok(Self {
+            deadline,
+            max_output_bytes,
+        })
+    }
+}
+
+impl Default for SandboxBudget {
+    fn default() -> Self {
+        Self {
+            deadline: Self::DEFAULT_DEADLINE,
+            max_output_bytes: Self::DEFAULT_MAX_OUTPUT_BYTES,
+        }
+    }
+}
+
 /// Explicit subprocess universe spec. Environment is allowlist-only; pinned
-/// defaults are applied by [`SandboxSpec::new`].
+/// defaults are applied by [`SandboxSpec::new`]. This is a *request*
+/// descriptor only: it has no field or method that can assert any
+/// [`CapabilityChannel`] closed. The sealed receipt is produced solely by
+/// the runner (see [`run_once`]) and lives on [`RunRecord`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SandboxSpec {
     pub argv: Vec<String>,
     pub stdin: Vec<u8>,
     pub env: BTreeMap<String, String>,
     pub artifacts: Vec<ArtifactSpec>,
-    pub unmanaged_channels: Vec<HonestyChannel>,
+    /// Source/script and lockfile/dependency inputs bound into identity at
+    /// declare time: path -> content digest.
+    pub input_files: BTreeMap<String, String>,
+    pub budget: SandboxBudget,
+    /// Bound when a real child-visible cassette transport (C5) supplies
+    /// one; `None` here means "no cassette used", which is itself part of
+    /// identity, not an absence of a field.
+    pub cassette_identity: Option<String>,
+    /// Bound when a separately admitted unsafe-helper supervisor (C7) is
+    /// in the loop; `None` in this package always.
+    pub supervisor_identity: Option<String>,
 }
 
 impl SandboxSpec {
@@ -101,12 +173,30 @@ impl SandboxSpec {
             stdin: Vec::new(),
             env,
             artifacts: Vec::new(),
-            unmanaged_channels: default_unmanaged_channels(),
+            input_files: BTreeMap::new(),
+            budget: SandboxBudget::default(),
+            cassette_identity: None,
+            supervisor_identity: None,
         })
     }
 
     pub fn with_stdin(mut self, stdin: impl Into<Vec<u8>>) -> Self {
         self.stdin = stdin.into();
+        self
+    }
+
+    pub fn with_budget(mut self, budget: SandboxBudget) -> Self {
+        self.budget = budget;
+        self
+    }
+
+    pub fn with_cassette_identity(mut self, identity: impl Into<String>) -> Self {
+        self.cassette_identity = Some(identity.into());
+        self
+    }
+
+    pub fn with_supervisor_identity(mut self, identity: impl Into<String>) -> Self {
+        self.supervisor_identity = Some(identity.into());
         self
     }
 
@@ -132,9 +222,25 @@ impl SandboxSpec {
         Ok(self)
     }
 
+    /// Bind a source/script or lockfile/dependency input into identity by
+    /// reading and hashing it now, at declare time (it is a precondition
+    /// the controller has available, not an output).
+    pub fn declare_input_file(mut self, path: impl AsRef<Path>) -> Result<Self, SandboxError> {
+        let path_ref = path.as_ref();
+        let bytes = std::fs::read(path_ref).map_err(|source| SandboxError::ArtifactRead {
+            path: path_ref.display().to_string(),
+            source,
+        })?;
+        self.input_files
+            .insert(path_ref.display().to_string(), fnv_hex(&bytes));
+        Ok(self)
+    }
+
     pub fn identity(&self) -> String {
         let mut t = Trace::new();
         t.record(0, "schema", SANDBOX_SPEC_SCHEMA);
+        t.record(0, "target-os", TARGET_OS);
+        t.record(0, "target-arch", TARGET_ARCH);
         for (i, arg) in self.argv.iter().enumerate() {
             t.record(i as u64, "argv", arg);
         }
@@ -145,28 +251,30 @@ impl SandboxSpec {
         for artifact in &self.artifacts {
             t.record(0, "artifact", &artifact.path);
         }
-        for channel in &self.unmanaged_channels {
-            t.record(0, "honesty", channel.as_str());
+        for (path, digest) in &self.input_files {
+            t.record(0, "input-file", &format!("{path}={digest}"));
         }
+        t.record(
+            0,
+            "budget",
+            &format!(
+                "deadline_ms={} max_output_bytes={}",
+                self.budget.deadline.as_millis(),
+                self.budget.max_output_bytes
+            ),
+        );
+        t.record(
+            0,
+            "cassette",
+            self.cassette_identity.as_deref().unwrap_or("none"),
+        );
+        t.record(
+            0,
+            "supervisor",
+            self.supervisor_identity.as_deref().unwrap_or("none"),
+        );
         t.hash_hex()
     }
-
-    pub fn evidence_grade(&self) -> Result<EvidenceGrade, SandboxError> {
-        if self.unmanaged_channels.is_empty() {
-            return Ok(EvidenceGrade::D1);
-        }
-        Ok(EvidenceGrade::D2)
-    }
-}
-
-fn default_unmanaged_channels() -> Vec<HonestyChannel> {
-    vec![
-        HonestyChannel::RealNetwork,
-        HonestyChannel::RealClockSyscalls,
-        HonestyChannel::FilesystemOutsideWorkspace,
-        HonestyChannel::ThreadScheduling,
-        HonestyChannel::OsProcessScheduler,
-    ]
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -236,47 +344,45 @@ pub struct CassetteMiss {
     pub digest: String,
 }
 
-/// Complete public observation of one subprocess run. `wall_time` is boundary
+/// Complete public observation of one subprocess run: the controller's
+/// sealed capability receipt plus exact termination, process-tree,
+/// stream, artifact, and world identity. `wall_time` is boundary
 /// telemetry and is intentionally excluded from [`RunRecord::identity`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunRecord {
     pub spec_identity: String,
-    pub exit_code: Option<i32>,
-    pub stdout_digest: String,
-    pub stderr_digest: String,
+    pub target_os: &'static str,
+    pub target_arch: &'static str,
+    pub executable: ExecutableIdentity,
+    pub termination: TerminationOutcome,
+    pub process_tree: ProcessTreeState,
+    pub stdout: StreamObservation,
+    pub stderr: StreamObservation,
     pub artifacts: BTreeMap<String, String>,
-    pub unmanaged_channels: Vec<HonestyChannel>,
+    pub capability: CapabilityReceipt,
     pub wall_time: Duration,
 }
 
 impl RunRecord {
     pub fn evidence_grade(&self) -> EvidenceGrade {
-        if self.unmanaged_channels.is_empty() {
-            EvidenceGrade::D1
-        } else {
-            EvidenceGrade::D2
-        }
+        self.capability.evidence_grade()
     }
 
     pub fn identity(&self) -> String {
         let mut t = Trace::new();
         t.record(0, "schema", RUN_RECORD_SCHEMA);
         t.record(0, "spec", &self.spec_identity);
-        t.record(
-            0,
-            "exit",
-            &self
-                .exit_code
-                .map_or_else(|| "signal-or-unknown".to_string(), |c| c.to_string()),
-        );
-        t.record(0, "stdout", &self.stdout_digest);
-        t.record(0, "stderr", &self.stderr_digest);
+        t.record(0, "target-os", self.target_os);
+        t.record(0, "target-arch", self.target_arch);
+        t.record(0, "executable", &self.executable.as_identity_str());
+        t.record(0, "termination", &self.termination.as_identity_str());
+        t.record(0, "process-tree", &self.process_tree.as_identity_str());
+        t.record(0, "stdout", &self.stdout.as_identity_str());
+        t.record(0, "stderr", &self.stderr.as_identity_str());
         for (path, digest) in &self.artifacts {
             t.record(0, "artifact", &format!("{path}={digest}"));
         }
-        for channel in &self.unmanaged_channels {
-            t.record(0, "honesty", channel.as_str());
-        }
+        t.record(0, "capability", &self.capability.identity());
         t.hash_hex()
     }
 }
@@ -288,12 +394,14 @@ pub struct SandboxCampaign {
 }
 
 impl SandboxCampaign {
-    pub fn divergence_rate(&self) -> f64 {
-        if self.first.identity() == self.second.identity() {
-            0.0
-        } else {
-            1.0
-        }
+    /// Raw-count divergence evidence for this one run-twice pair. See
+    /// [`DivergenceReport::from_identity_pairs`] to aggregate many pairs
+    /// into one declared-suite report.
+    pub fn divergence_report(&self) -> DivergenceReport {
+        DivergenceReport::from_identity_pairs([(
+            self.first.identity().as_str(),
+            self.second.identity().as_str(),
+        )])
     }
 
     pub fn verdict_line(&self) -> String {
@@ -304,11 +412,7 @@ impl SandboxCampaign {
         } else {
             EvidenceGrade::D2
         };
-        format!(
-            "tier=Tier-2 d-grade={} divergence-rate={:.3} evidence=run-twice agreement (sampled falsifier — not proof)",
-            grade.as_str(),
-            self.divergence_rate()
-        )
+        self.divergence_report().verdict_line(grade)
     }
 }
 
@@ -324,13 +428,21 @@ pub fn run_twice(
 }
 
 pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, SandboxError> {
-    if spec.unmanaged_channels.is_empty() {
-        return Err(SandboxError::InvalidSpec(
-            "honesty ledger cannot be empty for the subprocess MVP unless every effect channel is controlled+replayed"
-                .into(),
-        ));
-    }
     std::fs::create_dir_all(workspace).map_err(SandboxError::Io)?;
+    let io_dir = workspace.join(".vh-sandbox-io");
+    std::fs::create_dir_all(&io_dir).map_err(SandboxError::Io)?;
+    let stdout_path = io_dir.join("stdout.raw");
+    let stderr_path = io_dir.join("stderr.raw");
+    // Redirect to files rather than piping stdout/stderr: reading two
+    // live pipes concurrently without deadlocking needs either OS-level
+    // threads (denied even on this boundary crate — parallelism stays at
+    // the multiverse boundary) or non-blocking file descriptors (the
+    // platform-specific extension module for that is not part of this
+    // crate's exemption). Files sidestep the deadlock entirely and let
+    // the bounded wait loop below own the deadline.
+    let stdout_file = std::fs::File::create(&stdout_path).map_err(SandboxError::Io)?;
+    let stderr_file = std::fs::File::create(&stderr_path).map_err(SandboxError::Io)?;
+
     let started = Instant::now();
     let mut cmd = Command::new(&spec.argv[0]);
     cmd.args(&spec.argv[1..])
@@ -338,36 +450,241 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
         .env_clear()
         .envs(spec.env.iter())
         .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd.spawn().map_err(SandboxError::Io)?;
-    if !spec.stdin.is_empty() {
-        use std::io::Write;
-        let stdin = child.stdin.as_mut().ok_or_else(|| {
-            SandboxError::Execution("child stdin was not available despite being piped".into())
-        })?;
-        stdin.write_all(&spec.stdin).map_err(SandboxError::Io)?;
-    }
-    let out = child.wait_with_output().map_err(SandboxError::Io)?;
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file));
+
+    let (termination, process_tree) =
+        execute_bounded(&mut cmd, &spec.stdin, &spec.budget, started)?;
     let wall_time = started.elapsed();
-    let mut artifacts = BTreeMap::new();
-    for artifact in &spec.artifacts {
-        let path = workspace.join(&artifact.path);
-        let bytes = std::fs::read(&path).map_err(|source| SandboxError::ArtifactRead {
-            path: artifact.path.clone(),
-            source,
-        })?;
-        artifacts.insert(artifact.path.clone(), fnv_hex(&bytes));
-    }
+
+    let no_process_ran = matches!(termination, TerminationOutcome::SpawnFailed { .. });
+    let ran_to_completion_or_signal =
+        !no_process_ran && !matches!(termination, TerminationOutcome::TimedOut);
+
+    let (stdout, stderr) = if no_process_ran {
+        (empty_stream(), empty_stream())
+    } else {
+        (
+            read_bounded_stream(&stdout_path, spec.budget.max_output_bytes)?,
+            read_bounded_stream(&stderr_path, spec.budget.max_output_bytes)?,
+        )
+    };
+
+    // Declared artifacts are a postcondition of the target actually
+    // running to completion or a signal; a killed-by-deadline or
+    // never-spawned run cannot be expected to have produced them, so we
+    // do not manufacture an artifact-read error that would mask the real
+    // termination finding.
+    let artifacts = if ran_to_completion_or_signal {
+        let mut artifacts = BTreeMap::new();
+        for artifact in &spec.artifacts {
+            let path = workspace.join(&artifact.path);
+            let bytes = std::fs::read(&path).map_err(|source| SandboxError::ArtifactRead {
+                path: artifact.path.clone(),
+                source,
+            })?;
+            artifacts.insert(artifact.path.clone(), fnv_hex(&bytes));
+        }
+        artifacts
+    } else {
+        BTreeMap::new()
+    };
+
+    let executable = resolve_executable_identity(&spec.argv[0]);
+
     Ok(RunRecord {
         spec_identity: spec.identity(),
-        exit_code: out.status.code(),
-        stdout_digest: fnv_hex(&out.stdout),
-        stderr_digest: fnv_hex(&out.stderr),
+        target_os: TARGET_OS,
+        target_arch: TARGET_ARCH,
+        executable,
+        termination,
+        process_tree,
+        stdout,
+        stderr,
         artifacts,
-        unmanaged_channels: spec.unmanaged_channels.clone(),
+        capability: CapabilityReceipt::all_open(OPEN_CHANNEL_REASON),
         wall_time,
     })
+}
+
+fn empty_stream() -> StreamObservation {
+    StreamObservation {
+        digest: fnv_hex(&[]),
+        byte_len: 0,
+        truncated: false,
+    }
+}
+
+/// Spawn, write stdin, and wait for the direct child with an explicit
+/// deadline. No unbounded wait remains: on expiry, stdin is closed, the
+/// child is killed, and the direct child is waited on (reaped) before
+/// returning. Descendant/process-group cleanup cannot be proven this way
+/// in safe Rust; that stays represented by
+/// `CapabilityChannel::ThreadsForksExecDescendants` remaining `Open` on
+/// the receipt, not by anything returned here.
+fn execute_bounded(
+    cmd: &mut Command,
+    stdin_bytes: &[u8],
+    budget: &SandboxBudget,
+    started: Instant,
+) -> Result<(TerminationOutcome, ProcessTreeState), SandboxError> {
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return Ok((
+                TerminationOutcome::SpawnFailed {
+                    message: e.to_string(),
+                },
+                ProcessTreeState::NoChildProcess,
+            ))
+        }
+    };
+
+    write_stdin_best_effort(&mut child, stdin_bytes)?;
+    // Close stdin so a child waiting on EOF is never blocked by the
+    // controller. This does not by itself prove the pipe channel is
+    // fully closed end-to-end (inherited descriptors stay a separate,
+    // always-open channel).
+    let _ = child.stdin.take();
+
+    loop {
+        match child.try_wait().map_err(SandboxError::Io)? {
+            Some(status) => {
+                return Ok((
+                    classify_exit_status(&status),
+                    ProcessTreeState::DirectChildReaped,
+                ));
+            }
+            None => {
+                if started.elapsed() >= budget.deadline {
+                    child.kill().map_err(SandboxError::Io)?;
+                    let process_tree = match child.wait() {
+                        Ok(_) => ProcessTreeState::DirectChildReaped,
+                        Err(e) => ProcessTreeState::DirectChildReapFailed {
+                            message: e.to_string(),
+                        },
+                    };
+                    return Ok((TerminationOutcome::TimedOut, process_tree));
+                }
+                // This crate's determinism-denylist exemption
+                // (scripts/check_determinism_denylist.py) does not cover
+                // OS-level threads, which are denied even on this
+                // boundary crate, so there is no courteous sleep-based
+                // poll interval available here. `spin_loop` only hints
+                // the CPU to reduce busy-poll power; it does not sleep.
+                // Deadlines in this package should stay small in tests
+                // for exactly this reason — this is a documented MVP
+                // cost, not a hidden default.
+                std::hint::spin_loop();
+            }
+        }
+    }
+}
+
+fn write_stdin_best_effort(child: &mut Child, stdin_bytes: &[u8]) -> Result<(), SandboxError> {
+    if stdin_bytes.is_empty() {
+        return Ok(());
+    }
+    use std::io::Write;
+    match child.stdin.as_mut() {
+        Some(stdin) => {
+            // Best-effort: a child that exits early after only partially
+            // (or never) reading stdin causes a write error here (broken
+            // pipe). That is not itself a termination classification —
+            // the wait loop observes the real outcome, not this write.
+            let _ = stdin.write_all(stdin_bytes);
+            Ok(())
+        }
+        None => Err(SandboxError::Execution(
+            "child stdin was not available despite being piped".into(),
+        )),
+    }
+}
+
+/// Classify a completed `std::process::ExitStatus`. The platform-specific
+/// extension trait needed for `ExitStatusExt::signal()`/`core_dumped()`
+/// is not part of this crate's determinism-denylist exemption, so the
+/// exact signal is instead recovered from `ExitStatus`'s own
+/// already-permitted `std::process` `Display` rendering (verified
+/// against this repo's pinned toolchain:
+/// `"signal: {N} (SIGNAME)"`, optionally with a `"(core dumped)"` suffix
+/// on platforms that report it). An unparseable rendering stays typed
+/// `Unknown` — never guessed.
+fn classify_exit_status(status: &std::process::ExitStatus) -> TerminationOutcome {
+    if let Some(code) = status.code() {
+        return TerminationOutcome::Exited(code);
+    }
+    let rendered = status.to_string();
+    match rendered.strip_prefix("signal: ") {
+        Some(rest) => {
+            let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+            match digits.parse::<i32>() {
+                Ok(signal) => {
+                    // A positive "(core dumped)" observation is trustworthy
+                    // on any platform that emits it; its *absence* is not
+                    // treated as a confirmed non-dump, since not every
+                    // platform's Display rendering reports this bit at
+                    // all — staying None there is the honest choice.
+                    let core_dumped = if rendered.contains("(core dumped)") {
+                        Some(true)
+                    } else {
+                        None
+                    };
+                    TerminationOutcome::Signaled {
+                        signal,
+                        core_dumped,
+                    }
+                }
+                Err(_) => TerminationOutcome::Unknown {
+                    reason: format!("unparsed signal rendering: {rendered:?}"),
+                },
+            }
+        }
+        None => TerminationOutcome::Unknown {
+            reason: format!("unclassified exit status rendering: {rendered:?}"),
+        },
+    }
+}
+
+/// Read a subprocess output stream bounded to `cap` bytes. `byte_len` in
+/// the result is the true on-disk length even when more than `cap` bytes
+/// were written; only the retained prefix is ever read into memory.
+fn read_bounded_stream(path: &Path, cap: usize) -> Result<StreamObservation, SandboxError> {
+    use std::io::Read;
+    let byte_len = std::fs::metadata(path).map_err(SandboxError::Io)?.len();
+    let file = std::fs::File::open(path).map_err(SandboxError::Io)?;
+    let mut buf = Vec::new();
+    file.take(cap as u64)
+        .read_to_end(&mut buf)
+        .map_err(SandboxError::Io)?;
+    Ok(StreamObservation {
+        digest: fnv_hex(&buf),
+        byte_len,
+        truncated: byte_len > cap as u64,
+    })
+}
+
+/// Resolve `argv[0]` to a concrete file and hash its bytes when the
+/// controller can do so without reimplementing platform `PATH` search
+/// (i.e. the caller already gave a path containing a separator). A bare
+/// command name relying on `PATH` search stays honestly `Unresolved`
+/// rather than guessing which file the OS actually executed.
+fn resolve_executable_identity(argv0: &str) -> ExecutableIdentity {
+    if argv0.contains('/') {
+        match std::fs::read(argv0) {
+            Ok(bytes) => ExecutableIdentity::Resolved {
+                path: argv0.to_string(),
+                digest: fnv_hex(&bytes),
+            },
+            Err(_) => ExecutableIdentity::Unresolved {
+                argv0: argv0.to_string(),
+            },
+        }
+    } else {
+        ExecutableIdentity::Unresolved {
+            argv0: argv0.to_string(),
+        }
+    }
 }
 
 #[derive(Debug)]

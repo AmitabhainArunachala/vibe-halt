@@ -4,7 +4,7 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Tier-2/D1 subprocess sandbox MVP for vibe-halt"
+description = "Tier-2 D2 subprocess sandbox MVP for vibe-halt; D1 is a future backend"
 
 [dependencies]
 vh-trace = { path = "../vh-trace" }

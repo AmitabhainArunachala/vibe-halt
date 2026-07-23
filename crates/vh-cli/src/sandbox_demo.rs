@@ -1,4 +1,5 @@
-//! CLI smoke for the Tier-2/D1 subprocess sandbox MVP.
+//! CLI smoke for the Tier-2 D2 subprocess sandbox MVP (D1 is a future
+//! backend).
 //!
 //! This file is a boundary file: it uses host tempdirs and subprocess sandbox
 //! fixtures to exercise D2-honest run-twice evidence, not Tier-1 identity.
@@ -42,6 +43,7 @@ pub(crate) fn cmd_sandbox_demo(args: &[String], usage: &str) -> i32 {
 fn render_clean() -> i32 {
     match sandbox_clean_campaign() {
         Ok(campaign) => {
+            let report = campaign.divergence_report();
             println!("vibe-halt sandbox-demo: mode=clean");
             println!("  {}", campaign.verdict_line());
             println!(
@@ -49,7 +51,7 @@ fn render_clean() -> i32 {
                 campaign.first.identity(),
                 campaign.second.identity()
             );
-            if campaign.divergence_rate() == 0.0 {
+            if report.diverged == 0 {
                 println!("  verdict: CLEAN");
                 0
             } else {
@@ -83,6 +85,7 @@ fn render_cassette_miss() -> i32 {
 fn render_nondet() -> i32 {
     match sandbox_nondet_campaign() {
         Ok(campaign) => {
+            let report = campaign.divergence_report();
             println!("vibe-halt sandbox-demo: mode=nondet");
             println!("  {}", campaign.verdict_line());
             println!(
@@ -90,7 +93,7 @@ fn render_nondet() -> i32 {
                 campaign.first.identity(),
                 campaign.second.identity()
             );
-            if campaign.divergence_rate() > 0.0 {
+            if report.diverged > 0 {
                 println!("  DIVERGENT sandbox subprocess observable records differ");
                 println!("  verdict: FINDINGS");
                 1
