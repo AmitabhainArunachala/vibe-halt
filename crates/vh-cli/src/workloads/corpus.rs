@@ -41,14 +41,18 @@ const LU_REQUESTED: u64 = LU_ROUNDS * 2;
 pub struct LostUpdate;
 
 fn lost_update_oracle(end: &EndState) -> Result<(), String> {
-    let counter = end.get("counter").cloned().unwrap_or_default();
-    let requested = end.get("requested").cloned().unwrap_or_default();
-    if counter == requested {
-        Ok(())
-    } else {
-        Err(format!(
+    // Fail-closed (Codex audit B.2): `counter`/`requested` are raw facts,
+    // not workload-precomputed judgments, but a missing key used to
+    // default to "" on both sides and compare equal — malformed/missing
+    // state must never be indistinguishable from a legitimate pass.
+    match (end.get("counter"), end.get("requested")) {
+        (Some(counter), Some(requested)) if counter == requested => Ok(()),
+        (Some(counter), Some(requested)) => Err(format!(
             "final counter {counter} != {requested} requested increments — update(s) lost to read-modify-write overlap"
-        ))
+        )),
+        (counter, requested) => Err(format!(
+            "malformed end state: counter={counter:?} requested={requested:?} (a required raw fact is missing — refusing to certify a run the oracle cannot read)"
+        )),
     }
 }
 
@@ -274,9 +278,11 @@ const DR_OP_SPACING: u64 = 20_000;
 pub struct DirtyRead;
 
 fn published_durable_oracle(end: &EndState) -> Result<(), String> {
+    let mut published_count = 0usize;
     let mut violations = Vec::new();
     for (key, value) in end {
         if let Some(record) = key.strip_prefix("published:") {
+            published_count += 1;
             let stored = end.get(&format!("durable:{record}"));
             if stored != Some(value) {
                 violations.push(format!(
@@ -284,6 +290,18 @@ fn published_durable_oracle(end: &EndState) -> Result<(), String> {
                 ));
             }
         }
+    }
+    // Required-progress (Codex audit B.2): a universe where the reporter
+    // never published anything cannot demonstrate the law held — it never
+    // had the opportunity to violate it either. Silence must fail closed,
+    // not be indistinguishable from a verified-clean pass.
+    if published_count == 0 {
+        return Err(
+            "required-progress violated: no record was ever published — the oracle had no \
+             published:<record> fact to check (every op timer was consumed by crashes before \
+             the first publish point)"
+                .to_string(),
+        );
     }
     if violations.is_empty() {
         Ok(())
@@ -405,9 +423,11 @@ const TT_ACT_BASE_TOKEN: u64 = 3_000;
 pub struct CrashToctou;
 
 fn toctou_oracle(end: &EndState) -> Result<(), String> {
+    let mut acted_count = 0usize;
     let mut violations = Vec::new();
     for (key, _) in end.iter() {
         if let Some(k) = key.strip_prefix("acted:") {
+            acted_count += 1;
             let check = end.get(&format!("check_epoch:{k}"));
             let act = end.get(&format!("act_epoch:{k}"));
             if check != act {
@@ -416,6 +436,18 @@ fn toctou_oracle(end: &EndState) -> Result<(), String> {
                 ));
             }
         }
+    }
+    // Required-progress (Codex audit B.2): if a crash wipes the volatile
+    // session token before the first check, no action ever fires and the
+    // check-then-act law is never exercised. That is not evidence the law
+    // held — it is evidence the oracle got no opportunity to check it.
+    if acted_count == 0 {
+        return Err(
+            "required-progress violated: no check-then-act action ever completed — the oracle \
+             had no acted:<k> fact to check (the volatile session token never survived to a \
+             check)"
+                .to_string(),
+        );
     }
     if violations.is_empty() {
         Ok(())
@@ -698,14 +730,50 @@ const UC_CKPT_SPACING: u64 = 30_000;
 pub struct UnvalidatedCheckpoint;
 
 fn checkpoint_recoverable_oracle(end: &EndState) -> Result<(), String> {
+    // Independent fact check (Codex audit B.2): the workload used to hand
+    // the oracle a precomputed `recovered:<ckpt>` Boolean it had already
+    // judged itself — the exact "trust a flag the workload already set"
+    // pattern this package forbids. The oracle now re-derives membership
+    // itself from the raw durable dump the workload declares unjudged.
+    let durable_dump = match end.get("durable_dump") {
+        Some(d) => d,
+        None => {
+            return Err(
+                "malformed end state: durable_dump missing — the oracle cannot independently \
+                 verify recoverability without the raw durable dump"
+                    .to_string(),
+            )
+        }
+    };
+    let durable: std::collections::BTreeSet<&str> =
+        durable_dump.split('|').filter(|s| !s.is_empty()).collect();
+
+    let mut acked_count = 0usize;
     let mut violations = Vec::new();
     for ckpt in 0..UC_CKPTS {
-        if end.get(&format!("acked:{ckpt}")).is_none() {
+        let acked_key = format!("acked:{ckpt}");
+        if end.get(&acked_key).is_none() {
             continue;
         }
-        if end.get(&format!("recovered:{ckpt}")).map(String::as_str) != Some("true") {
-            violations.push(format!("checkpoint {ckpt}"));
+        acked_count += 1;
+        match end.get(&format!("expected:{ckpt}")) {
+            Some(want) if durable.contains(want.as_str()) => {}
+            Some(want) => violations.push(format!(
+                "checkpoint {ckpt} (expected record {want:?} not present in the durable dump)"
+            )),
+            None => violations.push(format!(
+                "checkpoint {ckpt} (malformed: acknowledged but no expected:{ckpt} raw fact recorded)"
+            )),
         }
+    }
+    // Required-progress (Codex audit B.2): a universe where nothing was
+    // ever acknowledged never gave the oracle a chance to check anything.
+    if acked_count == 0 {
+        return Err(
+            "required-progress violated: no checkpoint was ever acknowledged — the oracle had \
+             no acked:<ckpt> fact to check"
+                .to_string(),
+        );
     }
     if violations.is_empty() {
         Ok(())
@@ -790,14 +858,17 @@ impl Workload for UnvalidatedCheckpoint {
                 StepEvent::Crashed => unreachable!("torn-only palette"),
             }
         }
-        // Retrieval (the get_state_history moment): read durable state
-        // and validate each record on the way out.
+        // Retrieval (the get_state_history moment): declare the raw
+        // durable dump and each checkpoint's expected framed record as
+        // UNJUDGED facts (Codex audit B.2) — the oracle independently
+        // derives membership itself instead of trusting a workload-
+        // precomputed `recovered` verdict.
         let durable = rt.disk_read_durable(UC_NODE);
+        rt.declare_end("durable_dump", &durable.join("|"));
         for (ckpt, want) in expected.iter().enumerate() {
             if acked[ckpt] {
                 rt.declare_end(&format!("acked:{ckpt}"), "true");
-                let recovered = durable.iter().any(|r| r == want);
-                rt.declare_end(&format!("recovered:{ckpt}"), &recovered.to_string());
+                rt.declare_end(&format!("expected:{ckpt}"), want);
             }
         }
         rt.finish();
@@ -975,22 +1046,33 @@ const RR_STEP_SPACING: u64 = 30_000;
 pub struct ResumeReplay;
 
 fn resume_at_most_once_oracle(end: &EndState) -> Result<(), String> {
+    // Fail-closed + required-progress (Codex audit B.2): the previous
+    // version defaulted a missing or malformed `applied:<step>` fact to
+    // "0" and only rejected n>1 — so a step that never ran at all (no
+    // progress claim) silently satisfied the "at most once" law instead
+    // of being distinguished from a legitimate single application.
     let mut violations = Vec::new();
     for step in 0..RR_STEPS {
-        let applied = end
-            .get(&format!("applied:{step}"))
-            .cloned()
-            .unwrap_or_else(|| "0".to_string());
-        let n: u64 = applied.parse().unwrap_or(0);
-        if n > 1 {
-            violations.push(format!("step {step} applied {n} times"));
+        let key = format!("applied:{step}");
+        match end.get(&key).map(|raw| (raw, raw.parse::<u64>())) {
+            Some((_, Ok(1))) => {}
+            Some((_, Ok(0))) => violations.push(format!(
+                "step {step} never applied (required-progress violated)"
+            )),
+            Some((_, Ok(n))) => violations.push(format!("step {step} applied {n} times")),
+            Some((raw, Err(_))) => {
+                violations.push(format!("step {step} malformed applied fact {raw:?}"))
+            }
+            None => violations.push(format!(
+                "step {step} applied fact missing (required-progress violated)"
+            )),
         }
     }
     if violations.is_empty() {
         Ok(())
     } else {
         Err(format!(
-            "resume replayed completed work: {} (durable cursor read then ignored; resume restarted from step 0)",
+            "resume-at-most-once violated: {} (durable cursor read then ignored on crash-resume, or the step never ran at all)",
             violations.join(", ")
         ))
     }
@@ -1109,14 +1191,18 @@ const BS_CHUNK_SPACING: u64 = 20_000;
 pub struct BlindStreamAppend;
 
 fn stream_integrity_oracle(end: &EndState) -> Result<(), String> {
-    let assembled = end.get("assembled").cloned().unwrap_or_default();
-    let expected = end.get("expected").cloned().unwrap_or_default();
-    if assembled == expected {
-        Ok(())
-    } else {
-        Err(format!(
+    // Fail-closed (Codex audit B.2): both raw facts used to default to ""
+    // on a missing key, so an end state missing BOTH keys compared ""
+    // == "" and passed vacuously — indistinguishable from a genuinely
+    // matching stream.
+    match (end.get("assembled"), end.get("expected")) {
+        (Some(assembled), Some(expected)) if assembled == expected => Ok(()),
+        (Some(assembled), Some(expected)) => Err(format!(
             "assembled stream {assembled:?} != sent stream {expected:?} (duplicated or reordered delivery appended blindly; no sequence discipline at the consumer)"
-        ))
+        )),
+        (assembled, expected) => Err(format!(
+            "malformed end state: assembled={assembled:?} expected={expected:?} (a required raw fact is missing — refusing to certify a run the oracle cannot read)"
+        )),
     }
 }
 
@@ -1325,5 +1411,248 @@ impl Workload for SameTimestampRace {
         }
         rt.finish();
         RunOutcome::Completed
+    }
+}
+
+// ------------------------------------------------------------ oracle facts
+//
+// Adversarial regressions (C2a, Codex audit B.2/B.3): each test hand-builds
+// an `EndState` that the CURRENT oracle logic must reject, and its comment
+// states what the PRE-FIX logic (quoted from the prior implementation)
+// would have returned for the identical input — never a re-derivation, a
+// literal description of the removed code path. These prove fail-closed
+// behavior, not merely that the fixed function typechecks.
+
+#[cfg(test)]
+mod oracle_fact_tests {
+    use super::*;
+
+    fn end(pairs: &[(&str, &str)]) -> EndState {
+        pairs
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    // ---- VB-001 lost_update_oracle ----------------------------------
+
+    /// Pre-fix: `end.get("counter").unwrap_or_default()` and the same for
+    /// `requested` both defaulted to `""`, so an end state missing BOTH
+    /// keys compared `"" == ""` and returned `Ok(())` — a malformed/absent
+    /// run was indistinguishable from a verified pass.
+    #[test]
+    fn lost_update_oracle_rejects_missing_both_keys() {
+        let e = end(&[]);
+        let r = lost_update_oracle(&e);
+        assert!(r.is_err(), "missing counter/requested must fail closed");
+        assert!(r.unwrap_err().contains("malformed end state"));
+    }
+
+    #[test]
+    fn lost_update_oracle_rejects_missing_one_key() {
+        let e = end(&[("counter", "6")]);
+        assert!(lost_update_oracle(&e).is_err());
+    }
+
+    #[test]
+    fn lost_update_oracle_still_passes_on_genuine_match() {
+        let e = end(&[("counter", "6"), ("requested", "6")]);
+        assert_eq!(lost_update_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn lost_update_oracle_still_fails_on_genuine_mismatch() {
+        let e = end(&[("counter", "5"), ("requested", "6")]);
+        assert!(lost_update_oracle(&e).is_err());
+    }
+
+    // ---- VB-003 published_durable_oracle ----------------------------
+
+    /// Pre-fix: the loop only visited `published:*` keys; an end state
+    /// with none produced zero violations and returned `Ok(())` — a
+    /// universe where every op timer was consumed by crashes before the
+    /// first publish point (never exercising the law) was indistinguishable
+    /// from one that published and verified everything durable.
+    #[test]
+    fn published_durable_oracle_rejects_zero_progress() {
+        let e = end(&[]);
+        let r = published_durable_oracle(&e);
+        assert!(r.is_err(), "no published record must fail closed");
+        assert!(r.unwrap_err().contains("required-progress violated"));
+    }
+
+    #[test]
+    fn published_durable_oracle_still_passes_when_durable() {
+        let e = end(&[("published:r0", "5"), ("durable:r0", "5")]);
+        assert_eq!(published_durable_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn published_durable_oracle_still_fails_on_dirty_read() {
+        let e = end(&[("published:r0", "5")]);
+        assert!(published_durable_oracle(&e).is_err());
+    }
+
+    // ---- VB-004 toctou_oracle ----------------------------------------
+
+    /// Pre-fix: the loop only visited `acted:*` keys; zero acted actions
+    /// (the volatile session token never surviving to a check) produced
+    /// zero violations and `Ok(())` — the oracle never got to check its
+    /// law but silently reported success anyway.
+    #[test]
+    fn toctou_oracle_rejects_zero_progress() {
+        let e = end(&[]);
+        let r = toctou_oracle(&e);
+        assert!(r.is_err(), "no acted action must fail closed");
+        assert!(r.unwrap_err().contains("required-progress violated"));
+    }
+
+    #[test]
+    fn toctou_oracle_still_passes_on_matching_epochs() {
+        let e = end(&[
+            ("acted:0", "true"),
+            ("check_epoch:0", "1"),
+            ("act_epoch:0", "1"),
+        ]);
+        assert_eq!(toctou_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn toctou_oracle_still_fails_on_crossed_epoch() {
+        let e = end(&[
+            ("acted:0", "true"),
+            ("check_epoch:0", "1"),
+            ("act_epoch:0", "2"),
+        ]);
+        assert!(toctou_oracle(&e).is_err());
+    }
+
+    // ---- VB-008 checkpoint_recoverable_oracle -------------------------
+
+    /// Pre-fix: `end.get("recovered:{ckpt}") == Some("true")` trusted a
+    /// Boolean the WORKLOAD itself had already computed and declared — an
+    /// adversarial (or buggy) workload that lies and claims
+    /// `recovered:0=true` while the raw durable dump never actually
+    /// contains the expected record would have been believed outright.
+    /// The independent-fact-checking oracle re-derives membership itself
+    /// and must catch exactly this lie.
+    #[test]
+    fn checkpoint_oracle_rejects_a_workload_lying_about_recovered() {
+        let e = end(&[
+            ("acked:0", "true"),
+            ("expected:0", "ckpt:0:d0001#end"),
+            // durable_dump does NOT contain the expected record — a
+            // pre-fix workload could still have asserted
+            // `recovered:0=true` here and been trusted unconditionally.
+            ("durable_dump", "ckpt:1:d0002#end"),
+        ]);
+        let r = checkpoint_recoverable_oracle(&e);
+        assert!(
+            r.is_err(),
+            "independent fact check must reject a record absent from the raw durable dump"
+        );
+        assert!(r.unwrap_err().contains("not present in the durable dump"));
+    }
+
+    #[test]
+    fn checkpoint_oracle_rejects_zero_progress() {
+        let e = end(&[("durable_dump", "")]);
+        let r = checkpoint_recoverable_oracle(&e);
+        assert!(r.is_err(), "no acknowledged checkpoint must fail closed");
+        assert!(r.unwrap_err().contains("required-progress violated"));
+    }
+
+    #[test]
+    fn checkpoint_oracle_rejects_missing_durable_dump() {
+        let e = end(&[("acked:0", "true"), ("expected:0", "ckpt:0:d0001#end")]);
+        let r = checkpoint_recoverable_oracle(&e);
+        assert!(r.is_err(), "missing durable_dump must fail closed");
+        assert!(r.unwrap_err().contains("malformed end state"));
+    }
+
+    #[test]
+    fn checkpoint_oracle_still_passes_when_independently_verifiable() {
+        let e = end(&[
+            ("acked:0", "true"),
+            ("expected:0", "ckpt:0:d0001#end"),
+            ("durable_dump", "ckpt:0:d0001#end|ckpt:1:d0002#end"),
+        ]);
+        assert_eq!(checkpoint_recoverable_oracle(&e), Ok(()));
+    }
+
+    // ---- VB-010 resume_at_most_once_oracle ----------------------------
+
+    /// Pre-fix: `end.get("applied:{step}").unwrap_or("0")` defaulted a
+    /// MISSING or malformed fact to the string `"0"`, `.parse().unwrap_or(0)`
+    /// silently absorbed a non-numeric value to `0` too, and the check was
+    /// only `n > 1` — so a step that never ran at all (no progress claim)
+    /// was accepted as satisfying "at most once".
+    #[test]
+    fn resume_oracle_rejects_missing_progress_fact() {
+        let mut pairs = vec![];
+        for step in 1..RR_STEPS {
+            pairs.push((format!("applied:{step}"), "1".to_string()));
+        }
+        let e: EndState = pairs.into_iter().collect();
+        // step 0's applied:0 fact is absent entirely.
+        let r = resume_at_most_once_oracle(&e);
+        assert!(r.is_err(), "a missing applied fact must fail closed");
+        assert!(r.unwrap_err().contains("applied fact missing"));
+    }
+
+    #[test]
+    fn resume_oracle_rejects_malformed_progress_fact() {
+        let mut pairs = vec![("applied:0".to_string(), "not-a-number".to_string())];
+        for step in 1..RR_STEPS {
+            pairs.push((format!("applied:{step}"), "1".to_string()));
+        }
+        let e: EndState = pairs.into_iter().collect();
+        let r = resume_at_most_once_oracle(&e);
+        assert!(r.is_err(), "a non-numeric applied fact must fail closed");
+        assert!(r.unwrap_err().contains("malformed applied fact"));
+    }
+
+    #[test]
+    fn resume_oracle_still_passes_on_exactly_once() {
+        let pairs: Vec<_> = (0..RR_STEPS)
+            .map(|s| (format!("applied:{s}"), "1".to_string()))
+            .collect();
+        let e: EndState = pairs.into_iter().collect();
+        assert_eq!(resume_at_most_once_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn resume_oracle_still_fails_on_duplicate_application() {
+        let mut pairs = vec![("applied:0".to_string(), "2".to_string())];
+        for step in 1..RR_STEPS {
+            pairs.push((format!("applied:{step}"), "1".to_string()));
+        }
+        let e: EndState = pairs.into_iter().collect();
+        assert!(resume_at_most_once_oracle(&e).is_err());
+    }
+
+    // ---- VB-011 stream_integrity_oracle -------------------------------
+
+    /// Pre-fix: `end.get("assembled").unwrap_or_default()` and the same
+    /// for `expected` both defaulted to `""`, so an end state missing
+    /// BOTH keys compared `"" == ""` and returned `Ok(())`.
+    #[test]
+    fn stream_integrity_oracle_rejects_missing_both_keys() {
+        let e = end(&[]);
+        let r = stream_integrity_oracle(&e);
+        assert!(r.is_err(), "missing assembled/expected must fail closed");
+        assert!(r.unwrap_err().contains("malformed end state"));
+    }
+
+    #[test]
+    fn stream_integrity_oracle_still_passes_on_genuine_match() {
+        let e = end(&[("assembled", "a|b"), ("expected", "a|b")]);
+        assert_eq!(stream_integrity_oracle(&e), Ok(()));
+    }
+
+    #[test]
+    fn stream_integrity_oracle_still_fails_on_genuine_mismatch() {
+        let e = end(&[("assembled", "a|b|b"), ("expected", "a|b")]);
+        assert!(stream_integrity_oracle(&e).is_err());
     }
 }
