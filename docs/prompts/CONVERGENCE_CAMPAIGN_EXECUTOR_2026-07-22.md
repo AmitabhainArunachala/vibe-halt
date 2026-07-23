@@ -11,6 +11,10 @@ re-verified before you rely on it; this spec is the charter, the code is
 the truth. The short `/goal` that dispatched you cites this file by path
 and never overrides it.
 
+**Post-audit identifier erratum (2026-07-23, CDa):** audit rejections are
+`REJ-R1`–`REJ-R3`, while roadmap recommendations are `REC-R0`–`REC-R8`.
+Legacy bare `R#` references are noncanonical because those namespaces overlap.
+
 This campaign CONTINUES the existing active tracks — Track 2
 (`vibe-halt-1000x-exploration`) and the corpus track
 (`vibe-bug-corpus-2026-07`) — it does not open a fourth track. The
@@ -207,7 +211,7 @@ skew manifests in trace with measurable virtual-clock divergence;
 corpus gates green (re-pinned and receipted if moved).
 Kill criterion: none (honesty repair).
 
-### C4 — Evidence store + replay bundles (audit R4; 3–5 days; independent)
+### C4 — Evidence store + replay bundles (audit REC-R4; 3–5 days; independent)
 `vh run --out <dir>` writes NDJSON receipts (run manifest, per-universe
 outcomes, findings, trace hashes, tape digests when present);
 `vh replay-bundle <dir>/<finding>` re-executes from the bundle alone;
@@ -215,14 +219,14 @@ CI replays a pinned bundle set. All I/O stays in boundary code
 (`vh-cli`) — the deny-list is untouched. Retire the `~/.vibe-halt/`
 phantom: implement the writer or amend `CLAUDE.md:27` in the same PR —
 never both silent.
-Acceptance (audit R4): copy a bundle out, delete the out dir parent,
+Acceptance (audit REC-R4): copy a bundle out, delete the out dir parent,
 `vh replay-bundle` reproduces the exact finding hash with no other
 repo state; bundle digests stable across two runs; gate asserts it;
 stdout remains the default.
 Kill criterion: none (foundational); descope to stdout + artifact flag
 only if review finds leak risks.
 
-### C5 — Shrink wiring from the boundary side (audit R1 / Track-2 W5; 1–2 days)
+### C5 — Shrink wiring from the boundary side (audit REC-R1 / Track-2 W5; 1–2 days)
 The key connection Track 2's W5 missed: `vh-shrink`'s PUBLIC API
 (`shrink`, `try_shrink`, `try_shrink_with_config`, `ShrinkReport` —
 `crates/vh-shrink/src/lib.rs:582-651,126`) is callable from `vh-cli`
@@ -238,13 +242,13 @@ source/build/workload/seed binding (PR #2's honest open contract) —
 the C4 bundle manifest is the natural home. If C4 has landed, bind
 shrink evidence into bundles and note the contract closure in the
 ledger; if not, print the binding fields at the CLI boundary.
-Acceptance (audit R1): `vh run --workload demo-buggy --seed 0xD1CE
+Acceptance (audit REC-R1): `vh run --workload demo-buggy --seed 0xD1CE
 --universes 100 --shrink` exits 1 and prints a shrunk plan with
 strictly fewer injections that still replays to the SAME oracle
 violation (exact captured fingerprint, not any-failure — cause
 switching is a documented shrink hazard); gate gains an anchored
 shrink line; frozen identities unchanged.
-Kill criterion (audit R1): median shrink >60s at 100 universes → ship
+Kill criterion (audit REC-R1): median shrink >60s at 100 universes → ship
 the CLI without `--shrink` default, publish the bound, propose ddmin
 budget changes as an interface request.
 
@@ -262,7 +266,7 @@ anchored recall gate in `scripts/gate.sh`, each citing provenance
 Whenever any other package blocks on a human, work here.
 Acceptance: each entry passes corpus admission; its recall gate is
 green; provenance cited; entries citing C4 bundles once C4 lands.
-Kill criterion (audit R7): sustained harvesting yields <3 admissible
+Kill criterion (audit REC-R7): sustained harvesting yields <3 admissible
 real bugs in 4 weeks → the rig's REALISM is falsified, not the corpus
 process; STOP exploration work, report, and propose fidelity fixes
 before any further guidance/exploration investment.
@@ -280,10 +284,10 @@ Kill criterion: none.
 ## 5. Standing couplings to exploit (the connection clause, made concrete)
 
 - **Tape (C1) is the campaign's keystone**: C2 consumes its choice
-  points; C4 binds its digests into bundles; the audit's R8 causality
+  points; C4 binds its digests into bundles; the audit's REC-R8 causality
   work rewinds on it later. Design every C1 surface with those three
   consumers in view — but ship only C1's acceptance.
-- **C4 bundles ↔ C6 corpus**: audit R7's acceptance wants corpus
+- **C4 bundles ↔ C6 corpus**: audit REC-R7's acceptance wants corpus
   `evidence` fields to be bundle digests that replay green in CI.
   Land C4 early and every C6 entry gets durable evidence for free.
 - **C2's VB-006 ↔ C6**: a found same-timestamp race is itself a new
@@ -318,8 +322,8 @@ Kill criterion: none.
 
 ## 7. Explicitly out of scope
 
-Hypervisor/process-level determinism (audit R1 rejection); RL-guided
-exploration (R2 rejection); any external dependency (reimplement
+Hypervisor/process-level determinism (audit REJ-R1 rejection); RL-guided
+exploration (REJ-R3 rejection); any external dependency (reimplement
 shapes with attribution, 200–400 lines); eval dashboards; sign-off
 percentages as evidence; Tier-2 sandbox expansion (Track 1's mission —
 coordinate, don't collide); edits to `crates/vh-verify/**`,
