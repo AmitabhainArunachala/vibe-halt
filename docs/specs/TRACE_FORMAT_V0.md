@@ -65,12 +65,31 @@ GAP), or reach a different raw end state while the same coarse oracle passes.
 That is why the transcript of item 4 is ordered and includes passes, and why
 item 12 retains the oracle input. The kernel comparator is deliberately struct
 equality
-(`UniverseResult::observably_equal` in `crates/vh-multiverse/src/lib.rs`),
+(`UniverseResult::observably_equal`, `crates/vh-multiverse/src/lib.rs:553-555`),
 so adding an observable field automatically strengthens the divergence
 check; this list must grow with the struct. Enforced by
 `detector_flags_skipped_passing_invariants` and
 `detector_flags_reordered_passing_check_transcripts`
 (`crates/vh-multiverse/tests/divergence.rs`).
+
+The item-12/13 false negative (post-audit finding A.1 — same trace, same
+passing oracle, different unused raw end state) is closed the same way:
+`detector_flags_different_raw_end_state_behind_same_passing_oracle`
+(`crates/vh-multiverse/tests/divergence.rs:728-741`) proves two replays
+with an identical trace and an identical passing `EndStateOracle` verdict
+still diverge because their declared-but-unjudged end-state value differs;
+`detector_flags_a_new_passing_oracle`
+(`crates/vh-multiverse/tests/divergence.rs:777-788`) proves a transcript
+that only gains a new PASSING oracle entry also diverges. Map-construction
+order is explicitly NOT part of identity —
+`reordered_map_construction_has_identical_canonical_state`
+(`crates/vh-multiverse/tests/divergence.rs:814-824`) inserts the same two
+`declare_end` keys in opposite order and asserts both the end-state and
+complete-observation identities, and `observably_equal`, agree. The
+getter-surface/observation-view compile-time ratchet is enforced by
+`observation_view_matches_the_getter_surface_exhaustively`
+(`crates/vh-multiverse/tests/divergence.rs:831-871`), which destructures
+`UniverseResult` and `UniverseObservation` without `..` on either side.
 
 ### Canonical observation bytes
 
@@ -97,6 +116,133 @@ persisted evidence schema will apply its separately reviewed cryptographic
 identity to these same bytes. Trace-v0 FNV-1a-128 and the doctor fingerprint
 remain explicitly legacy/internal compatibility checks, never adversarial or
 cross-party content authentication.
+
+### What the two identities are and what they cover
+
+Both are constructed only inside `crates/vh-multiverse/src/observation.rs`
+and strictly decoded by `crates/vh-multiverse/src/observation/decode.rs`;
+`crates/vh-cli/src/main.rs:701-713` is the one external caller, and it only
+consumes the public `decode_end_state`/`validate_complete_observation`
+decoders as a self-check inside `vh doctor` — it never constructs an
+identity itself.
+
+- **`vh-end-state-observation-v1`** (`EndStateIdentity`,
+  `crates/vh-multiverse/src/observation.rs:58-88`) is the raw, unjudged
+  state a workload declared via `ctx.declare_end` — exactly the map
+  `EndStateOracle::check` reads, before any oracle verdict is taken. It is
+  one canonical field, `state`, an ordered `key → value` string map
+  (`crates/vh-multiverse/src/observation.rs:74-87`). This is what closes
+  A.1: passing the same oracle can no longer hide a different raw value,
+  because the raw value is itself part of identity (see the adversarial
+  tests cited above).
+- **`vh-complete-observation-v1`** (`CompleteObservationIdentity`,
+  `crates/vh-multiverse/src/observation.rs:93-108`) covers all twelve
+  fields listed in `COMPLETE_FIELDS`
+  (`crates/vh-multiverse/src/observation.rs:35-48`), which is exactly the
+  numbered "Observable identity" list above minus the schema-bytes item
+  itself: universe ID, trace hash, trace event count, the ordered
+  always-check transcript, ordered always-failures, the sometimes map,
+  lifecycle (outcome + fault-plan retrieval discipline), the fault-plan
+  digest, runtime evidence (the Offered→Armed→Injected→Manifested→Recovered
+  ladder or `None`), schedule policy, the decision-tape digest (or `None`),
+  and the end-state identity bytes themselves, nested whole
+  (`crates/vh-multiverse/src/observation.rs:125-170`). `UniverseResult`
+  constructs both and exposes them as read-only getters
+  (`crates/vh-multiverse/src/lib.rs:449-462,537-548`); building them is
+  internal to the runner, so no downstream caller can forge or omit a
+  field.
+- Both share the `vh-canonical-length-framing-v1` framing algorithm
+  described above. The strict decoders
+  (`decode_end_state`, `crates/vh-multiverse/src/observation/decode.rs:52-70`;
+  `validate_complete_observation`,
+  `crates/vh-multiverse/src/observation/decode.rs:75-99`) reject truncated,
+  malformed-UTF-8, wrong-magic/algorithm/schema, duplicate/unknown/reordered
+  field, wrong-kind, non-canonical-map, and trailing-byte input — every
+  `DecodeError` variant is exercised by
+  `strict_parser_rejects_duplicate_unknown_reordered_and_trailing_fields`
+  and `strict_parser_rejects_duplicate_reordered_truncated_and_malformed_state`
+  (`crates/vh-multiverse/src/observation/decode.rs:377-416,418-457`), plus an
+  unstructured-fuzz smoke test that asserts only "no panic"
+  (`malformed_probe_never_panics`,
+  `crates/vh-multiverse/src/observation/decode.rs:459-475`).
+
+### Decision tape
+
+The decision tape (`DecisionTape`, `crates/vh-trace/src/lib.rs:44-52` for
+the type, `:113-157` for its impl block) is a second, additive,
+append-only event stream — schema `vh-decision-tape-v1`
+(`crates/vh-trace/src/lib.rs:114`) — built on the same length-prefixed
+FNV-1a-128 `Trace` primitive as the v0 execution trace, but as a wholly
+separate instance with its own chain state. Recording a scheduler
+same-timestamp choice (`record_decision(site_id, candidate_set_digest,
+chosen_index, policy_id)`,
+`crates/vh-trace/src/lib.rs:125-140`) never touches the execution trace or
+its hash; this is deliberate, so scheduler-choice recording could land
+without mutating `TRACE_FORMAT_V0.md`'s frozen surfaces
+(`crates/vh-trace/src/lib.rs:44-47`). `digest_hex()`
+(`crates/vh-trace/src/lib.rs:142-144`) is the tape's own chained hash,
+distinct from any execution-trace hash
+(`decision_tape_digest_is_not_the_empty_trace_hash`,
+`crates/vh-trace/src/lib.rs:245-247`) and stable for a given decision
+sequence (`decision_tape_has_stable_separate_digest`,
+`crates/vh-trace/src/lib.rs:227-242`).
+
+`UniverseResult::decision_tape_digest()` exposes this digest as
+`Option<&str>` — `None` iff the universe never constructed the sim runtime
+(the legacy workload-drained path)
+(`crates/vh-multiverse/src/lib.rs:528-535`) — and it is item 11 of the
+"Observable identity" list and the `decision-tape-digest` field of
+`vh-complete-observation-v1`
+(`crates/vh-multiverse/src/observation.rs:46,157-161`). Recording is
+OPT-IN and costs measured wall time, so the default FIFO path pops
+un-recorded and bit-for-bit; the sole runtime pop site records exactly one
+`runtime.step` choice per pop when `record_tape` is on, for any of the
+Fifo/Pct/Uniform strategies (`crates/vh-multiverse/src/runtime.rs:616-664`,
+digest captured at `:953-954`). The tape is the replay/causality
+substrate for scheduler-choice work, not itself a scheduler-guidance
+claim — see `docs/governance/ACTIVE_TRACK.yaml`'s
+`vibe-halt-1000x-exploration` disposition for the (falsified palette,
+unmeasured-schedule-guidance) status. `SchedulePolicy::Pct` still means
+the event-priority (PCT-inspired) strategy PR #23 narrowed to a measured
+null on VB-006, not a validated thread-PCT guarantee — that disposition
+is unchanged by C1 and is not reopened here.
+
+### What remains UNCHECKED, not D0
+
+The canonical encoder in `observation.rs` is a faithful, injective
+transport of whatever typed values the runner already extracted (`u64`,
+`String`, ordered maps, explicit tag bytes); by construction it cannot
+itself invent a `Debug` rendering, a host address, or unordered iteration
+(see "Canonical observation bytes" above). That does **not** prove every
+`String` payload flowing INTO it is clean. If a workload's own code ever
+formatted a raw pointer, an address-bearing value hidden behind a generic
+`Debug`/`Hash` bound, a type-erased trait object, or a nested container,
+and that text reached `ctx.declare_end`, `ctx.record`, or a failure
+detail, the canonical bytes would faithfully — and misleadingly —
+transport it as if it were ordinary deterministic content.
+
+C1 hardened the determinism deny-list's line-regex layer to reject
+*literal* raw-pointer syntax, `std::ptr`/`core::ptr` module and
+provenance-API use, and `std::fmt::Pointer`/`{:p}` formatting in every
+kernel crate
+(`scripts/check_determinism_denylist.py:84-90,175-179`, exercised by the
+self-test table added in the same change). It explicitly does **not**
+close four type-hidden classes, documented in the scanner's own docstring
+(`scripts/check_determinism_denylist.py:35-41,51-61`):
+
+1. a generic `Debug`/`Hash` value instantiated with an address-bearing type;
+2. a type-erased trait object whose concrete value carries an address;
+3. a nested container whose derived formatter/hasher reaches such a value;
+4. a user-defined formatter/hasher that emits address identity without any
+   raw-pointer token at the call site.
+
+Per `docs/specs/DETERMINISM_TIERS.md:19-23`, that class stays explicitly
+`UNCHECKED` pending a separately reviewed type-aware gate — the whole
+safe-Rust kernel surface is **not** claimed deterministic "by
+construction" for it, and no doc in this repo should say `D0`/`CLEAN` for
+this class until that gate lands. Float NaN/precision formatting is a
+pre-existing, separately accepted regex-layer limitation of the same kind
+(`scripts/check_determinism_denylist.py:59-61`).
 
 ### Changelog
 
@@ -169,3 +315,8 @@ never a refactor.
   reviewed algorithm.
 - Traces are in-memory only. Phase 2 adds spill-to-disk JSONL with the
   same hash chain, under `~/.vibe-halt/traces/`.
+- The canonical observation encoding faithfully transports whatever typed
+  values the runner extracted; it cannot prove those values were never
+  derived from an address upstream (generic `Debug`/`Hash`, a type-erased
+  trait object, or a nested container carrying such a value). See "What
+  remains UNCHECKED, not D0" above — that class is not closed by C1.
