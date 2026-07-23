@@ -351,7 +351,11 @@ if ! diff -r "$bundle_tmp/A" "$bundle_tmp/B" >/dev/null; then
   echo "GATE FAIL: two identical runs wrote different receipt bytes (bundle digests unstable)"
   exit 1
 fi
-first_bundle=$(find "$bundle_tmp/A/findings" -name finding.ndjson | sort | head -1)
+# Same SIGPIPE-under-pipefail class as the `printf | grep -q` fix above
+# (reproduced 2026-07-23 in a fresh worktree with 30 finding bundles:
+# `sort`'s write can outlive `head -1`'s read end on macOS). Drain the
+# rest of the pipe instead of letting the reader close it early.
+first_bundle=$(find "$bundle_tmp/A/findings" -name finding.ndjson | sort | { head -n 1; cat >/dev/null; })
 if [ -z "$first_bundle" ]; then
   echo "GATE FAIL: demo-buggy run wrote no finding bundles"
   exit 1
