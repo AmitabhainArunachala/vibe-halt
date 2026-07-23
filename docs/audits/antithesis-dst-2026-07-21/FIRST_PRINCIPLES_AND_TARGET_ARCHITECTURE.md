@@ -2,6 +2,10 @@
 
 Synthesis of Lanes A/B/C. Every retained invariant is mapped `precedent → evidence → vibe-halt failure mode → proposed boundary → verifier → rollback`. "1000x" is treated as four independent multipliers on the existing kernel, not as platform cosplay.
 
+Identifier convention: audit rejections are `REJ-R1`–`REJ-R3`; roadmap
+recommendations are `REC-R0`–`REC-R8`. Legacy bare `R#` references are
+noncanonical because the two namespaces overlap.
+
 ## 1. Derived invariants (tested against the actual system)
 
 **Retained:**
@@ -17,9 +21,9 @@ Synthesis of Lanes A/B/C. Every retained invariant is mapped `precedent → evid
 
 **Rejected / descoped:**
 
-- **R1 — Whole-machine determinism for unmodified binaries (hypervisor).** Rejected for v0.x: DETERMINISM_TIERS.md scopes it out correctly; multi-year, x86-only, and the agent-systems mission is served at the process/protocol boundary (I2's cassette/subprocess path), not the CPU boundary. Revisit only if dhyve-class OSS substrates mature. *Falsifier of this rejection:* Tier-2 subprocess determinism proves unachievable at acceptable fidelity in the current spike.
-- **R2 — Exhaustive model checking as the primary engine.** Rejected: Loom-style exhaustiveness is the wrong granularity for whole workloads; Shuttle's own README (observed) positions randomized PCT as finding most concurrency bugs. Use Loom only on vibe-halt's *own* scheduler.
-- **R3 — ML/RL-guided search as a near-term dependency.** Antithesis uses RL (reported), but the Gradius evidence shows trivial strategies suffice given branching machinery; swarm masks + PCT + coverage-from-assertions buy most of the yield at zero ML-risk. RL is a later optimization, never a foundation.
+- **REJ-R1 — Whole-machine determinism for unmodified binaries (hypervisor).** Rejected for v0.x: DETERMINISM_TIERS.md scopes it out correctly; multi-year, x86-only, and the agent-systems mission is served at the process/protocol boundary (I2's cassette/subprocess path), not the CPU boundary. Revisit only if dhyve-class OSS substrates mature. *Falsifier of this rejection:* Tier-2 subprocess determinism proves unachievable at acceptable fidelity in the current spike.
+- **REJ-R2 — Exhaustive model checking as the primary engine.** Rejected: Loom-style exhaustiveness is the wrong granularity for whole workloads; Shuttle's own README (observed) positions randomized PCT as finding most concurrency bugs. Use Loom only on vibe-halt's *own* scheduler.
+- **REJ-R3 — ML/RL-guided search as a near-term dependency.** Antithesis uses RL (reported), but the Gradius evidence shows trivial strategies suffice given branching machinery; swarm masks + PCT + coverage-from-assertions buy most of the yield at zero ML-risk. RL is a later optimization, never a foundation.
 
 ## 2. Gap → concrete failure modes map
 
@@ -42,7 +46,7 @@ Synthesis of Lanes A/B/C. Every retained invariant is mapped `precedent → evid
 | **Borrow (rewrite shapes, ~200–400 lines each)** | Stateright Expectation/discovery-path API; TigerBeetle PacketSimulatorOptions parameterization; Antithesis 7-prefix test-command algebra | Lane C deep dives; Lane B test_composer docs (observed) |
 | **Adapt (algorithm)** | Molly/LDFI lineage-driven fault targeting; Antithesis causality analysis (rewind + re-explore → bug-probability-over-time); Jepsen history-checking over cassettes | Lane C §4.9; Lane B §5 |
 | **Partner** | None now. Later: dogfood on dharma_swarm (`clients/python` Phase-4 hook already planned); OSS program à la Antithesis etcd once corpus is real | — |
-| **Avoid** | Hypervisor; RL exploration near-term; Stateright/Turmoil/Shuttle as dependencies; agent-eval dashboards; multi-LLM sign-offs as gates; AFL++ linkage (AGPL) | §1 R1–R3 |
+| **Avoid** | Hypervisor; RL exploration near-term; Stateright/Turmoil/Shuttle as dependencies; agent-eval dashboards; multi-LLM sign-offs as gates; AFL++ linkage (AGPL) | §1 REJ-R1–REJ-R3 |
 
 ## 4. Target architecture
 
@@ -99,8 +103,8 @@ Four multipliers on the existing kernel, in dependency order. Each ships indepen
 
 ### Interfaces, schemas, and lifecycle
 
-- **Decision tape schema**: append-only records `(site_id, candidate_set_digest, chosen_index, policy_id)` on a new trace stream; tape digest joins universe identity `(seed, tape_digest)`; replay verifies tape-vs-execution equivalence. Lifecycle: recorded per universe → stored in bundle → consumed by shrinker (M4) and causality (R8) → frozen per trace-format law (new stream, not a v0 format change).
-- **Replay bundle schema**: `{seed, tape_digest, trace_hash, workload_digest, palette_mask, finding_refs}` as NDJSON; bundle alone must reproduce the finding (R4 acceptance). Rollback: evidence store is additive; stdout remains default until gate-proven.
+- **Decision tape schema**: append-only records `(site_id, candidate_set_digest, chosen_index, policy_id)` on a new trace stream; tape digest joins universe identity `(seed, tape_digest)`; replay verifies tape-vs-execution equivalence. Lifecycle: recorded per universe → stored in bundle → consumed by shrinker (M4) and causality (REC-R8) → frozen per trace-format law (new stream, not a v0 format change).
+- **Replay bundle schema**: `{seed, tape_digest, trace_hash, workload_digest, palette_mask, finding_refs}` as NDJSON; bundle alone must reproduce the finding (REC-R4 acceptance). Rollback: evidence store is additive; stdout remains default until gate-proven.
 - **Cassette schema**: `(request_digest, response, recorded_at, provider_meta)`; digest mismatch → UNCHECKED, never CLEAN. Lifecycle: record (live) → replay (sim) → staleness declared in run manifest.
 - **Property/monitors interface**: Stateright-shaped `Expectation::{Always, Sometimes}` + `assert_discovery(path)` re-checkable counterexamples; existing `EndStateOracle` remains the end-of-timeline hook. Failure semantics: any monitor violation = FINDINGS; any monitor silence = UNCHECKED contribution.
 - **Admission interface (typed construct, §5)**: corpus entries accept only `Claim<_, Reproduced, _>` with a `PromotionProof`; all other modalities type-error at the gate.

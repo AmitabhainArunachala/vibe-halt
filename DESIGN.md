@@ -211,6 +211,13 @@ Feature freeze at end of Week 9.
 
 ## 8. Measurable Success Criteria (Week 12)
 
+> **POST-AUDIT STATUS (2026-07-23, CDa).** The 11 items below are a
+> historical/aspirational extended scorecard. The seven ratified criteria in
+> `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md` (mirrored in
+> `docs/governance/ACTIVE_TRACK.yaml`) are canonical. Where this list conflicts
+> with those seven criteria — including throughput and shrink targets — this
+> list is superseded unless a later ratified change says otherwise.
+
 1. Determinism: ≥1,000 consecutive D0 runs produce identical normalized trace hashes across machines.
 2. Every retained failure replays 100/100 times.
 3. Divergence rate on reference D1 workloads is measured and published (<5% target).
@@ -232,6 +239,12 @@ Feature freeze at end of Week 9.
 - **Operator bus factor**: Every session ends with committed state doc.
 
 ## 10. Budget Allocation ($10,000)
+
+> **POST-AUDIT BUDGET STATUS (2026-07-23, CDa).** This allocation is
+> historical/aspirational. The canonical allocation is the table in
+> `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`. Remaining balance is unknown,
+> and no executor has spending authority. C7 must refresh and ratify the
+> balance before any spend or allocation change.
 
 - Senior Rust/distributed-systems review (architecture + midpoint + release): $3,500
 - Independent security + reproducibility review: $1,500

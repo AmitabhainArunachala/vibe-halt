@@ -25,3 +25,11 @@ $ git diff --stat
 $ make gate     # pre-commit, per standing law §3
 == gate battery: ALL PASS ==   (docs-only change; doctor hash
 9ce6199f133f4d3c9dd0da0075e352d2, fingerprint 1684e7c347e645f43a80a30abc46adb7)
+
+# POST-AUDIT ERRATUM (2026-07-23, CDa)
+# The historical output above is preserved exactly, but its recorded
+# "12 insertions" claim is mechanically false.
+$ git diff --numstat 947dba9^ 947dba9 -- DESIGN.md
+11	0	DESIGN.md
+# Actual net insertion count: 11. The historical 12-insertion receipt must not
+# be used as evidence.

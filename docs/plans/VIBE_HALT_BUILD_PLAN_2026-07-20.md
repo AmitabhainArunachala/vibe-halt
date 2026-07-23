@@ -4,6 +4,13 @@ Ratified 2026-07-20. Constraints: $10,000 total, 3 months, Rust primary,
 demonstrable by end of month 3. Acceptance criteria are mirrored in
 `docs/governance/ACTIVE_TRACK.yaml` (track `vibe-halt-core-2026-07`).
 
+**Post-audit canonical status (2026-07-23, CDa):** this file's seven
+week-12 success criteria and Budget table are the canonical criteria and
+allocation. Conflicting historical or aspirational values in `DESIGN.md` are
+superseded. The remaining balance is unknown; no executor has spending
+authority. C7 must refresh and ratify the balance before any spend or
+allocation change.
+
 ## Scope decision (the one that matters)
 
 Three determinism tiers (`docs/specs/DETERMINISM_TIERS.md`): ship Tier 1
@@ -35,6 +42,13 @@ substrate-agnostic so a hypervisor or rr-based backend can slot in later.
 - Tier-2 hermetic sandbox: subprocess universes under cgroups + netns,
   fault-injecting proxy, clock control, **LLM record/replay cassettes**
   (for agent systems the LLM call is the dominant nondeterminism source).
+  **Post-audit disposition:** the shipped boundary is a **Tier-2 D2
+  subprocess MVP; D1 is a future backend**. Environment scrubbing and a
+  parent-side cassette alone do not satisfy D1. Cgroups, netns, fault proxy,
+  clock control, and child-connected cassette replay remain unimplemented
+  plan scope, not partial credit or implied D1 authority. Any stronger claim
+  requires separate ratification and evidence; C7 may not infer it from this
+  plan.
 - Targeted fault scheduling: bias toward state-transition edges and novel
   coverage, replacing v0's uniform draw (`FaultPlan::generate`).
 

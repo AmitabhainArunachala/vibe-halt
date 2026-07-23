@@ -13,26 +13,37 @@ Code that runs against the simulated runtime: virtual clock
 (`crates/vh-core/src/sched.rs`), simulated network/disk (Phase 1).
 
 Guarantee: same root seed ⇒ bit-identical trace hash, forever, on any
-machine with the pinned toolchain. The guarantee is enforced by
-CONSTRUCTION at the D0 boundary (gate 0: the deny-list's structural
-manifest checks plus rustc-enforced lints) and FALSIFIED BY SAMPLING:
-the frozen PRNG reference vectors, the frozen doctor identity, and the
-pairwise replay-agreement gate. A finite replay sample can refute the
-claim, never prove it — reports therefore carry the evidence name
+machine with the pinned toolchain. Gate 0 enforces structural manifest and
+rustc unsafe-code rules plus a syntactic deny-list, while the frozen PRNG
+vectors, doctor identity, and pairwise replay-agreement gate FALSIFY BY
+SAMPLING. The line scanner is not type-aware: generic, trait-object, and
+nested-container formatting/hashing can hide address-bearing values. That
+class remains explicitly UNCHECKED pending a separately reviewed type-aware
+gate, so the whole safe-Rust surface is not claimed deterministic "by
+construction." A finite replay sample can refute the claim, never prove it —
+reports therefore carry the evidence name
 "pairwise replay agreement", not a tier proof (hardening-loop-4
 BLOCKER 2).
 
-## Tier 2 — Hermetic reproducibility (Phase 1-2)
+## Tier 2 — Hermetic reproducibility (D2 MVP shipped; D1 future backend)
 
-Arbitrary code (including AI-generated Python) in a hermetic subprocess
-sandbox: fixed seeds, virtual/faked clock, recorded-replay LLM cassettes,
-fault-injecting network and filesystem interposition.
+Target state: arbitrary code (including AI-generated Python) in a hermetic
+subprocess sandbox with fixed seeds, virtual/faked clock, recorded-replay LLM
+cassettes, and fault-injecting network and filesystem interposition.
 
 Guarantee: the *environment* is deterministic; interpreter scheduling is
 not. So every universe runs twice and trace hashes are compared — the
 divergence detector (`crates/vh-multiverse/src/lib.rs`) reports the
 divergence rate instead of hiding it. A Tier-2 verdict always carries
 that rate.
+
+**Current implementation status (2026-07-23, CDa):** the shipped boundary is
+the **Tier-2 D2 subprocess MVP; D1 is a future backend**. `vh-cli` and
+`vh-sandbox` are the boundary crates; the deterministic kernel crates remain
+pure. The current child process is not connected to cassette replay, and
+environment scrubbing does not virtualize all effects. Those open channels cap
+the present claim at D2. Cgroups, netns, fault proxy, clock control, and a
+child-connected cassette boundary are planned work, not implied D1 coverage.
 
 ## Tier 3 — Hypervisor determinism (explicit non-goal)
 
