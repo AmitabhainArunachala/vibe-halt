@@ -13,7 +13,11 @@ members = [
 ]
 
 # Zero external dependencies by design: the determinism kernel builds
-# offline, hermetically, on any machine with the pinned toolchain.
+# offline, hermetically, on any machine with the pinned toolchain. Gate 0
+# scans every Rust source (boundary needs are per-pattern exemptions, never
+# whole-file skips). Its regex layer rejects explicit address operations but
+# cannot prove type-erased/generic observable flow; that class remains
+# UNCHECKED pending a separately reviewed type-aware gate.
 # Adding a dependency to a kernel crate requires a determinism review
 # (see CLAUDE.md — Determinism Deny-List).
 

@@ -2,14 +2,17 @@
 //!
 //! CI gate #1 lives here: with `check_divergence` on, every universe is run
 //! TWICE — in two non-adjacent passes — and the complete observable results
-//! — trace hash, event count, assertion transcript, always-failures,
-//! sometimes map, and runner lifecycle evidence — must match exactly. A
+//! — including raw end state, transcript, lifecycle/runtime evidence,
+//! schedule policy, plan, and tape identities — must match exactly. A
 //! mismatch means nondeterminism leaked into the kernel or the workload,
 //! and the report says so loudly instead of pretending the run was
 //! reproducible. Agreement is the SAMPLED-FALSIFIER evidence class
 //! ([`ReplayEvidence::PairwiseReplayAgreement`]): it can refute
 //! determinism, never prove it — the deterministic-substrate claim rests
-//! on the D0 boundary (gate 0), not on this sample
+//! on the reviewed D0 boundary, not on this sample. Gate 0 combines semantic
+//! manifest/lint enforcement with a regex defense; generic/type-erased
+//! address formatting remains explicitly UNCHECKED until a type-aware gate
+//! lands, so the regex layer is not described as proof by construction
 //! (hardening-loop-4 BLOCKER 2).
 //!
 //! Evidence integrity: workloads interact with the evidence ledger ONLY
@@ -28,6 +31,7 @@
 #![forbid(unsafe_code)]
 
 pub mod evidence;
+pub mod observation;
 pub mod runtime;
 
 use std::collections::BTreeMap;
@@ -40,6 +44,7 @@ use vh_props::{AlwaysCheck, AlwaysFailure, MergedProperties, Properties};
 use vh_trace::Trace;
 
 pub use evidence::{InjectionOutcome, RuntimeEvidence};
+pub use observation::{CompleteObservationIdentity, EndStateIdentity};
 pub use runtime::{DeliveryNote, DiskError, NodeId, SimRuntime, StepEvent};
 pub use vh_props::{EndState, EndStateOracle};
 
@@ -451,7 +456,10 @@ pub struct UniverseResult {
     lifecycle: UniverseLifecycle,
     fault_plan_digest: Option<String>,
     runtime_evidence: Option<RuntimeEvidence>,
+    schedule_policy: SchedulePolicy,
     decision_tape_digest: Option<String>,
+    end_state_identity: EndStateIdentity,
+    complete_observation_identity: CompleteObservationIdentity,
 }
 
 impl UniverseResult {
@@ -511,6 +519,12 @@ impl UniverseResult {
         self.runtime_evidence.as_ref()
     }
 
+    /// Same-timestamp scheduler policy used for this universe. Policy is an
+    /// observable replay input even when no choice point was reached.
+    pub fn schedule_policy(&self) -> SchedulePolicy {
+        self.schedule_policy
+    }
+
     /// Digest of the sim runtime's scheduler decision tape
     /// (`vh-decision-tape-v1`) — the replay/causality substrate's
     /// identity, bound into the observable result as a SEPARATE stream
@@ -518,6 +532,19 @@ impl UniverseResult {
     /// universe never constructed the runtime. In observable equality.
     pub fn decision_tape_digest(&self) -> Option<&str> {
         self.decision_tape_digest.as_deref()
+    }
+
+    /// Versioned canonical bytes for the exact raw map consumed by end-state
+    /// oracles. This closes the false-negative where two different states
+    /// produced the same passing oracle transcript.
+    pub fn end_state_identity(&self) -> &EndStateIdentity {
+        &self.end_state_identity
+    }
+
+    /// Versioned canonical bytes over every public universe observable.
+    /// This is an injective representation, not a second digest.
+    pub fn complete_observation_identity(&self) -> &CompleteObservationIdentity {
+        &self.complete_observation_identity
     }
 
     /// Two replays are the same run iff EVERY observable agrees. Struct
@@ -549,7 +576,10 @@ impl UniverseResult {
             lifecycle,
             fault_plan_digest,
             runtime_evidence,
+            schedule_policy,
             decision_tape_digest,
+            end_state_identity,
+            complete_observation_identity,
         } = self;
         UniverseObservation {
             universe_id: *universe_id,
@@ -561,7 +591,10 @@ impl UniverseResult {
             lifecycle,
             fault_plan_digest: fault_plan_digest.as_deref(),
             runtime_evidence: runtime_evidence.as_ref(),
+            schedule_policy: *schedule_policy,
             decision_tape_digest: decision_tape_digest.as_deref(),
+            end_state_identity,
+            complete_observation_identity,
         }
     }
 }
@@ -580,7 +613,10 @@ pub struct UniverseObservation<'a> {
     pub lifecycle: &'a UniverseLifecycle,
     pub fault_plan_digest: Option<&'a str>,
     pub runtime_evidence: Option<&'a RuntimeEvidence>,
+    pub schedule_policy: SchedulePolicy,
     pub decision_tape_digest: Option<&'a str>,
+    pub end_state_identity: &'a EndStateIdentity,
+    pub complete_observation_identity: &'a CompleteObservationIdentity,
 }
 
 pub fn run_universe(root_seed: u64, universe_id: u64, workload: &dyn Workload) -> UniverseResult {
@@ -744,20 +780,49 @@ fn run_universe_inner_scheduled(
     } else {
         None
     };
+    let universe_id = ctx.universe_id;
+    let trace_hash = ctx.trace.hash_hex();
+    let trace_events = ctx.trace.len();
+    let always_checks = ctx.props.always_checks().to_vec();
+    let always_failures = ctx.props.always_failures().to_vec();
+    let sometimes = ctx.props.sometimes_map().clone();
+    let lifecycle = UniverseLifecycle {
+        outcome,
+        fault_plan,
+    };
+    let runtime_evidence = ctx.runtime_evidence;
+    let schedule_policy = ctx.schedule_policy;
+    let decision_tape_digest = ctx.decision_tape_digest;
+    let end_state_identity = EndStateIdentity::from_end_state(&ctx.end_state);
+    let complete_observation_identity =
+        observation::complete_identity(observation::ObservationSource {
+            universe_id,
+            trace_hash: &trace_hash,
+            trace_events,
+            always_checks: &always_checks,
+            always_failures: &always_failures,
+            sometimes: &sometimes,
+            lifecycle: &lifecycle,
+            fault_plan_digest: fault_plan_digest.as_deref(),
+            runtime_evidence: runtime_evidence.as_ref(),
+            schedule_policy,
+            decision_tape_digest: decision_tape_digest.as_deref(),
+            end_state_identity: &end_state_identity,
+        });
     UniverseResult {
-        universe_id: ctx.universe_id,
-        trace_hash: ctx.trace.hash_hex(),
-        trace_events: ctx.trace.len(),
-        always_checks: ctx.props.always_checks().to_vec(),
-        always_failures: ctx.props.always_failures().to_vec(),
-        sometimes: ctx.props.sometimes_map().clone(),
-        lifecycle: UniverseLifecycle {
-            outcome,
-            fault_plan,
-        },
+        universe_id,
+        trace_hash,
+        trace_events,
+        always_checks,
+        always_failures,
+        sometimes,
+        lifecycle,
         fault_plan_digest,
-        runtime_evidence: ctx.runtime_evidence,
-        decision_tape_digest: ctx.decision_tape_digest,
+        runtime_evidence,
+        schedule_policy,
+        decision_tape_digest,
+        end_state_identity,
+        complete_observation_identity,
     }
 }
 
