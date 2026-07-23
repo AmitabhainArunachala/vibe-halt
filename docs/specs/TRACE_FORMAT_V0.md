@@ -52,11 +52,19 @@ Two universe runs are **identical** iff their COMPLETE public
    (`crates/vh-multiverse/src/evidence.rs` documents exactly what each
    stage measures). `None` for universes that never constructed the
    runtime — absence vs. presence is itself observable.
+10. same-timestamp schedule policy, including PCT depth when present
+11. decision-tape digest (absence vs. presence included)
+12. `vh-end-state-observation-v1` canonical bytes for the exact ordered map
+    consumed by end-state oracles — passing the same oracle does not erase a
+    raw-state difference
+13. `vh-complete-observation-v1` canonical bytes covering items 1–12
 
 The trace hash alone is NOT identity: a replay can skip or reorder a
 passing invariant while recording an identical trace (hardening-loop-3
-GAP). That is why the transcript of item 4 is ordered and includes
-passes. The kernel comparator is deliberately struct equality
+GAP), or reach a different raw end state while the same coarse oracle passes.
+That is why the transcript of item 4 is ordered and includes passes, and why
+item 12 retains the oracle input. The kernel comparator is deliberately struct
+equality
 (`UniverseResult::observably_equal` in `crates/vh-multiverse/src/lib.rs`),
 so adding an observable field automatically strengthens the divergence
 check; this list must grow with the struct. Enforced by
@@ -64,7 +72,45 @@ check; this list must grow with the struct. Enforced by
 `detector_flags_reordered_passing_check_transcripts`
 (`crates/vh-multiverse/tests/divergence.rs`).
 
+### Canonical observation bytes
+
+Both observation identities use algorithm tag
+`vh-canonical-length-framing-v1`. Their envelope is:
+
+```
+magic[8] · le64(len(algorithm)) · algorithm
+         · le64(len(schema)) · schema
+         · le64(field_count)
+         · repeated(field_name, kind_byte, le64(payload_len), payload)
+```
+
+Nested strings/bytes and sequence items are length-prefixed; integers are
+fixed little-endian u64; booleans/options/enums use explicitly validated tag
+bytes. Maps are encoded in strictly increasing key order. The strict decoder
+rejects malformed UTF-8, duplicate/unknown/reordered fields, duplicate or
+reordered map keys, invalid tags, truncation, and trailing bytes. No `Debug`
+output, host address, locale, float display, panic text, or unordered
+collection iteration feeds this encoding.
+
+The canonical bytes themselves are replay identity, not a new hash. C3's
+persisted evidence schema will apply its separately reviewed cryptographic
+identity to these same bytes. Trace-v0 FNV-1a-128 and the doctor fingerprint
+remain explicitly legacy/internal compatibility checks, never adversarial or
+cross-party content authentication.
+
 ### Changelog
+
+- **2026-07-23 (post-audit C1):** raw oracle-consumed end state, schedule
+  policy, decision-tape digest, and the versioned complete-observation bytes
+  joined `UniverseResult` identity. The doctor fingerprint migrated
+  `vh-doctor-observable-v3` (`1684e7c347e645f43a80a30abc46adb7`) →
+  `vh-doctor-observable-v4` (`669b4cdef41ede292761c5a47cd69f37`). The
+  v4 doctor hashes the complete canonical bytes using the existing
+  legacy/internal trace hasher and an explicit schema-v4 XOR finalizer that
+  preserves the already-published lost-package vector. The finalizer is a
+  bijective compatibility transform, not cryptography or the persisted
+  evidence digest. The trace identity
+  (`9ce6199f133f4d3c9dd0da0075e352d2`, 45 events) is unchanged.
 
 - **2026-07-21 (Phase-1 sim runtime):** observable identity grew item 9
   (runner-owned semantic fault-lifecycle evidence — the runtime, not the
@@ -116,8 +162,10 @@ never a refactor.
 
 ## Known v0 limits (accepted, documented)
 
-- FNV-1a is not cryptographic. Fine for divergence detection between
-  runs we control; v1 moves to SHA-256 when traces become cross-party
-  evidence (e.g., receipts consumed by dharma_swarm gates).
+- FNV-1a is legacy/internal and not cryptographic. It is acceptable for trace
+  compatibility and sampled divergence checks between runs we control; it is
+  not an adversarial content identity. Persisted/cross-party evidence hashes
+  the versioned canonical complete-observation bytes under its separately
+  reviewed algorithm.
 - Traces are in-memory only. Phase 2 adds spill-to-disk JSONL with the
   same hash chain, under `~/.vibe-halt/traces/`.

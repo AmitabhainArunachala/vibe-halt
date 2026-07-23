@@ -1,11 +1,16 @@
 //! vh-trace — the append-only event trace and its chained hash.
 //!
 //! The trace is the spine of vibe-halt: replay, shrinking, divergence
-//! detection, and evidence all hang off it. Two runs of the same universe
-//! are "identical" if and only if their trace hashes match.
+//! detection, and evidence all hang off it. A trace hash identifies only the
+//! ordered trace events. Two universe runs are identical only when their
+//! complete public observations match, including canonical raw end state,
+//! property transcripts, lifecycle/runtime evidence, schedule policy, plan,
+//! and decision tape identity (`vh-complete-observation-v1`).
 //!
-//! Format spec: `docs/specs/TRACE_FORMAT_V0.md`. Hash is chained FNV-1a 128
-//! in v0 (fast, deterministic; NOT cryptographic — v1 upgrades to SHA-256
+//! Format spec: `docs/specs/TRACE_FORMAT_V0.md`. The trace hash is chained
+//! FNV-1a 128 in v0 (fast, deterministic; LEGACY/INTERNAL and NOT
+//! cryptographic — persisted evidence uses a separately reviewed identity
+//! over canonical observation bytes; trace v1 upgrades to SHA-256
 //! when traces become cross-party evidence).
 //!
 //! Framing is length-prefixed, not separator-framed: every field is either

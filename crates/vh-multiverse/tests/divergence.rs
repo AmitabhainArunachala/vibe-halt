@@ -58,6 +58,8 @@ impl Workload for DeterministicDemo {
 /// run of the same universe sees different counter values. This is exactly
 /// the class of bug the detector exists to catch.
 static LEAKY_COUNTER: AtomicU64 = AtomicU64::new(0);
+static RAW_STATE_COUNTER: AtomicU64 = AtomicU64::new(0);
+static ORACLE_LIST_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 struct NondeterministicDemo;
 
@@ -690,6 +692,137 @@ fn detector_flags_reordered_passing_check_transcripts() {
     );
 }
 
+fn passing_oracle(_: &vh_multiverse::EndState) -> Result<(), String> {
+    Ok(())
+}
+
+/// A.1 constructive regression: raw state used by an oracle used to vanish
+/// after judgment. Both replays have the same trace and same passing oracle,
+/// but the unused state value differs and therefore MUST diverge.
+struct RawEndStateDrift;
+
+impl Workload for RawEndStateDrift {
+    fn name(&self) -> &str {
+        "raw-end-state-drift"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &[]).with_oracles(&["passes"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+        vec![vh_multiverse::EndStateOracle {
+            name: "passes",
+            check: passing_oracle,
+        }]
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        let raw = RAW_STATE_COUNTER.fetch_add(1, Ordering::SeqCst);
+        ctx.record("same", "trace");
+        ctx.declare_end("unused-by-passing-oracle", &raw.to_string());
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn detector_flags_different_raw_end_state_behind_same_passing_oracle() {
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 7,
+            universes: count(2),
+            check_divergence: true,
+        },
+        &RawEndStateDrift,
+    );
+    assert_eq!(report.divergent_universes().len(), 2);
+    assert_eq!(report.results()[0].trace_events(), 1);
+    assert_eq!(report.results()[0].always_checks().len(), 1);
+}
+
+/// A newly appearing PASSING oracle is still an observation change; findings
+/// alone cannot represent the complete pass/fail transcript.
+struct PassingOracleListDrift;
+
+impl Workload for PassingOracleListDrift {
+    fn name(&self) -> &str {
+        "passing-oracle-list-drift"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&[], &[]).with_oracles(&["base"])
+    }
+
+    fn end_state_oracles(&self) -> Vec<vh_multiverse::EndStateOracle> {
+        let call = ORACLE_LIST_COUNTER.fetch_add(1, Ordering::SeqCst);
+        let mut oracles = vec![vh_multiverse::EndStateOracle {
+            name: "base",
+            check: passing_oracle,
+        }];
+        if call % 2 == 1 {
+            oracles.push(vh_multiverse::EndStateOracle {
+                name: "new-pass",
+                check: passing_oracle,
+            });
+        }
+        oracles
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        ctx.record("same", "trace");
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn detector_flags_a_new_passing_oracle() {
+    let report = run_multiverse(
+        &MultiverseConfig {
+            root_seed: 7,
+            universes: count(1),
+            check_divergence: true,
+        },
+        &PassingOracleListDrift,
+    );
+    assert_eq!(report.divergent_universes(), &[0]);
+}
+
+struct EndStateInsertionOrder(bool);
+
+impl Workload for EndStateInsertionOrder {
+    fn name(&self) -> &str {
+        "end-state-insertion-order"
+    }
+
+    fn property_contract(&self) -> PropertyContract {
+        PropertyContract::new(&["done"], &[])
+    }
+
+    fn run(&self, ctx: &mut UniverseCtx) -> RunOutcome {
+        if self.0 {
+            ctx.declare_end("a", "1");
+            ctx.declare_end("b", "2");
+        } else {
+            ctx.declare_end("b", "2");
+            ctx.declare_end("a", "1");
+        }
+        ctx.always("done", true, String::new);
+        RunOutcome::Completed
+    }
+}
+
+#[test]
+fn reordered_map_construction_has_identical_canonical_state() {
+    let a = run_universe(7, 0, &EndStateInsertionOrder(true));
+    let b = run_universe(7, 0, &EndStateInsertionOrder(false));
+    assert_eq!(a.end_state_identity(), b.end_state_identity());
+    assert_eq!(
+        a.complete_observation_identity(),
+        b.complete_observation_identity()
+    );
+    assert!(a.observably_equal(&b));
+}
+
 /// The observation view is the compile-time schema ratchet (PR #2
 /// interface request 5021566209): it must agree with the getter surface
 /// field for field, and because both the kernel implementation and this
@@ -709,7 +842,10 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
         lifecycle,
         fault_plan_digest,
         runtime_evidence,
+        schedule_policy,
         decision_tape_digest,
+        end_state_identity,
+        complete_observation_identity,
     } = r.observation();
     assert_eq!(universe_id, r.universe_id());
     assert_eq!(trace_hash, r.trace_hash());
@@ -725,7 +861,13 @@ fn observation_view_matches_the_getter_surface_exhaustively() {
         "runtime evidence exposure must match the getter surface"
     );
     assert_eq!(runtime_evidence, r.runtime_evidence());
+    assert_eq!(schedule_policy, r.schedule_policy());
     assert_eq!(decision_tape_digest, r.decision_tape_digest());
+    assert_eq!(end_state_identity, r.end_state_identity());
+    assert_eq!(
+        complete_observation_identity,
+        r.complete_observation_identity()
+    );
 }
 
 /// End-state oracles fail closed (Phase-2 oracles pulled early,

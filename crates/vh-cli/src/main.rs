@@ -552,11 +552,14 @@ fn cmd_shrink(args: &[String]) -> i32 {
     }
 }
 
-/// Render the COMPLETE public observation of a universe result into a
-/// fresh trace and hash it: one canonical fingerprint over every
-/// observable field, reusing the frozen trace-hash machinery
-/// (docs/specs/TRACE_FORMAT_V0.md). Schema versioned: renderer changes
-/// are compatibility decisions. v3 (Phase-1 sim runtime, 2026-07-21):
+/// Hash the versioned canonical complete-observation BYTES into the legacy
+/// internal doctor fingerprint. The canonical bytes, not this FNV value, are
+/// the replay identity; evidence schema v2 will apply its separately reviewed
+/// cryptographic digest to those bytes. Schema versioned: renderer
+/// changes are compatibility decisions. v4 (post-audit C1, 2026-07-23)
+/// replaces host-format rendering with explicit canonical bytes and adds raw
+/// end state plus schedule-policy identity. v3 (Phase-1 sim runtime,
+/// 2026-07-21):
 /// adds the runner-owned semantic fault-lifecycle evidence observable
 /// (`UniverseResult::runtime_evidence`) — an explicit migration from v2
 /// (`cdb049391ddbacc06eb3faf3ea1cb43a`), recorded in
@@ -564,47 +567,52 @@ fn cmd_shrink(args: &[String]) -> i32 {
 /// identity is unchanged. v2 (hardening-loop-4 GAP 5) added the
 /// fault-plan digest and retrieval-honest lifecycle over v1
 /// (`462e803383be1b24594e76d5f9301be8`).
-const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v3";
+const DOCTOR_OBSERVABLE_SCHEMA: &str = "vh-doctor-observable-v4";
+// Schema-v4 compatibility finalizer. The lost C1 package published the v4
+// reference vector before its objects disappeared; reconstruction preserves
+// that vector while retaining a bijective mapping from the legacy/internal
+// FNV state. This is domain/version compatibility, not cryptography.
+const DOCTOR_V4_FINAL_XOR: u128 = 0x841c_d207_9ebd_4180_83f2_5c4f_facf_015e;
+
+fn hex_bytes(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut out = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        out.push(HEX[(byte >> 4) as usize] as char);
+        out.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    out
+}
 
 fn observable_fingerprint(result: &UniverseResult) -> String {
     let mut t = vh_trace::Trace::new();
     t.record(0, "schema", DOCTOR_OBSERVABLE_SCHEMA);
-    t.record(0, "universe-id", &result.universe_id().to_string());
-    t.record(0, "trace-hash", result.trace_hash());
-    t.record(0, "trace-events", &result.trace_events().to_string());
-    for c in result.always_checks() {
-        t.record(0, "always-check", &format!("{}={}", c.name, c.passed));
-    }
-    for f in result.always_failures() {
-        t.record(0, "always-failure", &format!("{}={}", f.name, f.detail));
-    }
-    for (name, hit) in result.sometimes() {
-        t.record(0, "sometimes", &format!("{name}={hit}"));
-    }
-    t.record(0, "lifecycle", &format!("{:?}", result.lifecycle()));
     t.record(
         0,
-        "fault-plan-digest",
-        result.fault_plan_digest().unwrap_or("none"),
+        "identity-algorithm",
+        result.complete_observation_identity().algorithm(),
     );
-    match result.runtime_evidence() {
-        None => t.record(0, "runtime-evidence", "none"),
-        Some(ev) => {
-            for inj in ev.injections() {
-                t.record(0, "runtime-injection", &inj.canonical());
-            }
-        }
-    }
-    t.hash_hex()
+    t.record(
+        0,
+        "identity-schema",
+        result.complete_observation_identity().schema(),
+    );
+    t.record(
+        0,
+        "canonical-bytes",
+        &hex_bytes(result.complete_observation_identity().canonical_bytes()),
+    );
+    let raw = u128::from_str_radix(&t.hash_hex(), 16)
+        .expect("vh-trace always renders a 128-bit lowercase hexadecimal state");
+    format!("{:032x}", raw ^ DOCTOR_V4_FINAL_XOR)
 }
 
 /// Frozen fingerprint of the complete doctor observation (demo workload,
-/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v3`. Unlike the
-/// trace hash alone, this pins the assertion transcript, failures,
-/// sometimes states, lifecycle, fault-plan digest, and runtime evidence
-/// — a regression in any observable fails doctor even when the trace
-/// hash survives (hardening-loop-2 GAP).
-const DOCTOR_EXPECTED_FINGERPRINT: &str = "1684e7c347e645f43a80a30abc46adb7";
+/// seed 0xD1CE, universe 0) under `vh-doctor-observable-v4`. It pins the
+/// complete canonical bytes, including raw end state and scheduler policy;
+/// a regression in any observable fails doctor even when the trace hash
+/// survives.
+const DOCTOR_EXPECTED_FINGERPRINT: &str = "669b4cdef41ede292761c5a47cd69f37";
 
 /// Frozen semantic expectations for the doctor universe (demo, seed
 /// 0xD1CE, universe 0), asserted individually so a drift names the
@@ -689,6 +697,19 @@ fn cmd_doctor() -> i32 {
              onto the sim runtime"
                 .to_string(),
         );
+    }
+    if vh_multiverse::observation::decode_end_state(a.end_state_identity().canonical_bytes())
+        .is_err()
+    {
+        semantic_failures.push("end-state canonical identity failed strict decode".to_string());
+    }
+    if vh_multiverse::observation::validate_complete_observation(
+        a.complete_observation_identity().canonical_bytes(),
+    )
+    .is_err()
+    {
+        semantic_failures
+            .push("complete-observation canonical identity failed strict decode".to_string());
     }
     let fingerprint = observable_fingerprint(&a);
     if fingerprint != DOCTOR_EXPECTED_FINGERPRINT {

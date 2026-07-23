@@ -32,10 +32,13 @@ layers with different strengths.
     targets alike. A comment mentioning forbid(unsafe_code) satisfies
     nothing here (that spoof was reproduced against the old substring
     check).
-* LINE-REGEX layer — DEFENSE-IN-DEPTH, not semantic enforcement: aliasing
-  and macros can evade any regex. The frozen reference vectors and the
-  divergence gate catch what the regex misses at the behavioral level. A
-  type-aware lint is planned for Phase 2.
+* LINE-REGEX layer — DEFENSE-IN-DEPTH, not semantic enforcement: aliasing,
+  macros, generics, and type erasure can evade any regex. It now rejects
+  explicit raw-pointer/address construction and formatting in kernel crates,
+  but four type-hidden address classes remain UNCHECKED (listed below). The
+  frozen reference vectors and divergence gate sample behavior; neither turns
+  this syntactic layer into a D0 proof. A core-owned type-aware lint is
+  required before restoring any "by construction" claim for those classes.
 
 Fail-closed classification: EVERY .rs file under crates/ is scanned with
 the FULL pattern set unless it is explicitly listed as a boundary FILE or
@@ -45,9 +48,17 @@ production used to silently drop the global-atomic rule
 (hardening-loop-4 BLOCKER); now an adversarial test fixture that needs an
 atomic must register its exact file here.
 
-Known, accepted regex miss (documented): float NaN/precision formatting —
-`format!("{x}")` on an f64 is indistinguishable from other formatting at
-line level.
+Known, accepted regex misses (documented, claim-narrowing):
+
+1. a generic `Debug`/`Hash` value instantiated with an address-bearing type;
+2. a type-erased trait object whose concrete value carries an address;
+3. a nested container whose derived formatter/hasher reaches such a value;
+4. a user-defined formatter/hasher that emits address identity without any
+   raw-pointer token at the call site.
+
+Float NaN/precision formatting is also not distinguishable from other
+formatting at line level. These gaps remain `UNCHECKED` until a separately
+reviewed type-aware gate traces observable value flow.
 """
 
 from __future__ import annotations
@@ -69,16 +80,14 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 
-# Boundary FILES exempt from the line scan (they own argv/exit codes or
-# spawn the CLI binary under test). Everything else under crates/ is
-# scanned — fail closed. Manifest and lint checks still apply to every
-# crate including these files' crates.
-BOUNDARY_FILES = {
-    "crates/vh-cli/src/main.rs",
-    "crates/vh-cli/tests/cli_contract.rs",
-}
-
 ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\b"
+RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
+POINTER_MODULE_PATTERN = r"\b(std|core)::(ptr\b|\{[^}]*\bptr\b)"
+POINTER_API_PATTERN = (
+    r"\b(NonNull|addr_of(_mut)?!|from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b|\.addr\s*\("
+)
+POINTER_TRAIT_PATTERN = r"\b(std|core)::fmt::Pointer\b"
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
@@ -92,6 +101,16 @@ ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\
 #   (hardening-loop-4 BLOCKER). A new adversarial test file must register
 #   itself here explicitly.
 EXEMPT: dict[str, set[str]] = {
+    # CLI process boundary and its black-box contract tests. These used to be
+    # whole-file skips; C1 converts them to exact per-pattern exemptions so
+    # pointer/address and every unrelated rule are scanned.
+    "crates/vh-cli/src/main.rs": {r"std::env", r"std::process", r"\benv!\s*\("},
+    "crates/vh-cli/tests/cli_contract.rs": {
+        r"std::env",
+        r"std::process",
+        r"std::fs",
+        r"\benv!\s*\(",
+    },
     "crates/vh-verify/src/main.rs": {r"std::time", r"Instant::now"},
     "crates/vh-cli/src/workloads/mod.rs": {ATOMIC_PATTERN},
     "crates/vh-multiverse/tests/divergence.rs": {ATOMIC_PATTERN},
@@ -154,6 +173,10 @@ DENYLIST: dict[str, str] = {
     r"std::net": "network I/O in the kernel; simulated network lands in Phase 1",
     r"std::process": "process control in the kernel; subprocess universes live in the Tier-2 sandbox",
     r"\{:p\}": "pointer-address formatting; addresses vary per run (ASLR)",
+    RAW_POINTER_TYPE_PATTERN: "raw-pointer types/casts can expose allocator or ASLR identity",
+    POINTER_MODULE_PATTERN: "pointer construction/address operations are not deterministic observables",
+    POINTER_API_PATTERN: "pointer construction/address APIs are forbidden in kernel crates",
+    POINTER_TRAIT_PATTERN: "pointer formatting exposes host addresses",
     r"\b(global_)?asm!": "inline assembly escape hatch",
     # Root-module aliasing defeats every literal std::<mod> rule below
     # (`use std as host; host::time::Instant::now()`), so alias the root
@@ -191,6 +214,29 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("use std as host;", True, True),
     ("extern crate std as host;", True, True),
     ("static LEAK: AtomicU64 = AtomicU64::new(0);", True, True),
+    ("let p = &value as * const u64;", True, True),
+    ("let p = &raw mut value;", True, True),
+    ("let p = std::ptr::from_ref(&value);", True, True),
+    ("let p = core::ptr::addr_of!(value);", True, True),
+    ("let p = NonNull::new(raw);", True, True),
+    ("let n = p.expose_provenance();", True, True),
+    ("let n = p.addr();", True, True),
+    ("std::fmt::Pointer::fmt(&p, f)", True, True),
+    ('format!("{:?}", &value as *const u64)', True, True),
+    ('format!("{:p}", &value)', True, True),
+    ("let n = &value as *const u8 as usize;", True, True),
+    ("use core::{mem, ptr};", True, True),
+    ("use std::ptr;", True, True),
+    ("let p = Box::into_raw(value);", True, True),
+    ("let p = values.as_ptr();", True, True),
+    ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
+    ("let erased: &dyn Debug = &value;", False, False),
+    ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
+    ("impl Hash for Wrapper { /* type-hidden address */ }", False, False),
+    ("let n = value as usize;", False, False),
+    ('format!("{:?}", 1_u64)', False, False),
+    ("let values = BTreeMap::new();", False, False),
+    ("let x = std::mem::size_of::<u64>();", False, False),
     ("let x: f64 = 0.5;", False, False),
     ("use std::collections::BTreeMap;", False, False),
     ("use std::sync::atomic::Ordering;", False, False),
@@ -378,6 +424,28 @@ ROOT_SELF_TEST: list[tuple[str, str, bool]] = [
     (
         "missing unsafe_code forbid",
         '[workspace]\nmembers = ["crates/vh-core"]\n',
+        True,
+    ),
+    (
+        "missing member list leaves the scan root unbound",
+        '[workspace]\n[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+        True,
+    ),
+    (
+        "empty member list leaves the scan root unbound",
+        '[workspace]\nmembers = []\n[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+        True,
+    ),
+    (
+        "duplicate member defeats one-package-one-scan accounting",
+        '[workspace]\nmembers = ["crates/vh-core", "crates/vh-core"]\n'
+        '[workspace.lints.rust]\nunsafe_code = "forbid"\n',
+        True,
+    ),
+    (
+        "normalized member path escapes crates",
+        '[workspace]\nmembers = ["crates/../support/helper"]\n'
+        '[workspace.lints.rust]\nunsafe_code = "forbid"\n',
         True,
     ),
 ]
@@ -579,13 +647,26 @@ def validate_root_data(data: dict) -> list[str]:
             f'{rel}: [workspace.lints.rust] must set unsafe_code = "forbid" '
             "(the rustc-enforced semantic layer)"
         )
-    for member in workspace.get("members") or []:
+    members = workspace.get("members")
+    if not isinstance(members, list) or not members:
+        violations.append(
+            f"{rel}: workspace members must be a nonempty explicit list so "
+            "every compiled package root is scanned"
+        )
+        members = []
+    seen_members: set[str] = set()
+    for member in members:
         if not isinstance(member, str) or any(c in member for c in "*?["):
             violations.append(
                 f"{rel}: workspace member {member!r} is a glob — members must "
                 "be enumerated exactly so every compiled package root is scanned"
             )
             continue
+        if member in seen_members:
+            violations.append(
+                f"{rel}: duplicate workspace member {member!r} defeats exact scan accounting"
+            )
+        seen_members.add(member)
         if not _resolves_inside(REPO, member, REPO / "crates"):
             violations.append(
                 f"{rel}: workspace member {member!r} lives outside crates/ — "
@@ -776,6 +857,17 @@ def self_test() -> int:
         ("crates/vh-sandbox/src/tests.rs", "Instant::now()", True),
         ("crates/vh-cli/src/sandbox_demo.rs", "std::fs::create_dir_all(&p)?;", False),
         ("crates/vh-cli/src/sandbox_demo.rs", "let m: HashMap<u8, u8> = HashMap::new();", True),
+        ("crates/vh-cli/src/main.rs", "let args = std::env::args();", False),
+        ("crates/vh-cli/src/main.rs", "std::process::exit(1);", False),
+        ("crates/vh-cli/src/main.rs", "let p = &x as *const u64;", True),
+        ("crates/vh-cli/tests/cli_contract.rs", "Command::new(env!(\"CARGO_BIN_EXE_vh\"));", False),
+        ("crates/vh-cli/tests/cli_contract.rs", "std::env::temp_dir();", False),
+        ("crates/vh-cli/tests/cli_contract.rs", "std::fs::read(path);", False),
+        ("crates/vh-cli/tests/cli_contract.rs", "let p: *mut u8 = raw;", True),
+        ("crates/vh-core/src/lib.rs", "let p = &x as *const u64;", True),
+        ("crates/vh-core/src/lib.rs", "let p = std::ptr::from_ref(&x);", True),
+        ("crates/vh-core/src/lib.rs", "let p = NonNull::new(raw);", True),
+        ("crates/vh-core/src/lib.rs", "fn show<T: Debug>(x: T) { observe(x); }", False),
     ]
     for rel, sample, expected in boundary_cases:
         hit = any(re.search(p, sample) for p in patterns_for(rel))
@@ -825,13 +917,9 @@ def main() -> int:
     violations.extend(check_lockfile(expected_versions))
 
     scanned = 0
-    skipped_boundary = 0
     for crate_dir in crates:
         for path in sorted(crate_dir.rglob("*.rs")):
             rel = str(path.relative_to(REPO))
-            if rel in BOUNDARY_FILES:
-                skipped_boundary += 1
-                continue
             pats = patterns_for(rel)
             scanned += 1
             for lineno, line in enumerate(
@@ -851,7 +939,7 @@ def main() -> int:
 
     print(
         f"determinism deny-list: PASS ({len(crates)} crates, {scanned} files scanned, "
-        f"{skipped_boundary} declared boundary files skipped; manifests "
+        "no whole-file skips; manifests "
         "tomllib-validated hermetic with name+version-bound deps and "
         "crate-confined build/target paths, members bound to crates/, no "
         "[patch]/[replace]/.cargo-config, lockfile name+version-bound "
