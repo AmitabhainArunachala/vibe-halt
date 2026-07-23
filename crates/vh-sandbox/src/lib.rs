@@ -15,12 +15,14 @@
 //! artifacts and input files).
 //!
 //! Known, cited scope limits (not silently closed):
-//! - stdin writes are not themselves deadline-bounded — a child that
-//!   never reads stdin and never exits can still block the write inside
-//!   `run_once` past the configured deadline. Tracked here, not hidden.
 //! - "initial filesystem/fixtures" binding is the freshly created empty
 //!   workspace case only; fixture-seeded workspaces are a later package's
 //!   concern (C6 reference profile).
+//! - executable bytes are observed immediately before spawn. Because this
+//!   safe runner does not own a hostile-code filesystem/loader boundary,
+//!   replacement in the remaining observation-to-exec race stays covered
+//!   by the open filesystem/loader capability channels rather than being
+//!   misrepresented as D1 closure.
 //! - `CapabilityChannel::WallClock`/`MonotonicClock`/etc. staying `Open`
 //!   for every run is not a bug: this package implements no channel
 //!   interposition. That is C7's (separately authorized, unsafe-helper)
@@ -38,7 +40,7 @@ pub use capability::{
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use vh_trace::Trace;
@@ -431,8 +433,17 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
     std::fs::create_dir_all(workspace).map_err(SandboxError::Io)?;
     let io_dir = workspace.join(".vh-sandbox-io");
     std::fs::create_dir_all(&io_dir).map_err(SandboxError::Io)?;
+    let stdin_path = io_dir.join("stdin.raw");
     let stdout_path = io_dir.join("stdout.raw");
     let stderr_path = io_dir.join("stderr.raw");
+    // Materialize stdin before the execution deadline starts, then hand the
+    // child a read-only regular-file descriptor. A controller-side
+    // `ChildStdin::write_all` can block forever when a child never drains a
+    // full pipe, preventing the deadline loop from ever running. A prepared
+    // regular file preserves exact input bytes and EOF without any live
+    // controller write for the child to backpressure.
+    std::fs::write(&stdin_path, &spec.stdin).map_err(SandboxError::Io)?;
+    let stdin_file = std::fs::File::open(&stdin_path).map_err(SandboxError::Io)?;
     // Redirect to files rather than piping stdout/stderr: reading two
     // live pipes concurrently without deadlocking needs either OS-level
     // threads (denied even on this boundary crate — parallelism stays at
@@ -443,18 +454,23 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
     let stdout_file = std::fs::File::create(&stdout_path).map_err(SandboxError::Io)?;
     let stderr_file = std::fs::File::create(&stderr_path).map_err(SandboxError::Io)?;
 
+    // Observe executable bytes before spawn, not after the child has had an
+    // opportunity to replace its own path. This binds the run to the
+    // controller-observed launch input. Filesystem and loader channels
+    // remain Open because safe Rust cannot eliminate the final
+    // observation-to-exec race against a hostile same-user writer.
+    let executable = resolve_executable_identity(&spec.argv[0]);
     let started = Instant::now();
     let mut cmd = Command::new(&spec.argv[0]);
     cmd.args(&spec.argv[1..])
         .current_dir(workspace)
         .env_clear()
         .envs(spec.env.iter())
-        .stdin(Stdio::piped())
+        .stdin(Stdio::from(stdin_file))
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
 
-    let (termination, process_tree) =
-        execute_bounded(&mut cmd, &spec.stdin, &spec.budget, started)?;
+    let (termination, process_tree) = execute_bounded(&mut cmd, &spec.budget, started)?;
     let wall_time = started.elapsed();
 
     let no_process_ran = matches!(termination, TerminationOutcome::SpawnFailed { .. });
@@ -490,8 +506,6 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
         BTreeMap::new()
     };
 
-    let executable = resolve_executable_identity(&spec.argv[0]);
-
     Ok(RunRecord {
         spec_identity: spec.identity(),
         target_os: TARGET_OS,
@@ -515,16 +529,15 @@ fn empty_stream() -> StreamObservation {
     }
 }
 
-/// Spawn, write stdin, and wait for the direct child with an explicit
-/// deadline. No unbounded wait remains: on expiry, stdin is closed, the
-/// child is killed, and the direct child is waited on (reaped) before
-/// returning. Descendant/process-group cleanup cannot be proven this way
-/// in safe Rust; that stays represented by
+/// Spawn and wait for the direct child with an explicit deadline. Stdin is
+/// already a prepared regular-file descriptor, so no live input write can
+/// block entry into this loop. On expiry, the child is killed and the direct
+/// child is waited on (reaped) before returning. Descendant/process-group
+/// cleanup cannot be proven this way in safe Rust; that stays represented by
 /// `CapabilityChannel::ThreadsForksExecDescendants` remaining `Open` on
 /// the receipt, not by anything returned here.
 fn execute_bounded(
     cmd: &mut Command,
-    stdin_bytes: &[u8],
     budget: &SandboxBudget,
     started: Instant,
 ) -> Result<(TerminationOutcome, ProcessTreeState), SandboxError> {
@@ -539,13 +552,6 @@ fn execute_bounded(
             ))
         }
     };
-
-    write_stdin_best_effort(&mut child, stdin_bytes)?;
-    // Close stdin so a child waiting on EOF is never blocked by the
-    // controller. This does not by itself prove the pipe channel is
-    // fully closed end-to-end (inherited descriptors stay a separate,
-    // always-open channel).
-    let _ = child.stdin.take();
 
     loop {
         match child.try_wait().map_err(SandboxError::Io)? {
@@ -578,26 +584,6 @@ fn execute_bounded(
                 std::hint::spin_loop();
             }
         }
-    }
-}
-
-fn write_stdin_best_effort(child: &mut Child, stdin_bytes: &[u8]) -> Result<(), SandboxError> {
-    if stdin_bytes.is_empty() {
-        return Ok(());
-    }
-    use std::io::Write;
-    match child.stdin.as_mut() {
-        Some(stdin) => {
-            // Best-effort: a child that exits early after only partially
-            // (or never) reading stdin causes a write error here (broken
-            // pipe). That is not itself a termination classification —
-            // the wait loop observes the real outcome, not this write.
-            let _ = stdin.write_all(stdin_bytes);
-            Ok(())
-        }
-        None => Err(SandboxError::Execution(
-            "child stdin was not available despite being piped".into(),
-        )),
     }
 }
 
@@ -664,14 +650,21 @@ fn read_bounded_stream(path: &Path, cap: usize) -> Result<StreamObservation, San
     })
 }
 
-/// Resolve `argv[0]` to a concrete file and hash its bytes when the
-/// controller can do so without reimplementing platform `PATH` search
-/// (i.e. the caller already gave a path containing a separator). A bare
-/// command name relying on `PATH` search stays honestly `Unresolved`
-/// rather than guessing which file the OS actually executed.
+/// Resolve `argv[0]` to a concrete file and hash its bytes immediately
+/// before spawn when the controller can do so without reimplementing
+/// platform `PATH` search (i.e. the caller already gave a path containing
+/// a separator). A bare command name relying on `PATH` search stays
+/// honestly `Unresolved` rather than guessing which file the OS will
+/// execute. Filesystem and loader capability channels remain Open: this
+/// safe observation is not a hostile-race-proof `fexecve` equivalent.
 fn resolve_executable_identity(argv0: &str) -> ExecutableIdentity {
-    if argv0.contains('/') {
-        match std::fs::read(argv0) {
+    let path = Path::new(argv0);
+    // `components().count() > 1` covers explicit relative paths (`./tool`,
+    // `dir/tool`) as well as platform-native absolute paths. A literal `/`
+    // check would incorrectly treat `C:\...\tool.exe` as a bare name on
+    // Windows.
+    if path.is_absolute() || path.components().count() > 1 {
+        match std::fs::read(path) {
             Ok(bytes) => ExecutableIdentity::Resolved {
                 path: argv0.to_string(),
                 digest: fnv_hex(&bytes),

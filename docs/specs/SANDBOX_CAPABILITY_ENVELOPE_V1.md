@@ -94,10 +94,15 @@ represented by `CapabilityChannel::ThreadsForksExecDescendants` remaining
 ## No unbounded wait, bounded output
 
 Every `run_once` execution carries an explicit `SandboxBudget` (deadline +
-per-stream output cap, `crates/vh-sandbox/src/lib.rs`). `execute_bounded`
-polls `Child::try_wait` against the deadline; on expiry it kills and waits
-on the direct child (no unbounded wait) and returns
-`TerminationOutcome::TimedOut`. Because `std::thread` (needed for
+per-stream output cap, `crates/vh-sandbox/src/lib.rs`). `run_once`
+materializes the exact stdin bytes into a controller-prepared regular file
+before the execution deadline starts and gives the child a read-only
+descriptor for that file. There is no live controller-side pipe write for a
+child that never reads stdin to backpressure, so input delivery cannot block
+entry into the deadline loop. `execute_bounded` polls `Child::try_wait`
+against the deadline; on expiry it kills and waits on the direct child (no
+unbounded wait) and returns `TerminationOutcome::TimedOut`. Because
+`std::thread` (needed for
 `thread::sleep`, and for the read side of Rust's own two-pipe
 `wait_with_output` pattern) is denied even on this boundary crate, and the
 platform-specific non-blocking-fd module is not part of this crate's
@@ -118,12 +123,17 @@ error.
 `RunRecord::identity()` binds: the spec identity (argv/stdin/env/declared
 artifacts/declared input files/budget/cassette+supervisor identity slots),
 compile-time target OS/arch (`cfg!`-derived, not a live `std::env` probe),
-resolved executable identity (content-hashed when `argv[0]` is a path the
-controller can read directly; honestly `Unresolved` for a bare command name
-relying on `PATH` search — this crate does not reimplement platform `PATH`
-resolution), exact termination, process-tree state, both stream
+resolved executable identity (content-hashed immediately before spawn when
+`argv[0]` is a path the controller can read directly; honestly `Unresolved`
+for a bare command name relying on `PATH` search — this crate does not
+reimplement platform `PATH` resolution), exact termination, process-tree
+state, both stream
 observations, declared-artifact digests, and the full capability receipt.
 `wall_time` stays boundary telemetry, excluded from identity as before.
+The safe runner cannot make its final observation-to-exec step atomic
+against a hostile same-user path replacement; filesystem and loader
+channels therefore remain `Open`, and the receipt never promotes this
+pre-spawn binding to D1 closure.
 
 ## Divergence evidence
 
@@ -143,10 +153,6 @@ rather than reinventing aggregation.
 - Every channel above stays `Open` on every receipt this package produces;
   closing any of them is C7's (separately authorized, unsafe-helper)
   job.
-- Stdin writes are not themselves deadline-bounded: a child that never
-  reads stdin and never exits can still block `run_once`'s write past the
-  configured deadline (`crates/vh-sandbox/src/lib.rs`,
-  `write_stdin_best_effort`).
 - "Initial filesystem/fixtures" binding is the freshly created empty
   workspace case only; fixture-seeded workspaces are C6's reference-profile
   concern.

@@ -261,6 +261,33 @@ fn no_unbounded_wait_a_hung_child_is_killed_and_reaped_at_the_deadline() {
 }
 
 #[test]
+fn deadline_still_fires_when_child_never_reads_large_stdin() {
+    let root = temp_dir("timeout-large-stdin");
+    // Four MiB is intentionally well above ordinary anonymous-pipe
+    // capacity. The pre-fix controller called `ChildStdin::write_all`
+    // before entering its deadline loop, so this child could backpressure
+    // that write forever. The prepared-file handoff has no live writer to
+    // block: the deadline must remain observable and reap the child.
+    let spec = sh_spec("sleep 60")
+        .with_stdin(vec![b'x'; 4 * 1024 * 1024])
+        .with_budget(
+            SandboxBudget::new(
+                Duration::from_millis(150),
+                SandboxBudget::DEFAULT_MAX_OUTPUT_BYTES,
+            )
+            .unwrap(),
+        );
+    let record = run_once(&spec, &root).unwrap();
+    assert_eq!(record.termination, TerminationOutcome::TimedOut);
+    assert_eq!(record.process_tree, ProcessTreeState::DirectChildReaped);
+    assert!(
+        record.wall_time < Duration::from_secs(5),
+        "large unread stdin bypassed the controller deadline: {:?}",
+        record.wall_time
+    );
+}
+
+#[test]
 fn bounded_output_truncates_and_flags_but_never_hides_the_true_length() {
     let root = temp_dir("bounded-output");
     let cap = 1024usize;
@@ -311,6 +338,54 @@ fn executable_identity_is_resolved_for_absolute_paths_and_open_for_bare_names() 
         ExecutableIdentity::Unresolved {
             argv0: "true".into()
         }
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn executable_identity_binds_pre_spawn_bytes_when_child_replaces_its_path() {
+    let root = temp_dir("executable-replacement");
+    let script_path = root.join("runner.sh");
+
+    // Produce the executable through the already-admitted subprocess
+    // boundary rather than adding direct filesystem I/O to this test
+    // module. The script proves it executed the original body by printing
+    // "original", then replaces its own path before exit.
+    let setup = sh_spec(
+        "printf '%s\\n' '#!/bin/sh' 'printf replaced > \"$0\"' \
+         'printf original' > runner.sh; chmod +x runner.sh",
+    )
+    .declare_artifact("runner.sh")
+    .unwrap();
+    let setup_record = run_once(&setup, &root).unwrap();
+    let original_digest = setup_record
+        .artifacts
+        .get("runner.sh")
+        .expect("setup produced the executable")
+        .clone();
+
+    let spec = SandboxSpec::new(vec![script_path.display().to_string()]).unwrap();
+    let record = run_once(&spec, &root.join("execution")).unwrap();
+    assert_eq!(record.termination, TerminationOutcome::Exited(0));
+    assert_eq!(record.stdout.digest, fnv_hex(b"original"));
+    match &record.executable {
+        ExecutableIdentity::Resolved { path, digest } => {
+            assert_eq!(path, &script_path.display().to_string());
+            assert_eq!(
+                digest, &original_digest,
+                "the run identity must bind the bytes observed for launch, not replacement bytes read after exit"
+            );
+        }
+        other => panic!("expected pre-spawn Resolved identity, got {other:?}"),
+    }
+
+    // Independently prove the executable path now carries different bytes.
+    let inspect = sh_spec("true").declare_artifact("runner.sh").unwrap();
+    let replaced_record = run_once(&inspect, &root).unwrap();
+    assert_ne!(
+        replaced_record.artifacts.get("runner.sh"),
+        Some(&original_digest),
+        "adversarial fixture did not replace its executable path"
     );
 }
 

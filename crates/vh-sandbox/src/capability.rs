@@ -350,7 +350,10 @@ impl ProcessTreeState {
 /// What the controller could bind the executed program's identity to.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ExecutableIdentity {
-    /// `argv[0]` resolved to a concrete file whose bytes were hashed.
+    /// `argv[0]` resolved to a concrete file whose bytes were hashed
+    /// immediately before spawn. The filesystem and loader channels remain
+    /// open because the safe runner cannot make the final
+    /// observation-to-exec step atomic against a hostile same-user writer.
     Resolved { path: String, digest: String },
     /// `argv[0]` relied on `PATH` search (or otherwise could not be
     /// resolved to a concrete file by the controller without
