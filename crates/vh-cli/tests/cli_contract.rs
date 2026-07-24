@@ -338,6 +338,187 @@ fn out_conflicts_with_single_universe_replay() {
         "missing typed diagnostic:\n{stderr}"
     );
 }
+
+// ---- dirty --out refusal (C3-honesty; PR #19 thread PRRT_kwDOTdlCIM6S0Hr9) ----
+
+/// Recursive (relative-path, bytes) snapshot, sorted, for byte-identity
+/// proofs across a refused write.
+fn dir_snapshot(root: &std::path::Path) -> Vec<(String, Vec<u8>)> {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<(String, Vec<u8>)>) {
+        for entry in std::fs::read_dir(dir).expect("read_dir") {
+            let path = entry.expect("dir entry").path();
+            if path.is_dir() {
+                walk(root, &path, out);
+            } else {
+                let rel = path
+                    .strip_prefix(root)
+                    .expect("under root")
+                    .to_string_lossy()
+                    .into_owned();
+                out.push((rel, std::fs::read(&path).expect("read file")));
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out);
+    out.sort();
+    out
+}
+
+/// PR #19's exact stale-finding mechanism, pinned: run once into DIR
+/// (manifest + finding bundles written), run again into the SAME dir
+/// with a different seed (different trace hashes, so different finding
+/// ids). Pre-repair the second run overwrote `run.ndjson` in place and
+/// the first run's `findings/<id>/` bundles survived as orphans the
+/// fresh manifest no longer listed. The second run must refuse (exit 2)
+/// before writing anything, leaving the first run's receipts
+/// byte-identical.
+#[test]
+fn rerun_into_same_out_dir_refuses_instead_of_orphaning() {
+    let tmp = unique_tmp("dirty-rerun");
+    let out = tmp.join("receipts");
+    let (code, stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1, "first run must exit 1 with findings:\n{stdout}");
+    let before = dir_snapshot(&out);
+    let paths: Vec<&str> = before.iter().map(|(p, _)| p.as_str()).collect();
+    assert!(
+        paths.iter().any(|p| p.starts_with("findings/")),
+        "first run must write at least one finding bundle: {paths:?}"
+    );
+
+    let (code, _, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xBEEF",
+        "--universes",
+        "100",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code, 2,
+        "rerun into a non-empty --out must refuse with exit 2, never overwrite:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("is not empty"),
+        "missing typed refusal diagnostic:\n{stderr}"
+    );
+    assert_eq!(
+        dir_snapshot(&out),
+        before,
+        "refusal must leave every existing byte untouched"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// Refusal is fail-closed and write-free for arbitrary operator
+/// directories, not only prior receipt dirs: pre-existing user files are
+/// byte-identical after the refusal, no `run.ndjson` appears, and an
+/// --out that is a plain FILE is an error (exit 2), never a write.
+#[test]
+fn out_refuses_non_empty_directory_before_any_write() {
+    let tmp = unique_tmp("dirty-out");
+    let out = tmp.join("keep");
+    std::fs::create_dir_all(out.join("findings").join("u9-stale00cafe")).expect("mk stale");
+    std::fs::write(out.join("precious.txt"), b"operator bytes\n").expect("write precious");
+    std::fs::write(
+        out.join("findings")
+            .join("u9-stale00cafe")
+            .join("finding.ndjson"),
+        b"stale bundle\n",
+    )
+    .expect("write stale");
+    let before = dir_snapshot(&out);
+
+    let (code, _, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code, 2,
+        "non-empty --out must refuse with exit 2, never the run verdict:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("is not empty"),
+        "missing typed refusal diagnostic:\n{stderr}"
+    );
+    assert!(
+        !out.join("run.ndjson").exists(),
+        "refusal must not write a manifest"
+    );
+    assert_eq!(
+        dir_snapshot(&out),
+        before,
+        "refusal must not touch existing files"
+    );
+
+    let file_out = tmp.join("not-a-dir");
+    std::fs::write(&file_out, b"do not replace\n").expect("write file");
+    let (code, _, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--out",
+        file_out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2, "--out at a plain file must fail closed:\n{stderr}");
+    assert_eq!(
+        std::fs::read(&file_out).expect("reread"),
+        b"do not replace\n",
+        "the file at --out must be untouched"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// A caller-created EMPTY directory is accepted — refusal is about
+/// non-empty contents, not prior existence.
+#[test]
+fn out_accepts_existing_empty_directory() {
+    let tmp = unique_tmp("empty-out");
+    let out = tmp.join("empty");
+    std::fs::create_dir_all(&out).expect("mk empty");
+    let (code, stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 1, "empty existing --out must be accepted:\n{stdout}");
+    assert!(
+        out.join("run.ndjson").exists(),
+        "receipts must be written into the empty directory"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 // ---- boundary-side shrink wiring (convergence C5, audit R1) ----
 
 /// The charter's C5 acceptance, pinned: `vh run --workload demo-buggy

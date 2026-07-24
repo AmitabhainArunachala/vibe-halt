@@ -81,13 +81,30 @@ fn finding_universes(report: &MultiverseReport) -> Vec<u64> {
 
 /// Write `run.ndjson` + `findings/<id>/finding.ndjson` under `dir`.
 /// Returns a one-line summary for stdout. Fails closed: any I/O error is
-/// an error, never a silent partial receipt.
+/// an error, never a silent partial receipt. A non-empty `dir` is
+/// refused BEFORE any write (C3-honesty; PR #19 thread
+/// PRRT_kwDOTdlCIM6S0Hr9): overwriting `run.ndjson` in place would leave
+/// a prior run's `findings/<id>/` bundles behind as orphans the fresh
+/// manifest no longer lists. Refusal only — existing contents are never
+/// deleted, cleared, renamed, or replaced.
 pub fn write_run_receipts(
     dir: &str,
     report: &MultiverseReport,
     id: &RunIdentity<'_>,
 ) -> Result<String, String> {
     let base = Path::new(dir);
+    if base.exists() {
+        let mut entries =
+            fs::read_dir(base).map_err(|e| format!("cannot inspect --out {dir}: {e}"))?;
+        if entries.next().is_some() {
+            return Err(format!(
+                "--out {dir} is not empty; refusing to write receipts into a non-empty \
+                 directory (a prior run's findings/ bundles would survive as orphans \
+                 the fresh manifest no longer lists) — point --out at a new or empty \
+                 directory; existing contents were not touched"
+            ));
+        }
+    }
     fs::create_dir_all(base).map_err(|e| format!("cannot create {dir}: {e}"))?;
 
     let findings = finding_universes(report);
