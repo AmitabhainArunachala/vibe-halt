@@ -81,8 +81,11 @@ v0 resource bound; --universes conflicts with --universe.
 manifest, per-universe outcomes, finding index) and one self-contained
 replay bundle per finding under DIR/findings/. stdout and exit codes are
 unchanged; receipts are written only where --out points (conventionally
-under ~/.vibe-halt/, never the repo). --out applies to multiverse runs
-only (conflicts with --universe).
+under ~/.vibe-halt/, never the repo). DIR must be new or empty: a
+non-empty DIR is refused fail-closed (exit 2) before anything is written
+— a prior run's findings/ bundles would otherwise survive as orphans —
+and existing contents are never touched. --out applies to multiverse
+runs only (conflicts with --universe).
 
 `vh replay-bundle PATH` re-executes a finding bundle (a finding.ndjson
 file or its directory) with no other repo state: exit 0 iff two replays
