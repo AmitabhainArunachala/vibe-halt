@@ -11,6 +11,15 @@
 | `repro` | `vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universe 0` |
 | `gate` | `corpus recall gate: corpus-transient-fatal-abort` in `scripts/gate.sh` |
 | `tier` | Tier 1 (engine-owned workload on the sim runtime) |
+| `root_seed` | `0xD1CE` |
+| `universe_budget` | 100 |
+| `oracle_contract` | `required_oracles=[session_complete] required_always=[] required_sometimes=[session_aborted]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
+| `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `8b20a2ce772578b9a826220b865f64cc` |
+| `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `counts` | always-failures **79**; clean **21**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
+| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `control` | fault-free/harmless universes must PASS: clean = 21 exactly (>=1) at the pinned budget; pinned clean universe 8: `vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universe 8` -> no finding, exit 3 (single-replay UNCHECKED policy) |
+| `required_facts` | every accepted task must reach completion; the `session_aborted` sometimes-property must be reached within the budget (`sometimes unreached` pinned 0), so the abort window is provably exercised. |
 
 ## Provenance (the real bug)
 
@@ -44,3 +53,29 @@ names every abandoned task.
 
 Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
 (corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+
+## Contract freeze (K1, 2026-07-25)
+
+All counts measured twice consecutively at engine head `ca6b37f`,
+byte-identical summaries both passes (corpus/** edits never touch
+the engine, so this entry's PR does not move them):
+
+```
+$ vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universes 100
+always-failures: 79 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 21
+verdict: FINDINGS   (exit 1)
+```
+
+Failing-repro receipt (universe 0): trace hash
+`66d50c1e004c48b6ab664a302feceae5` (29 events), fault-plan digest
+`8b20a2ce772578b9a826220b865f64cc` (`vh-fault-plan-v1`), exit 1.
+Clean-control receipt (universe 8): trace hash
+`160acd3043b811e77506b945466151e6` (45 events), fault-plan digest
+`4c7d200e07670f2eb9e0ae8788f9961b`, exit 3 (`UNCHECKED`, no finding).
+
+Drift law: a future measurement differing from these pins — in
+EITHER direction — is a finding to explain and re-pin with its
+semantic cause, never a tolerance band. A count that is not
+identical across two consecutive runs at one head makes this
+entry's claim UNCHECKED and files an identity defect
+(controller kill rule).

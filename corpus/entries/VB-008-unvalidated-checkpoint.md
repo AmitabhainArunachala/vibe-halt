@@ -11,6 +11,15 @@
 | `repro` | `vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universe 0` |
 | `gate` | `corpus recall gate: corpus-unvalidated-checkpoint` in `scripts/gate.sh` |
 | `tier` | Tier 1 (engine-owned workload on the sim runtime) |
+| `root_seed` | `0xD1CE` |
+| `universe_budget` | 100 |
+| `oracle_contract` | `required_oracles=[checkpoint_recoverable] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
+| `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `3ea7abf11207f577e931a3d8444c4266` |
+| `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `counts` | always-failures **96**; clean **4**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
+| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `control` | fault-free/harmless universes must PASS: clean = 4 exactly (>=1) at the pinned budget; pinned clean universe 17: `vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universe 17` -> no finding, exit 3 (single-replay UNCHECKED policy) |
+| `required_facts` | the oracle independently re-derives checkpoint membership from the raw durable dump plus each checkpoint's expected framed record; it never trusts a workload-precomputed `recovered:<ckpt>` Boolean (PR #32). |
 
 ## Provenance (the real bug)
 
@@ -42,3 +51,29 @@ unrecoverable checkpoint.
 
 Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
 (corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+
+## Contract freeze (K1, 2026-07-25)
+
+All counts measured twice consecutively at engine head `ca6b37f`,
+byte-identical summaries both passes (corpus/** edits never touch
+the engine, so this entry's PR does not move them):
+
+```
+$ vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universes 100
+always-failures: 96 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 4
+verdict: FINDINGS   (exit 1)
+```
+
+Failing-repro receipt (universe 0): trace hash
+`cc9068874514d123d0bb370bb3c11ce4` (31 events), fault-plan digest
+`3ea7abf11207f577e931a3d8444c4266` (`vh-fault-plan-v1`), exit 1.
+Clean-control receipt (universe 17): trace hash
+`efd8c87d5f91817ff5ea0a6232c4654c` (28 events), fault-plan digest
+`eb0e27583fbc63a5ccbaa7a260102fc4`, exit 3 (`UNCHECKED`, no finding).
+
+Drift law: a future measurement differing from these pins — in
+EITHER direction — is a finding to explain and re-pin with its
+semantic cause, never a tolerance band. A count that is not
+identical across two consecutive runs at one head makes this
+entry's claim UNCHECKED and files an identity defect
+(controller kill rule).
