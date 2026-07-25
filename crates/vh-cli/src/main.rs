@@ -135,6 +135,9 @@ struct RunArgs {
     shrink: bool,
     record_tape: bool,
     schedule: SchedulePolicy,
+    /// Caller-declared source commit for receipt provenance (recorded,
+    /// never verified; absent = UNKNOWN in the v2 manifest).
+    source_commit: Option<String>,
 }
 
 fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
@@ -149,6 +152,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
         shrink: false,
         record_tape: false,
         schedule: SchedulePolicy::Fifo,
+        source_commit: None,
     };
     let mut it = args.iter();
     while let Some(arg) = it.next() {
@@ -174,6 +178,7 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
             "--shrink" => out.shrink = true,
             "--record-tape" => out.record_tape = true,
             "--schedule" => out.schedule = parse_schedule(&value_for("--schedule")?)?,
+            "--source-commit" => out.source_commit = Some(value_for("--source-commit")?),
             other => return Err(format!("unknown argument: {other}")),
         }
     }
@@ -469,15 +474,29 @@ fn cmd_run(args: &[String]) -> i32 {
             ("UNCHECKED", 3)
         }
     };
+    // The shrink pass runs BEFORE receipts when both are requested, so
+    // the minimized-plan lineage lands inside the finding bundle (C3;
+    // PR #20 / audit D.3 debt). Printed output keeps its original order:
+    // receipts line first, shrink lines after.
+    let shrink_result: Option<Result<vh_cli::shrink_cli::ShrinkOutcome, String>> = if run.shrink {
+        failing
+            .first()
+            .map(|&u| vh_cli::shrink_cli::shrink_universe(&run.workload, run.seed, u))
+    } else {
+        None
+    };
     // Receipts are written AFTER the verdict is known (the manifest binds
     // it) and fail closed: a run whose requested evidence could not be
     // written exits 2, never the blessed code.
     if let Some(dir) = &run.out {
+        let provenance = build_provenance(run.source_commit.clone());
         let identity = bundle::RunIdentity {
             palette_name: run.palette.name(),
             universes_requested: requested,
             check_divergence: run.check_divergence,
             verdict_label: label,
+            provenance: &provenance,
+            lineage: shrink_result.as_ref().and_then(|r| r.as_ref().ok()),
         };
         match bundle::write_run_receipts(dir, &report, &identity) {
             Ok(summary) => println!("  {summary}"),
@@ -492,21 +511,46 @@ fn cmd_run(args: &[String]) -> i32 {
     // that cannot run says so on an anchored line instead of failing the
     // campaign it decorates.
     if run.shrink {
-        match failing.first() {
+        match &shrink_result {
             None => println!("  shrink: SKIPPED (no always-failing universe to minimize)"),
-            Some(&u) => {
-                print_shrink(&run.workload, run.seed, u);
+            Some(result) => {
+                print_shrink_result(result);
             }
         }
     }
     code
 }
 
+/// Mechanical provenance of this CLI build for v2 receipts. Compile-time
+/// constants only, plus the caller-declared source commit (recorded,
+/// never verified). The toolchain identity is pinned repo-wide by
+/// rust-toolchain.toml rather than recorded per-receipt.
+fn build_provenance(declared_source_commit: Option<String>) -> vh_cli::receipts_v2::Provenance {
+    vh_cli::receipts_v2::Provenance {
+        cli_version: env!("CARGO_PKG_VERSION").to_string(),
+        build_profile: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        }
+        .to_string(),
+        target_os: std::env::consts::OS.to_string(),
+        target_arch: std::env::consts::ARCH.to_string(),
+        declared_source_commit,
+    }
+}
+
 /// Print one minimization (or its typed unavailability) for `--shrink`
 /// and `vh shrink`. Anchored lines: `shrink: MINIMIZED`, `shrink:
 /// UNAVAILABLE`, `shrink-binding:`.
 fn print_shrink(workload: &str, seed: u64, universe: u64) -> bool {
-    match vh_cli::shrink_cli::shrink_universe(workload, seed, universe) {
+    print_shrink_result(&vh_cli::shrink_cli::shrink_universe(
+        workload, seed, universe,
+    ))
+}
+
+fn print_shrink_result(result: &Result<vh_cli::shrink_cli::ShrinkOutcome, String>) -> bool {
+    match result {
         Err(e) => {
             println!("  shrink: UNAVAILABLE ({e})");
             false
