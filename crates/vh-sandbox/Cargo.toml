@@ -7,6 +7,8 @@ repository.workspace = true
 description = "Tier-2 D2 subprocess sandbox MVP for vibe-halt; D1 is a future backend"
 
 [dependencies]
+# C5: cassette content identity + request digests (first-party, pure).
+vh-digest = { path = "../vh-digest" }
 vh-trace = { path = "../vh-trace" }
 
 [lints]

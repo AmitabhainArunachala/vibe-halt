@@ -14,10 +14,20 @@ vh-core = { path = "../vh-core" }
 vh-multiverse = { path = "../vh-multiverse" }
 vh-props = { path = "../vh-props" }
 vh-trace = { path = "../vh-trace" }
+# V1: the verifier-owned SimRuntime reference builds its own fault plans.
+vh-gremlin = { path = "../vh-gremlin" }
+# V1: independent black-box known-answer verification of the C3 digest
+# surface (standard vectors asserted against the crate; implementation
+# never copied here).
+vh-digest = { path = "../vh-digest" }
 
 [[bin]]
 name = "vh-verify"
 path = "src/main.rs"
+
+[[bin]]
+name = "vh-verify-full-observation"
+path = "src/bin/full_observation_main.rs"
 
 [lints]
 workspace = true
