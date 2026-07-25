@@ -2,6 +2,8 @@
 
 //! Independent Tier-1 replay probes built only on public kernel APIs.
 
+pub mod full_observation;
+
 use std::error::Error;
 use std::fmt;
 

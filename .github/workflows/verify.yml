@@ -382,3 +382,112 @@ jobs:
           path: ${{ steps.release_soak.outputs.evidence-path }}
           if-no-files-found: error
           retention-days: 90
+
+  # V1 (post-audit controller §5A): 1,000 Tier-1 replays of the verifier-
+  # owned SimRuntime reference per OS, emitting one NORMALIZED full-
+  # observation artifact (semantic observation only) plus a separate
+  # provenance artifact. The aggregate job below compares the normalized
+  # artifacts across the matrix by their dynamically computed digests —
+  # no manually copied literal is involved. Provenance is retained and
+  # expected to differ. This strengthens (never replaces) the shared-
+  # literal soak above, which stays non-promotional at 200 runs in CI.
+  full_observation_1000:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-14, windows-2022]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    outputs:
+      digest_ubuntu: ${{ steps.digest.outputs.ubuntu }}
+      digest_macos: ${{ steps.digest.outputs.macos }}
+      digest_windows: ${{ steps.digest.outputs.windows }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - name: Source, runner, and pinned toolchain receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          checked_out_sha="$(git rev-parse HEAD)"
+          if [[ "$checked_out_sha" != "$GITHUB_SHA" ]]; then
+            printf 'checked-out source %s does not match event source %s\n' "$checked_out_sha" "$GITHUB_SHA" >&2
+            exit 1
+          fi
+          rustc_version="$(rustc -V)"
+          if [[ "$rustc_version" != "rustc $VH_EXPECTED_RUSTC_RELEASE "* ]]; then
+            printf 'unexpected rustc release: %s (expected %s)\n' "$rustc_version" "$VH_EXPECTED_RUSTC_RELEASE" >&2
+            exit 1
+          fi
+          rustup show active-toolchain
+          rustc -Vv
+          cargo -V
+      - name: Full-observation soak (1,000 Tier-1 replays) and normalized artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo run --quiet --locked --offline -p vh-verify --bin vh-verify-full-observation > full-observation.txt
+          head -n 1 full-observation.txt
+          wc -l full-observation.txt
+      - name: Provenance artifact (separate; expected to differ per OS)
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            printf 'source-sha=%s\n' "$GITHUB_SHA"
+            printf 'runner-os=%s runner-arch=%s image-os=%s image-version=%s\n' \
+              "$RUNNER_OS" "$RUNNER_ARCH" "${ImageOS:-unknown}" "${ImageVersion:-unknown}"
+            uname -a
+            rustc -Vv
+          } > provenance.txt
+          cat provenance.txt
+      - name: Normalized-artifact digest as job output
+        id: digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          if command -v sha256sum >/dev/null 2>&1; then
+            digest="$(sha256sum full-observation.txt | cut -d' ' -f1)"
+          else
+            digest="$(shasum -a 256 full-observation.txt | cut -d' ' -f1)"
+          fi
+          printf 'normalized-artifact-sha256=%s\n' "$digest"
+          case "$RUNNER_OS" in
+            Linux) echo "ubuntu=$digest" >> "$GITHUB_OUTPUT" ;;
+            macOS) echo "macos=$digest" >> "$GITHUB_OUTPUT" ;;
+            Windows) echo "windows=$digest" >> "$GITHUB_OUTPUT" ;;
+            *) echo "unsupported runner os: $RUNNER_OS" >&2; exit 1 ;;
+          esac
+      - name: Persist normalized + provenance artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: vh-full-observation-${{ github.sha }}-${{ runner.os }}-${{ runner.arch }}-${{ github.run_attempt }}
+          path: |
+            full-observation.txt
+            provenance.txt
+          if-no-files-found: error
+
+  full_observation_aggregate:
+    needs: full_observation_1000
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Byte-compare normalized artifacts across the OS matrix
+        shell: bash
+        env:
+          DIGEST_UBUNTU: ${{ needs.full_observation_1000.outputs.digest_ubuntu }}
+          DIGEST_MACOS: ${{ needs.full_observation_1000.outputs.digest_macos }}
+          DIGEST_WINDOWS: ${{ needs.full_observation_1000.outputs.digest_windows }}
+        run: |
+          set -euo pipefail
+          printf 'ubuntu=%s\nmacos=%s\nwindows=%s\n' "$DIGEST_UBUNTU" "$DIGEST_MACOS" "$DIGEST_WINDOWS"
+          if [[ -z "$DIGEST_UBUNTU" || -z "$DIGEST_MACOS" || -z "$DIGEST_WINDOWS" ]]; then
+            echo "a matrix digest is missing — cross-OS equality cannot be certified" >&2
+            exit 1
+          fi
+          if [[ "$DIGEST_UBUNTU" != "$DIGEST_MACOS" || "$DIGEST_UBUNTU" != "$DIGEST_WINDOWS" ]]; then
+            echo "full-observation artifacts DIVERGE across the OS matrix — determinism finding, not noise" >&2
+            exit 1
+          fi
+          echo "full-observation: normalized artifact byte-identical across ubuntu/macos/windows (sha256 $DIGEST_UBUNTU); provenance retained separately per job"

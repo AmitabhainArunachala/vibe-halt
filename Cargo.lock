@@ -69,6 +69,8 @@ name = "vh-verify"
 version = "0.1.0"
 dependencies = [
  "vh-core",
+ "vh-digest",
+ "vh-gremlin",
  "vh-multiverse",
  "vh-props",
  "vh-trace",
