@@ -31,11 +31,15 @@
 #![forbid(unsafe_code)]
 
 pub mod capability;
+pub mod cassette_v2;
 
 pub use capability::{
     CapabilityChannel, CapabilityReceipt, ChannelStatus, DivergenceReport, EvidenceGrade,
     ExecutableIdentity, ProcessTreeState, StreamObservation, TerminationOutcome, CAPABILITY_SCHEMA,
     DIVERGENCE_REPORT_SCHEMA,
+};
+pub use cassette_v2::{
+    CassetteV2, LlmRequestV2, TapeEntry, TransportReceipt, CASSETTE_SCHEMA_V2, TRANSPORT_SCHEMA,
 };
 
 use std::collections::BTreeMap;
@@ -362,6 +366,10 @@ pub struct RunRecord {
     pub stderr: StreamObservation,
     pub artifacts: BTreeMap<String, String>,
     pub capability: CapabilityReceipt,
+    /// Child-visible cassette transport receipt (C5). `None` = no
+    /// cassette was attached — itself part of the identity via the
+    /// spec's `cassette` field; legacy identities are unchanged.
+    pub transport: Option<cassette_v2::TransportReceipt>,
     pub wall_time: Duration,
 }
 
@@ -385,7 +393,17 @@ impl RunRecord {
             t.record(0, "artifact", &format!("{path}={digest}"));
         }
         t.record(0, "capability", &self.capability.identity());
+        if let Some(transport) = &self.transport {
+            t.record(0, "transport", &transport.identity_str());
+        }
         t.hash_hex()
+    }
+
+    /// A tainted transport (miss, malformed frame, out-of-tape request,
+    /// or unconsumed recorded entries) can never read as success: the
+    /// caller must report UNCHECKED, not CLEAN/FINDINGS.
+    pub fn transport_tainted(&self) -> bool {
+        self.transport.as_ref().is_some_and(|t| t.tainted())
     }
 }
 
@@ -430,6 +448,46 @@ pub fn run_twice(
 }
 
 pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, SandboxError> {
+    run_once_inner(spec, workspace, None)
+}
+
+/// Run with a child-visible cassette transport (C5): the CHILD makes
+/// each request through the file-mailbox protocol under
+/// `.vh-sandbox-io/llm/` in its working directory, and the broker —
+/// serviced inside the same single-threaded bounded wait loop that owns
+/// the deadline — replays the ordered tape exact-match-or-miss. The
+/// spec must already bind the cassette's identity
+/// ([`SandboxSpec::with_cassette_identity`]); a mismatch is an error,
+/// never a silent rebind.
+pub fn run_once_with_cassette(
+    spec: &SandboxSpec,
+    workspace: &Path,
+    cassette: &cassette_v2::CassetteV2,
+) -> Result<RunRecord, SandboxError> {
+    match spec.cassette_identity.as_deref() {
+        Some(bound) if bound == cassette.identity() => {}
+        other => {
+            return Err(SandboxError::Execution(format!(
+                "spec cassette identity {:?} does not bind the supplied cassette {:?} — \
+                 refusing to run with an unbound tape",
+                other,
+                cassette.identity()
+            )))
+        }
+    }
+    run_once_inner(spec, workspace, Some(cassette))
+}
+
+/// Relative mailbox directory (under the child's cwd) for the
+/// `vh-cassette-transport-v1` frame files. A protocol constant, not
+/// configuration: the child SDK and broker agree on it by contract.
+pub const LLM_MAILBOX_DIR: &str = ".vh-sandbox-io/llm";
+
+fn run_once_inner(
+    spec: &SandboxSpec,
+    workspace: &Path,
+    cassette: Option<&cassette_v2::CassetteV2>,
+) -> Result<RunRecord, SandboxError> {
     std::fs::create_dir_all(workspace).map_err(SandboxError::Io)?;
     let io_dir = workspace.join(".vh-sandbox-io");
     std::fs::create_dir_all(&io_dir).map_err(SandboxError::Io)?;
@@ -470,7 +528,22 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
 
-    let (termination, process_tree) = execute_bounded(&mut cmd, &spec.budget, started)?;
+    let mut broker = match cassette {
+        None => None,
+        Some(cassette) => {
+            let llm_dir = workspace.join(LLM_MAILBOX_DIR);
+            std::fs::create_dir_all(&llm_dir).map_err(SandboxError::Io)?;
+            Some(BrokerState::new(llm_dir, cassette))
+        }
+    };
+    let (termination, process_tree) =
+        execute_bounded(&mut cmd, &spec.budget, started, broker.as_mut())?;
+    // Final drain: a request frame written just before child exit still
+    // gets classified (served or tainted), never silently dropped.
+    if let Some(broker) = broker.as_mut() {
+        broker.service();
+    }
+    let transport = broker.map(BrokerState::into_receipt);
     let wall_time = started.elapsed();
 
     let no_process_ran = matches!(termination, TerminationOutcome::SpawnFailed { .. });
@@ -490,8 +563,14 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
     // running to completion or a signal; a killed-by-deadline or
     // never-spawned run cannot be expected to have produced them, so we
     // do not manufacture an artifact-read error that would mask the real
-    // termination finding.
-    let artifacts = if ran_to_completion_or_signal {
+    // termination finding. The same masking law applies to a TAINTED
+    // transport (C5): a child that aborted on a cassette miss cannot be
+    // expected to have written its outputs — the taint is the finding,
+    // and the run is already UNCHECKED.
+    let transport_tainted = transport
+        .as_ref()
+        .is_some_and(cassette_v2::TransportReceipt::tainted);
+    let artifacts = if ran_to_completion_or_signal && !transport_tainted {
         let mut artifacts = BTreeMap::new();
         for artifact in &spec.artifacts {
             let path = workspace.join(&artifact.path);
@@ -517,8 +596,112 @@ pub fn run_once(spec: &SandboxSpec, workspace: &Path) -> Result<RunRecord, Sandb
         stderr,
         artifacts,
         capability: CapabilityReceipt::all_open(OPEN_CHANNEL_REASON),
+        transport,
         wall_time,
     })
+}
+
+/// Single-threaded cassette broker: serviced from inside the bounded
+/// wait loop, so the deadline still owns every wait. The child writes
+/// `req-<N>` atomically (temp + rename); the broker answers with
+/// `resp-<N>` the same way. Sequence is strict from 0; the recorded
+/// entry at position N must digest-match request N (exact-match-or-miss
+/// over ordered history — repeated identical requests consume distinct
+/// entries). Every violation taints; a taint response frame
+/// (`transport-error …`) tells the child to fail fast instead of
+/// hanging.
+struct BrokerState<'a> {
+    dir: std::path::PathBuf,
+    cassette: &'a cassette_v2::CassetteV2,
+    next_seq: usize,
+    served: Vec<String>,
+    taint: Option<String>,
+}
+
+impl<'a> BrokerState<'a> {
+    fn new(dir: std::path::PathBuf, cassette: &'a cassette_v2::CassetteV2) -> Self {
+        BrokerState {
+            dir,
+            cassette,
+            next_seq: 0,
+            served: Vec::new(),
+            taint: None,
+        }
+    }
+
+    fn set_taint(&mut self, reason: String) {
+        if self.taint.is_none() {
+            self.taint = Some(reason);
+        }
+    }
+
+    /// Service every currently visible request frame in sequence order.
+    /// Best-effort I/O: a broker-side I/O failure is itself a taint —
+    /// the transcript can no longer claim completeness.
+    fn service(&mut self) {
+        loop {
+            let req_path = self.dir.join(format!("req-{}", self.next_seq));
+            if !req_path.exists() {
+                break;
+            }
+            let bytes = match std::fs::read(&req_path) {
+                Ok(bytes) => bytes,
+                Err(e) => {
+                    self.set_taint(format!("unreadable request {}: {e}", self.next_seq));
+                    break;
+                }
+            };
+            let reply: Vec<u8> = match cassette_v2::LlmRequestV2::parse(&bytes) {
+                Err(e) => {
+                    self.set_taint(format!("malformed request {}: {e}", self.next_seq));
+                    b"transport-error malformed\n".to_vec()
+                }
+                Ok(request) => {
+                    let digest = request.digest();
+                    match self.cassette.entry(self.next_seq) {
+                        None => {
+                            self.set_taint(format!(
+                                "request {} beyond the recorded tape (digest {digest})",
+                                self.next_seq
+                            ));
+                            format!("transport-error miss {digest}\n").into_bytes()
+                        }
+                        Some((recorded, entry)) => {
+                            if recorded.digest() == digest {
+                                self.served.push(digest);
+                                entry.response_frame()
+                            } else {
+                                self.set_taint(format!(
+                                    "request {} digest {digest} does not match recorded {}",
+                                    self.next_seq,
+                                    recorded.digest()
+                                ));
+                                format!("transport-error miss {digest}\n").into_bytes()
+                            }
+                        }
+                    }
+                }
+            };
+            let tmp = self.dir.join(format!("resp-{}.tmp", self.next_seq));
+            let final_path = self.dir.join(format!("resp-{}", self.next_seq));
+            let wrote =
+                std::fs::write(&tmp, &reply).and_then(|()| std::fs::rename(&tmp, &final_path));
+            if let Err(e) = wrote {
+                self.set_taint(format!("cannot answer request {}: {e}", self.next_seq));
+                break;
+            }
+            self.next_seq += 1;
+        }
+    }
+
+    fn into_receipt(self) -> cassette_v2::TransportReceipt {
+        let unconsumed = self.cassette.len().saturating_sub(self.next_seq) as u64;
+        cassette_v2::TransportReceipt {
+            served: self.served,
+            unconsumed,
+            taint: self.taint,
+        }
+    }
 }
 
 fn empty_stream() -> StreamObservation {
@@ -540,6 +723,7 @@ fn execute_bounded(
     cmd: &mut Command,
     budget: &SandboxBudget,
     started: Instant,
+    mut broker: Option<&mut BrokerState<'_>>,
 ) -> Result<(TerminationOutcome, ProcessTreeState), SandboxError> {
     let mut child = match cmd.spawn() {
         Ok(child) => child,
@@ -571,6 +755,12 @@ fn execute_bounded(
                         },
                     };
                     return Ok((TerminationOutcome::TimedOut, process_tree));
+                }
+                // The cassette broker (C5) is serviced from THIS loop:
+                // one thread owns the deadline, the child wait, and the
+                // mailbox — no pipes, no threads, no platform extension.
+                if let Some(broker) = broker.as_deref_mut() {
+                    broker.service();
                 }
                 // This crate's determinism-denylist exemption
                 // (scripts/check_determinism_denylist.py) does not cover

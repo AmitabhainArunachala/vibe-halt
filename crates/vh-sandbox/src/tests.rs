@@ -441,3 +441,28 @@ fn sandbox_budget_rejects_zero_deadline_and_zero_output_cap() {
     assert!(SandboxBudget::new(Duration::from_secs(1), 0).is_err());
     assert!(SandboxBudget::new(Duration::from_secs(1), 1024).is_ok());
 }
+
+/// C5: a cassette can only run under a spec that BINDS its identity —
+/// an unbound or stale binding is an error before anything executes.
+#[test]
+fn cassette_run_requires_identity_binding() {
+    let mut cassette = crate::cassette_v2::CassetteV2::default();
+    cassette.push(
+        crate::cassette_v2::LlmRequestV2 {
+            provider: "fixture".into(),
+            model: "echo-2".into(),
+            ..Default::default()
+        },
+        crate::cassette_v2::TapeEntry::Timeout,
+    );
+    // Never created: the binding check fails before any filesystem work.
+    let workspace = std::env::temp_dir().join("vh-c5-bind-fixture");
+    // Unbound spec.
+    let unbound = SandboxSpec::new(vec!["/usr/bin/python3".into(), "x.py".into()]).unwrap();
+    assert!(crate::run_once_with_cassette(&unbound, &workspace, &cassette).is_err());
+    // Bound to a DIFFERENT tape.
+    let stale = SandboxSpec::new(vec!["/usr/bin/python3".into(), "x.py".into()])
+        .unwrap()
+        .with_cassette_identity("vh-cassette-v2:sha256:0000");
+    assert!(crate::run_once_with_cassette(&stale, &workspace, &cassette).is_err());
+}
