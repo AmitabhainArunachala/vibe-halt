@@ -178,6 +178,11 @@ EXEMPT: dict[str, set[str]] = {
     # campaign only. It spawns nothing directly (the crate does) and stays
     # under the full pattern set for everything else.
     "crates/vh-cli/src/sandbox_demo.rs": {r"std::env", r"std::fs"},
+    # C6 campaign boundary (same shape as sandbox_demo.rs): host tempdirs,
+    # probe/fixture staging, and campaign-receipt file I/O for the
+    # reference campaign, leak battery, and receipt replay. Subprocesses
+    # are spawned by vh-sandbox, not here; every other rule still binds.
+    "crates/vh-cli/src/sandbox_campaign.rs": {r"std::env", r"std::fs"},
     # Evidence-store boundary (convergence C4, audit R4): receipt/bundle
     # file I/O for `vh run --out` and `vh replay-bundle`. Receipt CONTENT
     # is built and parsed by the pure vh_cli::receipts module (fully

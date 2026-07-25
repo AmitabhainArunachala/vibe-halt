@@ -131,6 +131,51 @@ if [ "$code" -ne 3 ] || [ "$verdicts" -ne 1 ] || [ "$leftovers" -ne 1 ]; then
 fi
 echo "gate: unconsumed cassette history taints the run UNCHECKED (exit 3)"
 
+echo "== C6 gate: reference D2 campaign — 100 run-twice pairs, raw counts, receipt (exit 0) =="
+campaign_tmp="$(mktemp -d)"
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-campaign --mode reference --pairs 100 --out "$campaign_tmp/receipt.txt")
+code=$?
+set -e
+pairs=$(printf '%s\n' "$out" | grep -c '^  pairs: diverged=0/100 ' || true)
+channels=$(printf '%s\n' "$out" | grep -c '^  channels: open=29 closed=0 ' || true)
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN (Tier-2 D2' || true)
+if [ "$code" -ne 0 ] || [ "$pairs" -ne 1 ] || [ "$channels" -ne 1 ] || [ "$verdicts" -ne 1 ]; then
+  echo "GATE FAIL: reference campaign expected exit 0 + diverged=0/100 + open=29 + D2 CLEAN, got exit $code / $pairs / $channels / $verdicts"
+  echo "$out"
+  exit 1
+fi
+echo "gate: reference D2 campaign published raw divergence counts (0/100, exit 0)"
+
+echo "== C6 gate: campaign receipt replays the harness standalone (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-campaign --mode replay --receipt "$campaign_tmp/receipt.txt")
+code=$?
+set -e
+rm -rf "$campaign_tmp"
+reproduced=$(printf '%s\n' "$out" | grep -c '^  replay: REPRODUCED ' || true)
+if [ "$code" -ne 0 ] || [ "$reproduced" -ne 1 ]; then
+  echo "GATE FAIL: receipt replay expected exit 0 + REPRODUCED, got exit $code / $reproduced"
+  echo "$out"
+  exit 1
+fi
+echo "gate: campaign receipt replayed the harness standalone (exit 0)"
+
+echo "== C6 gate: leak battery — no false CLEAN possible (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-campaign --mode leak-battery)
+code=$?
+set -e
+divergent=$(printf '%s\n' "$out" | grep -c ': DIVERGENT channel=' || true)
+unprobed=$(printf '%s\n' "$out" | grep -c '^  unprobed \[' || true)
+passline=$(printf '%s\n' "$out" | grep -c '^  battery: PASS' || true)
+if [ "$code" -ne 0 ] || [ "$divergent" -ne 4 ] || [ "$unprobed" -ne 4 ] || [ "$passline" -ne 1 ]; then
+  echo "GATE FAIL: leak battery expected exit 0 + 4 DIVERGENT probes + 4 UNCHECKED unprobed + PASS, got exit $code / $divergent / $unprobed / $passline"
+  echo "$out"
+  exit 1
+fi
+echo "gate: leak battery holds — probed leaks diverge, unprobed channels stay UNCHECKED (exit 0)"
+
 echo "== live gate: demo-net — sim-runtime echo pair must be CLEAN (exit 0) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-net --seed 0xD1CE --universes 200)
