@@ -7,6 +7,7 @@ name = "vh-cli"
 version = "0.1.0"
 dependencies = [
  "vh-core",
+ "vh-digest",
  "vh-gremlin",
  "vh-multiverse",
  "vh-props",
@@ -17,6 +18,10 @@ dependencies = [
 
 [[package]]
 name = "vh-core"
+version = "0.1.0"
+
+[[package]]
+name = "vh-digest"
 version = "0.1.0"
 
 [[package]]

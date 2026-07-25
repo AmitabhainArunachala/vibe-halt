@@ -258,8 +258,8 @@ fn run_out_receipts_are_deterministic_and_bundles_replay_standalone() {
         ]);
         assert_eq!(code, 1, "demo-buggy must still exit 1 with --out");
         assert!(
-            stdout.contains("receipts: ") && stdout.contains("vh-run-receipts-v1"),
-            "missing receipts summary line:\n{stdout}"
+            stdout.contains("receipts: ") && stdout.contains("vh-run-receipts-v2"),
+            "missing v2 receipts summary line:\n{stdout}"
         );
     }
     let run_a = std::fs::read_to_string(a.join("run.ndjson")).unwrap();
@@ -300,8 +300,9 @@ fn run_out_receipts_are_deterministic_and_bundles_replay_standalone() {
         "missing anchored REPRODUCED verdict:\n{stdout}"
     );
 
-    // Tamper: flip the recorded trace hash — fail closed.
-    let bundle = vh_cli::receipts::FindingBundle::parse(&bundle_a).unwrap();
+    // Tamper: flip the recorded trace hash — the v2 content digest
+    // fails closed before any semantic comparison.
+    let bundle = vh_cli::receipts_v2::FindingBundleV2::parse(&bundle_a).unwrap();
     let tampered_text = bundle_a.replace(&bundle.trace_hash, "00000000000000000000000000000000");
     let tampered = tmp.join("tampered.ndjson");
     std::fs::write(&tampered, tampered_text).unwrap();
@@ -901,4 +902,170 @@ fn pct_repro_line_carries_schedule_and_reproduces() {
         rout.contains("replay verdict: FINDINGS"),
         "repro must end in FINDINGS:\n{rout}"
     );
+}
+
+// ---- v2 shrink lineage + v1 compatibility (post-audit C3, audit D.3) ----
+
+/// Rebuild a v2 bundle's trailing content digest after an intentional
+/// body edit, so lineage tests probe SEMANTIC verification rather than
+/// (only) the digest check.
+fn rebuild_v2_digest(text: &str) -> String {
+    let body_end = text.rfind("{\"record\":\"digest\"").expect("digest record");
+    let body = &text[..body_end];
+    format!(
+        "{body}{{\"record\":\"digest\",\"alg\":\"sha256\",\"value\":\"{}\"}}\n",
+        vh_digest::sha256_hex(body.as_bytes())
+    )
+}
+
+/// `--shrink --out` persists the minimized plan INSIDE the shrunk
+/// universe's bundle; replay CONSUMES that plan and verifies its digest,
+/// observation identity, and failure fingerprint. Adversarial edits —
+/// a different "minimized" plan (the original-plan-presented-as-minimized
+/// class), a changed minimized failure detail, and a lineage spliced onto
+/// a different baseline — all fail closed.
+#[test]
+fn shrink_lineage_is_persisted_consumed_and_tamper_evident() {
+    let tmp = unique_tmp("lineage");
+    let out = tmp.join("out");
+    let (code, stdout, _) = vh(&[
+        "run",
+        "--workload",
+        "demo-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--out",
+        out.to_str().unwrap(),
+        "--shrink",
+        "--source-commit",
+        "cafe0001",
+    ]);
+    assert_eq!(code, 1, "demo-buggy must still exit 1:\n{stdout}");
+    assert!(stdout.contains("shrink: MINIMIZED"), "{stdout}");
+
+    // The shrunk universe is the FIRST failing one; find its bundle by
+    // looking for the shrink record.
+    let findings_dir = out.join("findings");
+    let mut lineage_bundle = None;
+    for entry in std::fs::read_dir(&findings_dir).unwrap() {
+        let p = entry.unwrap().path().join("finding.ndjson");
+        let text = std::fs::read_to_string(&p).unwrap();
+        if text.contains("{\"record\":\"shrink\"") {
+            lineage_bundle = Some((p, text));
+            break;
+        }
+    }
+    let (path, text) = lineage_bundle.expect("one bundle must carry the shrink lineage");
+    let parsed = vh_cli::receipts_v2::FindingBundleV2::parse(&text).unwrap();
+    let lineage = parsed.lineage.as_ref().expect("lineage present");
+    assert!(
+        lineage.minimized_plan.len() as u64 <= lineage.original_injections,
+        "minimized plan cannot exceed the original"
+    );
+    assert_eq!(
+        parsed.provenance.declared_source_commit.as_deref(),
+        Some("cafe0001")
+    );
+
+    // Positive: replay consumes the minimized plan.
+    let (code, stdout, _) = vh(&["replay-bundle", path.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("lineage-minimized") && stdout.contains("consumed+verified"),
+        "replay must report minimized-plan consumption:\n{stdout}"
+    );
+
+    // Adversarial 1: present a DIFFERENT plan as "minimized" (the
+    // original-plan-repro-as-minimized-evidence class). Append one more
+    // injection, fix the declared count, rebuild the digest.
+    let with_extra = text.replacen(
+        "{\"record\":\"minimized_failure\"",
+        "{\"record\":\"injection\",\"at_nanos\":999999,\"fault\":\"fsync_lie\"}\n{\"record\":\"minimized_failure\"",
+        1,
+    );
+    let declared = format!("\"minimized_injections\":{}", lineage.minimized_plan.len());
+    let fixed = with_extra.replacen(
+        &declared,
+        &format!(
+            "\"minimized_injections\":{}",
+            lineage.minimized_plan.len() + 1
+        ),
+        1,
+    );
+    let forged = tmp.join("forged-plan.ndjson");
+    std::fs::write(&forged, rebuild_v2_digest(&fixed)).unwrap();
+    let (code, stdout, _) = vh(&["replay-bundle", forged.to_str().unwrap()]);
+    assert_eq!(code, 1, "forged minimized plan must MISMATCH:\n{stdout}");
+    assert!(
+        stdout.contains("minimized plan digest") || stdout.contains("MISMATCH"),
+        "{stdout}"
+    );
+
+    // Adversarial 2: change a minimized failure detail.
+    let cooked = text.replacen("missing after crash", "missing after cr4sh", 1);
+    assert_ne!(cooked, text, "edit must apply");
+    let cooked_path = tmp.join("cooked-detail.ndjson");
+    std::fs::write(&cooked_path, rebuild_v2_digest(&cooked)).unwrap();
+    let (code, stdout, _) = vh(&["replay-bundle", cooked_path.to_str().unwrap()]);
+    assert_eq!(code, 1, "cooked failure detail must MISMATCH:\n{stdout}");
+
+    // Adversarial 3: splice the lineage onto a different baseline.
+    let spliced = text.replacen(
+        &format!("\"original_digest\":\"{}\"", lineage.original_digest),
+        "\"original_digest\":\"ffffffffffffffffffffffffffffffff\"",
+        1,
+    );
+    let spliced_path = tmp.join("spliced.ndjson");
+    std::fs::write(&spliced_path, rebuild_v2_digest(&spliced)).unwrap();
+    let (code, _, stderr) = vh(&["replay-bundle", spliced_path.to_str().unwrap()]);
+    assert_eq!(
+        code, 2,
+        "spliced baseline must be rejected at parse:\n{stderr}"
+    );
+    assert!(stderr.contains("spliced"), "{stderr}");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+/// v1 bundles remain replayable within their explicit limitation — the
+/// reader labels them FIFO-only self-consistent replay. The v1 content
+/// is built from a live in-process run, so the test never hardcodes
+/// identity values.
+#[test]
+fn v1_bundles_stay_replayable_with_the_limitation_label() {
+    let tmp = unique_tmp("v1compat");
+    let workload = vh_cli::workloads::by_name("demo-buggy").unwrap();
+    // Find a failing universe deterministically.
+    let (universe, result) = (0..100)
+        .map(|u| (u, vh_multiverse::run_universe(0xD1CE, u, workload.as_ref())))
+        .find(|(_, r)| !r.always_failures().is_empty())
+        .expect("demo-buggy fails somewhere in 100 universes");
+    let v1 = vh_cli::receipts::FindingBundle {
+        finding_id: format!("u{universe}-legacy"),
+        workload: "demo-buggy".into(),
+        seed: 0xD1CE,
+        palette: "v0".into(),
+        universe,
+        trace_hash: result.trace_hash().to_string(),
+        trace_events: result.trace_events() as u64,
+        fault_plan_digest: result.fault_plan_digest().map(str::to_string),
+        failures: result
+            .always_failures()
+            .iter()
+            .map(|f| (f.name.clone(), f.detail.clone()))
+            .collect(),
+        contract_violations: workload.property_contract().violations(&result),
+        invalid_completion: None,
+    };
+    let path = tmp.join("v1.ndjson");
+    std::fs::write(&path, v1.to_ndjson()).unwrap();
+    let (code, stdout, _) = vh(&["replay-bundle", path.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stdout}");
+    assert!(
+        stdout.contains("REPRODUCED") && stdout.contains("FIFO-only self-consistent replay"),
+        "v1 replay must carry its limitation label:\n{stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
 }

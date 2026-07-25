@@ -21,6 +21,9 @@ vh-sandbox = { path = "../vh-sandbox" }
 # vh-shrink's shrink/try_shrink surface; crates/vh-shrink/** itself stays
 # verifier-track-owned and unedited.
 vh-shrink = { path = "../vh-shrink" }
+# Content digest for v2 evidence bundles (post-audit C3): local safe-Rust
+# SHA-256, deny-list pure.
+vh-digest = { path = "../vh-digest" }
 
 [lints]
 workspace = true
