@@ -11,8 +11,10 @@
 # require the precise finding exit code AND exactly one ANCHORED
 # machine-readable verdict line, so a panic (101), a usage error (2), or a
 # matching substring smuggled into other output can never be blessed as
-# "correctly caught". Seeds are pinned. The quarantined Python client is
-# held closed by a negative gate of its own.
+# "correctly caught". Seeds are pinned. Corpus recall gates hold each
+# entry's K1-frozen contract as an exact-equality assertion on the full
+# summary line plus a fault-free control replay (C2b). The quarantined
+# Python client is held closed by a negative gate of its own.
 #
 # Cargo runs --locked --offline (the workspace has zero external
 # dependencies by design) and --all-features (no features exist yet; the
@@ -137,135 +139,59 @@ if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
 fi
 echo "gate: demo-disk-buggy correctly caught (exit 1, oracle:wal_durability)"
 
-echo "== corpus recall gate: corpus-lost-update must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-lost-update --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:no_lost_updates')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-lost-update expected exit 1 + FINDINGS + anchored oracle:no_lost_updates, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-lost-update recalled (exit 1, oracle:no_lost_updates)"
+# C2b (post-audit controller §6): every corpus recall claim is an EXACT
+# executable assertion against the K1-frozen contract in
+# corpus/entries/VB-*.md. The pin is the full six-counter summary line,
+# matched byte-exact and sourced from the UNTRUNCATED
+# "always-failures: N universe(s)" summary — never the FAIL list, which
+# truncates at ten and cannot carry a count. Drift in EITHER direction
+# (up included: a guaranteed-failure palette is not an improvement) is
+# red. Each entry's pinned fault-free control universe must then replay
+# with no finding — exit 3 under the single-replay UNCHECKED policy —
+# so "the oracle fails everything" can never masquerade as recall.
+corpus_recall_gate() { # entry workload oracle fails_pin clean_pin control_universe
+  local entry="$1" workload="$2" oracle="$3" fails_pin="$4" clean_pin="$5" control_u="$6"
+  echo "== corpus recall gate: $entry ($workload) must recall EXACTLY ${fails_pin}/100 (exit 1) =="
+  local summary="  always-failures: ${fails_pin} universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: ${clean_pin}"
+  set +e
+  out=$(cargo run -q --locked --offline -p vh-cli -- run --workload "$workload" --seed 0xD1CE --universes 100)
+  code=$?
+  set -e
+  verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS' || true)
+  anchored=$(printf '%s\n' "$out" | grep -c "^  FAIL universe .*: oracle:$oracle" || true)
+  exact=$(printf '%s\n' "$out" | grep -cFx -- "$summary" || true)
+  if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$anchored" -eq 0 ] || [ "$exact" -ne 1 ]; then
+    echo "GATE FAIL: $entry ($workload) expected exit 1 + FINDINGS + anchored oracle:$oracle + EXACT pinned summary, got exit $code / verdicts $verdicts / anchored $anchored / exact-summary $exact"
+    echo "  pinned:  $summary"
+    printf '%s\n' "$out" | grep '^  always-failures: ' | sed 's/^  /  actual:  /' || true
+    exit 1
+  fi
+  set +e
+  ctl=$(cargo run -q --locked --offline -p vh-cli -- run --workload "$workload" --seed 0xD1CE --universe "$control_u")
+  ctl_code=$?
+  set -e
+  ctl_unchecked=$(printf '%s\n' "$ctl" | grep -c '^  replay verdict: UNCHECKED' || true)
+  ctl_findings=$(printf '%s\n' "$ctl" | grep -c 'ALWAYS-FAIL' || true)
+  if [ "$ctl_code" -ne 3 ] || [ "$ctl_unchecked" -ne 1 ] || [ "$ctl_findings" -ne 0 ]; then
+    echo "GATE FAIL: $entry fault-free control universe $control_u must replay with no finding (exit 3 UNCHECKED), got exit $ctl_code / unchecked $ctl_unchecked / findings $ctl_findings"
+    exit 1
+  fi
+  echo "gate: $entry recalled at exactly ${fails_pin}/100 (exit 1, oracle:$oracle); control universe $control_u clean (exit 3)"
+}
 
-echo "== corpus recall gate: corpus-retry-double-apply must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-retry-double-apply --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:exactly_once')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-retry-double-apply expected exit 1 + FINDINGS + anchored oracle:exactly_once, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-retry-double-apply recalled (exit 1, oracle:exactly_once)"
-
-echo "== corpus recall gate: corpus-dirty-read must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-dirty-read --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:published_implies_durable')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-dirty-read expected exit 1 + FINDINGS + anchored oracle:published_implies_durable, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-dirty-read recalled (exit 1, oracle:published_implies_durable)"
-
-echo "== corpus recall gate: corpus-crash-toctou must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-crash-toctou --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:act_epoch_matches_check')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-crash-toctou expected exit 1 + FINDINGS + anchored oracle:act_epoch_matches_check, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-crash-toctou recalled (exit 1, oracle:act_epoch_matches_check)"
-
-echo "== corpus recall gate: corpus-fsync-lie must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-fsync-lie --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:wal_durability')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-fsync-lie expected exit 1 + FINDINGS + anchored oracle:wal_durability, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-fsync-lie recalled (exit 1, oracle:wal_durability)"
-
-echo "== corpus recall gate: corpus-stale-redispatch must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-stale-redispatch --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:exactly_once_dispatch')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-stale-redispatch expected exit 1 + FINDINGS + anchored oracle:exactly_once_dispatch, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-stale-redispatch recalled (exit 1, oracle:exactly_once_dispatch)"
-
-echo "== corpus recall gate: corpus-unvalidated-checkpoint must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:checkpoint_recoverable')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-unvalidated-checkpoint expected exit 1 + FINDINGS + anchored oracle:checkpoint_recoverable, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-unvalidated-checkpoint recalled (exit 1, oracle:checkpoint_recoverable)"
-
-echo "== corpus recall gate: corpus-transient-fatal-abort must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-transient-fatal-abort --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:session_complete')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-transient-fatal-abort expected exit 1 + FINDINGS + anchored oracle:session_complete, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-transient-fatal-abort recalled (exit 1, oracle:session_complete)"
-
-echo "== corpus recall gate: corpus-resume-replay must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-resume-replay --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:resume_at_most_once')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-resume-replay expected exit 1 + FINDINGS + anchored oracle:resume_at_most_once, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-resume-replay recalled (exit 1, oracle:resume_at_most_once)"
-
-echo "== corpus recall gate: corpus-blind-stream-append must be FOUND (exact exit 1) =="
-set +e
-out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-blind-stream-append --seed 0xD1CE --universes 100)
-code=$?
-set -e
-verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS')
-fails=$(printf '%s\n' "$out" | grep -c '^  FAIL universe .*: oracle:stream_integrity')
-if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$fails" -lt 1 ]; then
-  echo "GATE FAIL: corpus-blind-stream-append expected exit 1 + FINDINGS + anchored oracle:stream_integrity, got exit $code / $verdicts / $fails"
-  exit 1
-fi
-echo "gate: corpus-blind-stream-append recalled (exit 1, oracle:stream_integrity)"
+# Pins transcribed from each entry's K1 contract freeze
+# (corpus/entries/VB-*.md `counts` and `control` fields, 2026-07-25):
+#                  entry   workload                      oracle                    fail clean ctl-universe
+corpus_recall_gate VB-001 corpus-lost-update            no_lost_updates            29  71  0
+corpus_recall_gate VB-002 corpus-retry-double-apply     exactly_once               76  24  0
+corpus_recall_gate VB-003 corpus-dirty-read             published_implies_durable  96   4 23
+corpus_recall_gate VB-004 corpus-crash-toctou           act_epoch_matches_check    38  62  1
+corpus_recall_gate VB-005 corpus-fsync-lie              wal_durability             21  79  0
+corpus_recall_gate VB-007 corpus-stale-redispatch       exactly_once_dispatch      91   9 11
+corpus_recall_gate VB-008 corpus-unvalidated-checkpoint checkpoint_recoverable     96   4 17
+corpus_recall_gate VB-009 corpus-transient-fatal-abort  session_complete           79  21  8
+corpus_recall_gate VB-010 corpus-resume-replay          resume_at_most_once        70  30  0
+corpus_recall_gate VB-011 corpus-blind-stream-append    stream_integrity           58  42  0
 
 echo "== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) =="
 set +e
