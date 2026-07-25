@@ -95,19 +95,35 @@ REPO = Path(__file__).resolve().parent.parent
 
 ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\b"
 RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
-POINTER_MODULE_PATTERN = r"\b(std|core)\s*::\s*(ptr\b|\{[^}]*\bptr\b)"
-POINTER_MACRO_PATTERN = r"\baddr_of(?:_mut)?\s*!"
+# rustc tokenizes a block comment like whitespace, so `core/* gap */::ptr`
+# and `addr_of/* gap */!` compile as pointer operations while a plain \s*
+# separator never bridges the comment (PR #35 thread r3649116245). Line
+# scanning still cannot see a comment spanning lines — that stays inside
+# the documented lexical-layer limits.
+COMMENT_SEP = r"(?:\s|/\*.*?\*/)*"
+POINTER_MODULE_PATTERN = (
+    r"\b(std|core)" + COMMENT_SEP + r"::" + COMMENT_SEP + r"(ptr\b|\{[^}]*\bptr\b)"
+)
+POINTER_MACRO_PATTERN = r"\baddr_of(?:_mut)?" + COMMENT_SEP + r"!"
 POINTER_API_PATTERN = (
     r"\bNonNull\s*::|(?<!fn\s)\b(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\s*\("
     r"|\.\s*addr\s*\("
 )
+# `[\s(]*` instead of `\s*`: `let leak = (from_ref);` is the same function
+# item merely wrapped in parentheses (PR #35 thread r3649116236). The
+# anchor set (=, ::, .) is unchanged, so `fn from_ref(...)` declarations
+# and `let from_ref = 3;` shadowing stay clean.
 POINTER_ITEM_PATTERN = (
-    r"(?:=\s*|::\s*|\.\s*)(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"(?:=|::|\.)[\s(]*(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b"
 )
 POINTER_TRAIT_PATTERN = r"\b(std|core)\s*::\s*fmt\s*::\s*Pointer\b"
-POINTER_FORMAT_PATTERN = r"\{(?:[A-Za-z_][A-Za-z0-9_]*|\d*)?:[^{}]*p\}"
+# `[^\W\d]\w*` (Unicode identifier: any non-digit word char, then word
+# chars) instead of the ASCII-only `[A-Za-z_][A-Za-z0-9_]*`: Rust
+# identifiers are XID-based, so `format!("{指针:p}")` formats an address
+# exactly like `format!("{p:p}")` (PR #35 thread r3649116243).
+POINTER_FORMAT_PATTERN = r"\{(?:[^\W\d]\w*|\d*)?:[^{}]*p\}"
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
