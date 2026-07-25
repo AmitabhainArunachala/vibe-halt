@@ -264,6 +264,12 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("let leak = Vec::<u8>::as_ptr;", True, True),
     ("let leak = from_ref;", True, True),
     ("let p = values.as_ptr();", True, True),
+    # PR #35 review-debt mutants (threads r3649116236 / r3649116243 /
+    # r3649116245): each bypassed the patterns as merged. Known-answer
+    # cases first (red), then the pattern repair — never the reverse.
+    ("let leak = (from_ref);", True, True),
+    ('let 指针 = &value; format!("{指针:p}");', True, True),
+    ("let p = core/* gap */::ptr::addr_of/* gap */!(value);", True, True),
     ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
     ("let erased: &dyn Debug = &value;", False, False),
     ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
@@ -273,6 +279,12 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ('format!("{:?}", &value)', False, False),
     ("fn from_ref<T>(value: &T) -> &T { value }", False, False),
     ("fn from_ref(value: &u64) -> &u64 { value }", False, False),
+    # Negative probes for the r36491162xx repairs: shadowing declarations,
+    # non-address debug formatting, and ':p...'-prefixed format words must
+    # all stay clean after the mutants above turn red->green.
+    ("let from_ref = 3;", False, False),
+    ('format!("{p:?}")', False, False),
+    ('format!("{x:pretty}")', False, False),
     ("struct NonNull;", False, False),
     ("struct NonNullCounter(u64);", False, False),
     ("fn as_ptr() -> usize { 0 }", False, False),
@@ -910,6 +922,15 @@ def self_test() -> int:
         ("crates/vh-core/src/lib.rs", "let p = &x as *const u64;", True),
         ("crates/vh-core/src/lib.rs", "let p = std::ptr::from_ref(&x);", True),
         ("crates/vh-core/src/lib.rs", "let p = NonNull::new(raw);", True),
+        # The three PR #35 mutants pinned to the exact kernel path the
+        # review threads probed (patterns_for must hit all three).
+        ("crates/vh-core/src/lib.rs", "let leak = (from_ref);", True),
+        ("crates/vh-core/src/lib.rs", 'let 指针 = &value; format!("{指针:p}");', True),
+        (
+            "crates/vh-core/src/lib.rs",
+            "let p = core/* gap */::ptr::addr_of/* gap */!(value);",
+            True,
+        ),
         ("crates/vh-core/src/lib.rs", "fn show<T: Debug>(x: T) { observe(x); }", False),
     ]
     for rel, sample, expected in boundary_cases:
