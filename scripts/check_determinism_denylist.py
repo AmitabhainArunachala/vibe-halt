@@ -59,6 +59,19 @@ Known, accepted regex misses (documented, claim-narrowing):
 Float NaN/precision formatting is also not distinguishable from other
 formatting at line level. These gaps remain `UNCHECKED` until a separately
 reviewed type-aware gate traces observable value flow.
+
+The lexical policy is intentionally conservative for unqualified calls/items
+whose names match pointer APIs: user-defined calls and unusually tokenized
+declarations with the same name may be rejected. The probes keep ordinary
+safe-reference formatting and common declarations clean, but do not promise
+Rust parsing. Passing this gate therefore means only that the enumerated
+lexical address leaks are absent; it is not a semantic D0 proof.
+
+Successor acceptance contract: a separately reviewed, macro-expanded HIR/MIR
+lint must trace address-bearing values through function-item aliases, generics,
+trait objects, nested containers, and user `Debug`/`Hash` implementations into
+observable trace/end-state/oracle/fingerprint sinks. Red known-answer tests for
+each class are required before any semantic D0/by-construction claim returns.
 """
 
 from __future__ import annotations
@@ -82,12 +95,19 @@ REPO = Path(__file__).resolve().parent.parent
 
 ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\b"
 RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
-POINTER_MODULE_PATTERN = r"\b(std|core)::(ptr\b|\{[^}]*\bptr\b)"
+POINTER_MODULE_PATTERN = r"\b(std|core)\s*::\s*(ptr\b|\{[^}]*\bptr\b)"
+POINTER_MACRO_PATTERN = r"\baddr_of(?:_mut)?\s*!"
 POINTER_API_PATTERN = (
-    r"\b(NonNull|addr_of(_mut)?!|from_ref|from_mut|as_ptr|as_mut_ptr|"
-    r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b|\.addr\s*\("
+    r"\bNonNull\s*::|(?<!fn\s)\b(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\s*\("
+    r"|\.\s*addr\s*\("
 )
-POINTER_TRAIT_PATTERN = r"\b(std|core)::fmt::Pointer\b"
+POINTER_ITEM_PATTERN = (
+    r"(?:=\s*|::\s*|\.\s*)(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b"
+)
+POINTER_TRAIT_PATTERN = r"\b(std|core)\s*::\s*fmt\s*::\s*Pointer\b"
+POINTER_FORMAT_PATTERN = r"\{(?:[A-Za-z_][A-Za-z0-9_]*|\d*)?:[^{}]*p\}"
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
@@ -172,10 +192,12 @@ DENYLIST: dict[str, str] = {
     r"std::os": "OS-specific escape hatches in the kernel",
     r"std::net": "network I/O in the kernel; simulated network lands in Phase 1",
     r"std::process": "process control in the kernel; subprocess universes live in the Tier-2 sandbox",
-    r"\{:p\}": "pointer-address formatting; addresses vary per run (ASLR)",
+    POINTER_FORMAT_PATTERN: "pointer-address formatting; addresses vary per run (ASLR)",
     RAW_POINTER_TYPE_PATTERN: "raw-pointer types/casts can expose allocator or ASLR identity",
     POINTER_MODULE_PATTERN: "pointer construction/address operations are not deterministic observables",
+    POINTER_MACRO_PATTERN: "pointer address macros are forbidden in kernel crates",
     POINTER_API_PATTERN: "pointer construction/address APIs are forbidden in kernel crates",
+    POINTER_ITEM_PATTERN: "pointer API function items can carry address identity through aliases",
     POINTER_TRAIT_PATTERN: "pointer formatting exposes host addresses",
     r"\b(global_)?asm!": "inline assembly escape hatch",
     # Root-module aliasing defeats every literal std::<mod> rule below
@@ -218,22 +240,43 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("let p = &raw mut value;", True, True),
     ("let p = std::ptr::from_ref(&value);", True, True),
     ("let p = core::ptr::addr_of!(value);", True, True),
+    ("let p = addr_of!(value);", True, True),
+    ("let p = addr_of_mut!(value);", True, True),
+    ("let p = addr_of ! (value);", True, True),
+    ("let p = core :: ptr :: addr_of ! (value);", True, True),
+    ("use core :: ptr as p;", True, True),
     ("let p = NonNull::new(raw);", True, True),
     ("let n = p.expose_provenance();", True, True),
     ("let n = p.addr();", True, True),
+    ("let n = p . addr ();", True, True),
     ("std::fmt::Pointer::fmt(&p, f)", True, True),
+    ("core :: fmt :: Pointer :: fmt(&p, f)", True, True),
     ('format!("{:?}", &value as *const u64)', True, True),
     ('format!("{:p}", &value)', True, True),
+    ('format!("{p:p}")', True, True),
+    ('format!("{0:p}", &value)', True, True),
+    ('format!("{:016p}", &value)', True, True),
     ("let n = &value as *const u8 as usize;", True, True),
     ("use core::{mem, ptr};", True, True),
     ("use std::ptr;", True, True),
     ("let p = Box::into_raw(value);", True, True),
+    ("let leak = Box::into_raw;", True, True),
+    ("let leak = Vec::<u8>::as_ptr;", True, True),
+    ("let leak = from_ref;", True, True),
     ("let p = values.as_ptr();", True, True),
     ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
     ("let erased: &dyn Debug = &value;", False, False),
     ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
     ("impl Hash for Wrapper { /* type-hidden address */ }", False, False),
     ("let n = value as usize;", False, False),
+    ("let reference = &value;", False, False),
+    ('format!("{:?}", &value)', False, False),
+    ("fn from_ref<T>(value: &T) -> &T { value }", False, False),
+    ("fn from_ref(value: &u64) -> &u64 { value }", False, False),
+    ("struct NonNull;", False, False),
+    ("struct NonNullCounter(u64);", False, False),
+    ("fn as_ptr() -> usize { 0 }", False, False),
+    ("fn as_ptr_count() -> usize { 0 }", False, False),
     ('format!("{:?}", 1_u64)', False, False),
     ("let values = BTreeMap::new();", False, False),
     ("let x = std::mem::size_of::<u64>();", False, False),
