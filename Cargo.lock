@@ -20,6 +20,10 @@ name = "vh-core"
 version = "0.1.0"
 
 [[package]]
+name = "vh-digest"
+version = "0.1.0"
+
+[[package]]
 name = "vh-gremlin"
 version = "0.1.0"
 dependencies = [

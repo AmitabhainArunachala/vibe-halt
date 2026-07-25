@@ -1,0 +1,12 @@
+[package]
+name = "vh-digest"
+description = "vibe-halt evidence digest: zero-dependency safe-Rust SHA-256 for content-addressed v2 bundles (unreviewed local implementation until the verifier track independently checks the known-answer vectors)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true
