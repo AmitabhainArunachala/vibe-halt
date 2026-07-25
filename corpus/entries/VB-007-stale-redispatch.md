@@ -11,6 +11,15 @@
 | `repro` | `vh run --workload corpus-stale-redispatch --seed 0xD1CE --universe 0` |
 | `gate` | `corpus recall gate: corpus-stale-redispatch` in `scripts/gate.sh` |
 | `tier` | Tier 1 (engine-owned workload on the sim runtime) |
+| `root_seed` | `0xD1CE` |
+| `universe_budget` | 100 |
+| `oracle_contract` | `required_oracles=[exactly_once_dispatch] required_always=[] required_sometimes=[redispatch_fired]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
+| `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `02d424ef2a581d30d8652a4a668605f7` |
+| `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `counts` | always-failures **91**; clean **9**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
+| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `control` | fault-free/harmless universes must PASS: clean = 9 exactly (>=1) at the pinned budget; pinned clean universe 11: `vh run --workload corpus-stale-redispatch --seed 0xD1CE --universe 11` -> no finding, exit 3 (single-replay UNCHECKED policy) |
+| `required_facts` | per-task applied-count facts must show exactly one apply; the `redispatch_fired` sometimes-property must be reached within the budget (`sometimes unreached` pinned 0), so a palette that never opens the redispatch window cannot pass silently. |
 
 ## Provenance (the real bug)
 
@@ -53,3 +62,29 @@ Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
 (corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
 VB-006 is intentionally skipped: reserved for the convergence C2
 same-timestamp race (docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md §4).
+
+## Contract freeze (K1, 2026-07-25)
+
+All counts measured twice consecutively at engine head `ca6b37f`,
+byte-identical summaries both passes (corpus/** edits never touch
+the engine, so this entry's PR does not move them):
+
+```
+$ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universes 100
+always-failures: 91 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 9
+verdict: FINDINGS   (exit 1)
+```
+
+Failing-repro receipt (universe 0): trace hash
+`326b0dd419e897ce07142ca83adab1ed` (41 events), fault-plan digest
+`02d424ef2a581d30d8652a4a668605f7` (`vh-fault-plan-v1`), exit 1.
+Clean-control receipt (universe 11): trace hash
+`a273e996565012f8e439de388b54226a` (33 events), fault-plan digest
+`5edda3474de62145a2ab9dec1635042a`, exit 3 (`UNCHECKED`, no finding).
+
+Drift law: a future measurement differing from these pins — in
+EITHER direction — is a finding to explain and re-pin with its
+semantic cause, never a tolerance band. A count that is not
+identical across two consecutive runs at one head makes this
+entry's claim UNCHECKED and files an identity defect
+(controller kill rule).

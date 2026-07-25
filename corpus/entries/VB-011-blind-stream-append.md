@@ -11,6 +11,15 @@
 | `repro` | `vh run --workload corpus-blind-stream-append --seed 0xD1CE --universe 2` |
 | `gate` | `corpus recall gate: corpus-blind-stream-append` in `scripts/gate.sh` |
 | `tier` | Tier 1 (engine-owned workload on the sim runtime) |
+| `root_seed` | `0xD1CE` |
+| `universe_budget` | 100 |
+| `oracle_contract` | `required_oracles=[stream_integrity] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
+| `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `200dd1d663ba5636e472e0888bad10d0` |
+| `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `counts` | always-failures **58**; clean **42**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
+| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `control` | fault-free/harmless universes must PASS: clean = 42 exactly (>=1) at the pinned budget; pinned clean universe 0: `vh run --workload corpus-blind-stream-append --seed 0xD1CE --universe 0` -> no finding, exit 3 (single-replay UNCHECKED policy) |
+| `required_facts` | the assembled-stream and sent-stream fact pair must be present and equal; a missing/malformed pair is a hard failure, never a vacuous match (PR #32). |
 
 ## Provenance (the real bug)
 
@@ -42,3 +51,29 @@ transposed tokens.
 
 Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
 (corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+
+## Contract freeze (K1, 2026-07-25)
+
+All counts measured twice consecutively at engine head `ca6b37f`,
+byte-identical summaries both passes (corpus/** edits never touch
+the engine, so this entry's PR does not move them):
+
+```
+$ vh run --workload corpus-blind-stream-append --seed 0xD1CE --universes 100
+always-failures: 58 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 42
+verdict: FINDINGS   (exit 1)
+```
+
+Failing-repro receipt (universe 2): trace hash
+`6a429b6799782a78290155c120cdda99` (35 events), fault-plan digest
+`200dd1d663ba5636e472e0888bad10d0` (`vh-fault-plan-v1`), exit 1.
+Clean-control receipt (universe 0): trace hash
+`c86c5a7b59e6112a30f173e9dfc5cda9` (28 events), fault-plan digest
+`b8dfda3b7737d29c93d2b74c7ae65d67`, exit 3 (`UNCHECKED`, no finding).
+
+Drift law: a future measurement differing from these pins — in
+EITHER direction — is a finding to explain and re-pin with its
+semantic cause, never a tolerance band. A count that is not
+identical across two consecutive runs at one head makes this
+entry's claim UNCHECKED and files an identity defect
+(controller kill rule).
