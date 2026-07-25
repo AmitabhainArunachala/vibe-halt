@@ -195,7 +195,7 @@ fn fixture_request(content: &str) -> LlmRequest {
 /// Python SDK + agent, written into the workspace and executed as the
 /// cooperative single-thread CPython child. `%MODE%` selects the agent's
 /// request sequence.
-const PY_CHILD: &str = r#"
+pub(crate) const PY_CHILD: &str = r#"
 import os, sys, time
 
 MAILBOX = os.path.join('.vh-sandbox-io', 'llm')
@@ -333,7 +333,7 @@ fn fixture_request_v2(content: &str, with_tools: bool) -> LlmRequestV2 {
 /// with distinct ordered responses, one streaming request, one provider
 /// error. `entries` bounds how much of the tape exists (miss fixture);
 /// `extra` appends a never-requested entry (leftover fixture).
-fn fixture_cassette_v2(entries: usize, extra: bool) -> CassetteV2 {
+pub(crate) fn fixture_cassette_v2(entries: usize, extra: bool) -> CassetteV2 {
     let mut cassette = CassetteV2::default();
     let tape: Vec<(LlmRequestV2, TapeEntry)> = vec![
         (
@@ -382,7 +382,7 @@ fn fixture_cassette_v2(entries: usize, extra: bool) -> CassetteV2 {
 
 /// Write the child source into the demo root (the controller-held
 /// precondition `declare_input_file` binds), returning its path.
-fn stage_child_source(
+pub(crate) fn stage_child_source(
     root: &std::path::Path,
     mode: &str,
 ) -> Result<std::path::PathBuf, SandboxError> {
@@ -391,7 +391,7 @@ fn stage_child_source(
     Ok(source)
 }
 
-fn child_spec(
+pub(crate) fn child_spec(
     cassette: &CassetteV2,
     source: &std::path::Path,
 ) -> Result<SandboxSpec, SandboxError> {
@@ -401,7 +401,7 @@ fn child_spec(
         .declare_input_file(source)
 }
 
-fn place_child_source(
+pub(crate) fn place_child_source(
     source: &std::path::Path,
     workspace: &std::path::Path,
 ) -> Result<(), SandboxError> {
