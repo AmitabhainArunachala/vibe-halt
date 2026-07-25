@@ -49,6 +49,7 @@ version = "0.1.0"
 name = "vh-sandbox"
 version = "0.1.0"
 dependencies = [
+ "vh-digest",
  "vh-trace",
 ]
 

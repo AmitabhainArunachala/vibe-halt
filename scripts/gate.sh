@@ -89,6 +89,48 @@ if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$divergent" -ne 1 ] || [ "$r
 fi
 echo "gate: sandbox subprocess nondeterminism is caught by run-twice (exit 1)"
 
+echo "== C5 gate: child-visible cassette transport — CPython child consumes the ordered tape (exit 0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode cassette-child)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN (child-visible cassette' || true)
+served=$(printf '%s\n' "$out" | grep -c '^  transport: served=4 unconsumed=0 taint=none' || true)
+if [ "$code" -ne 0 ] || [ "$verdicts" -ne 1 ] || [ "$served" -ne 1 ]; then
+  echo "GATE FAIL: cassette-child expected exit 0 + CLEAN + served=4/unconsumed=0/taint=none, got exit $code / $verdicts / $served"
+  echo "$out"
+  exit 1
+fi
+echo "gate: child-visible cassette transport replays the ordered tape (exit 0, D2)"
+
+echo "== C5 negative gate: cassette miss taints UNCHECKED (exact exit 3, never CLEAN/FINDINGS) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode cassette-child-miss)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: UNCHECKED (transport taint' || true)
+taints=$(printf '%s\n' "$out" | grep -c 'taint=request 3 beyond the recorded tape' || true)
+if [ "$code" -ne 3 ] || [ "$verdicts" -ne 1 ] || [ "$taints" -ne 1 ]; then
+  echo "GATE FAIL: cassette-child-miss expected exit 3 + UNCHECKED + anchored beyond-tape taint, got exit $code / $verdicts / $taints"
+  echo "$out"
+  exit 1
+fi
+echo "gate: cassette miss taints the run UNCHECKED (exit 3)"
+
+echo "== C5 negative gate: unconsumed recorded entry taints UNCHECKED (exact exit 3) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- sandbox-demo --mode cassette-child-extra)
+code=$?
+set -e
+verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: UNCHECKED (transport taint' || true)
+leftovers=$(printf '%s\n' "$out" | grep -c '^  transport: served=4 unconsumed=1 taint=none' || true)
+if [ "$code" -ne 3 ] || [ "$verdicts" -ne 1 ] || [ "$leftovers" -ne 1 ]; then
+  echo "GATE FAIL: cassette-child-extra expected exit 3 + UNCHECKED + unconsumed=1, got exit $code / $verdicts / $leftovers"
+  echo "$out"
+  exit 1
+fi
+echo "gate: unconsumed cassette history taints the run UNCHECKED (exit 3)"
+
 echo "== live gate: demo-net — sim-runtime echo pair must be CLEAN (exit 0) =="
 set +e
 out=$(cargo run -q --locked --offline -p vh-cli -- run --workload demo-net --seed 0xD1CE --universes 200)
