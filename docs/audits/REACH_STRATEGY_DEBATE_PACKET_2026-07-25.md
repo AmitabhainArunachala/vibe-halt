@@ -20,15 +20,17 @@ remains `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07
 **Process.** Four rounds as chartered: independent briefs; cross-examination
 (every steelman confirmed or corrected by its advocate before the attack
 counted); written mind-changing conditions; this synthesis, reviewed by all
-three seats. §5 dissents are verbatim and unedited.
+three seats. §5 dissents are verbatim and unedited. Amended same day for the nine Codex
+review findings on `414e2e9`; re-approved by all three seats.
 
 ## 0. What the debate established
 
 1. **The published-number defect is real; every seat reproduced it.**
    `corpus/entries/VB-003-dirty-read.md:10` pins `found 83/100`; the pinned
    command measures **96/100**. `VB-004-crash-toctou.md:10` pins `21/100`;
-   measures **38/100**. Gates stayed green because `scripts/gate.sh:147`
-   asserts only `"$fails" -lt 1` against a FAIL list the CLI truncates at ten
+   measures **38/100**. Gates stayed green because the affected recall gates
+   assert only `"$fails" -lt 1` (`scripts/gate.sh:173` VB-003, `:186`
+   VB-004; same pattern at `:147`) against a FAIL list the CLI truncates at ten
    (`crates/vh-cli/src/main.rs:410` `.take(10)`; observed
    `... and 86 more failing universes`). This is audit B.1 live on merged
    main; repair is owned by the unstarted C2b/K1 packages. Control: VB-007
@@ -65,13 +67,16 @@ three seats. §5 dissents are verbatim and unedited.
 
 ## 1. Recommended sequence
 
-Three ranked work packages, ~5 agent-days total, no law exceptions, no new
+Three ranked work packages, ~6 agent-days total, no law exceptions, no new
 capability code. Each was proposed during the debate by the seat its outcome
 can hurt most.
 
 **WP1 — M0: exact recall-pin repair (the deferred C2b/K1 slice).**
-Owner: `vibe-bug-corpus-2026-07` (entries; recall gates via the shared
-append-only `scripts/gate.sh` protocol). Cost: **1 agent-day**.
+Delivered as the controller's mandated split (controller:245): **K1** —
+entries and contract prose, owner `vibe-bug-corpus-2026-07`
+(`ACTIVE_TRACK.yaml:114-119` limits it to corpus artifacts) — then **C2b**
+— the exact `scripts/gate.sh` assertions, one separate serialized C2-core
+writer. Two exact-head PRs. Cost: **2 agent-days**.
 Acceptance: every corpus entry's recall gate asserts exact equality of the
 measured `always-failures` count against the entry's pinned count (replacing
 `-lt 1`); VB-003 re-pinned at 96/100 and VB-004 at 38/100 with before/after
@@ -81,13 +86,17 @@ consecutive runs at the pinned seed is quarantined `UNCHECKED`, never
 silently re-pinned.
 
 **WP2 — X-CONF: forward-confirmation probe (Seat C's abandonment trigger).**
-Owner: `vibe-bug-corpus-2026-07`, plus the controller:375 operator target
-authorization (named pinned pre-fix checkouts, disposable environment, no
+Owner: `vibe-bug-corpus-2026-07`, plus controller:375 named-target
+authorization granted against the exact recorded pre-fix repo/SHA pair,
+license, and execution plan before execution (disposable environment, no
 credentials, no live provider calls). Cost: **2 agent-days**, one per
 target. Protocol: for VB-008 (langgraph #6491) and VB-010 (langgraph #7361)
-at their pre-fix SHAs, attempt to force the already-documented bug's trigger
-on the real checkout using conventional test-level injection only (pytest,
-monkeypatch, mock provider, SIGKILL at a hook). Acceptance is reaching the
+at their pre-fix SHAs, attempt to force the *reduced mechanism's* trigger as
+the rig would name it — for VB-008 the torn-write window meeting the
+write-side validation gap (`corpus/entries/VB-008-unvalidated-checkpoint.md:24-34`),
+not merely the published invalid-output manifestation — using conventional
+test-level injection only (pytest, monkeypatch, mock provider, SIGKILL at a
+hook). A success on a trigger the sim could not have named does not count. Acceptance is reaching the
 pre-declared decision rule, not any particular outcome:
 ≥1/2 forced → the convergent Round-2 attack on M1's admissibility is
 falsified and **amended M1** (below) is the funded discriminator;
@@ -98,9 +107,11 @@ the supervisor lane instead.
 
 **WP3 — S0: supervisor target census (Seat A's abandonment trigger).**
 Owner: `vibe-bug-corpus-2026-07`; read-only; same disposable environment.
-Cost: **2 agent-days**. Protocol: mechanically pre-select ≥10 real,
-AI-authored, single-process CPython programs (selection rule recorded before
-reading any candidate); static import scan plus one syscall trace each;
+Cost: **2 agent-days**. Protocol: mechanically select **exactly ten**
+eligible real, AI-authored, single-process CPython programs — the first ten
+matching a selection rule recorded before reading any candidate (later
+matches listed, non-binding) — submitted as a controller:375 named list for
+approval before tracing; static import scan plus one syscall trace each;
 publish a census table of S2-profile violations (threads/fork/exec,
 C-extensions on the hot path, non-provider network, io_uring/IPC,
 unmanaged signals/timers; controller:422-423). Decision rule: <2/10
@@ -111,27 +122,35 @@ supervisor admission stays live. (At exactly 2/10, A's trigger does not fire
 but Seat C's endorsement of A does not engage; the operator sees the table
 either way.)
 
-**After the block (~day 5): fund exactly one discriminator, chosen by WP2's
+**After the block (~day 6): fund exactly one discriminator, chosen by WP2's
 rule, under its own pre-declared kills.**
 — **Amended M1** (Seat C): three-target pre-registered port trial,
 **15 agent-days**, corpus track (entries/provenance) plus a core-track
 writer for the `crates/vh-cli` workloads (ACTIVE_TRACK.yaml:114-118);
 M1-PC positive controls (each target ported
 at the parent SHA of one known, later-fixed defect; the rig must recall it
-or the target is disqualified and replaced); a finding counts only if
-replayable, forced on the real target, previously unreported, and
-human-confirmed; full-null kill → the recorded bleed-list picks A or B
-(provider/async blockers → B; syscall-class blockers → A); a positive
+or the target is disqualified and replaced from a pre-registered five-target
+pool — at most two replacements, every attempt counted in the report, pool
+exhaustion ending the trial as a porter-capability null distinct from an
+engine null); a finding counts only if replayable, forced on the real
+target, previously unknown per the controller's previously-known status and
+human-confirmation contract (controller:377), and human-confirmed;
+full-null kill → the recorded bleed-list picks A or B, classified per
+target (provider/async → B; syscall-class → A; neither or model-fidelity →
+no vote), majority of voting targets deciding — a tie or zero votes returns
+to the operator with the recorded lists; a positive
 (≥1 previously-unknown, forward-confirmed finding) fires Seat B's written
 B→C trigger — Seat B endorses the port kit and no runtime lane is funded.
 — **VH-PY-0-FIX** (Seat B): deterministic asyncio event loop over the C5
-protocol, **10 agent-days**, core track; fixture is a Python-level
+protocol, **10 agent-days**, core track — including its own minimal
+protocol-v1 transport slice (2 of the 10 days, Seat B's Round-1 costing;
+full C5 remains a separate package); fixture is a Python-level
 re-reduction of harvested VB-011 (not an invented race); kills at day 10 on
 any divergence unattributable to a receipt-declared `Open` channel or
 no recall within 1,000 universes at two seeds — that failure is B's written
 flip to putting C7/S1 before the operator.
 
-Worst case to a premise verdict: 5 + 15 = **20 agent-days**, within the
+Worst case to a premise verdict: 6 + 15 = **21 agent-days**, within the
 ratified budget frame (`BUILD_PLAN:78-86`; balance recorded unknown, so no
 package here carries spending authority).
 
@@ -156,7 +175,7 @@ into measured evidence for Seat B's.
 
 ## 3. What we are giving up
 
-- **Five days of zero capability progress, deliberately.** C5 — the audit's
+- **Six days of zero capability progress, deliberately.** C5 — the audit's
   E.2 blocker and the first step of F.14's own sequence — does not start
   inside the block. The packet puts the audit's recommended sequence behind
   evidence gates; that is a real demotion of F.14, not a scheduling detail.
@@ -175,7 +194,7 @@ into measured evidence for Seat B's.
   funds the supervisor lane, so F.14's ten days can go unspent even in
   outcomes where S0 keeps that lane alive.
 - **Speed.** Both capability seats pre-agreed to stand down for the block;
-  if the operator already believes one thesis, the block costs five days of
+  if the operator already believes one thesis, the block costs six days of
   runway to learn what the operator would have assumed.
 
 ## 4. Law exceptions required
@@ -252,13 +271,15 @@ failure they couldn't schedule.
 
 ## 7. Operator gate
 
-**One decision: authorize the 5-agent-day evidence block (WP1 M0 → WP2
-X-CONF → WP3 S0), including controller:375 target authority for the two
-named pre-fix public checkouts in a disposable environment, with the §2
-table binding the choice of the single funded discriminator?**
+**One decision: authorize the 6-agent-day evidence block (WP1 K1→C2b → WP2
+X-CONF → WP3 S0), with the §2 table binding the choice of the single funded
+discriminator?**
 
-- **YES** — no further operator decision is needed until the block reports;
-  the follow-on admission PRs arrive pre-bound to the §2 rules.
+- **YES** — the block runs; the only further operator touches are the
+  controller:375 named-target approvals against exact recorded
+  repo/SHA/license lists (X-CONF's two pre-fix checkouts; S0's ten
+  programs) before those checkouts execute; the follow-on admission PRs
+  arrive pre-bound to the §2 rules.
 - **NO** — pick a seat directly and its chartered path runs instead:
   **A** (C5 → S0 → C7 decision → 10-day spike), **B** (C5 → VH-PY-0-FIX),
   or **C** (M0 → amended M1).
