@@ -3,5 +3,6 @@
 //! clients.
 
 pub mod receipts;
+pub mod receipts_v2;
 pub mod shrink_cli;
 pub mod workloads;

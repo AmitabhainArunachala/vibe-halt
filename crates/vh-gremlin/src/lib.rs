@@ -201,6 +201,46 @@ impl FaultKind {
             FaultKind::NetworkReorder => "network_reorder".to_string(),
         }
     }
+
+    /// Exact inverse of [`FaultKind::canonical`], so a persisted evidence
+    /// bundle can rebuild the fault plan it recorded (post-audit C3 shrink
+    /// lineage). Fail-closed: any unknown label, missing/extra parameter,
+    /// or non-numeric parameter is an error, never a default.
+    pub fn parse_canonical(s: &str) -> Result<FaultKind, String> {
+        let (label, param) = match s.split_once(':') {
+            Some((l, p)) => (l, Some(p)),
+            None => (s, None),
+        };
+        let need = |p: Option<&str>| -> Result<u64, String> {
+            p.ok_or_else(|| format!("fault {label:?} requires a parameter"))?
+                .parse::<u64>()
+                .map_err(|e| format!("fault {label:?} parameter: {e}"))
+        };
+        let none = |kind: FaultKind, p: Option<&str>| -> Result<FaultKind, String> {
+            match p {
+                None => Ok(kind),
+                Some(extra) => Err(format!("fault {label:?} takes no parameter, got {extra:?}")),
+            }
+        };
+        match label {
+            "crash_restart" => none(FaultKind::CrashRestart, param),
+            "network_delay" => Ok(FaultKind::NetworkDelay {
+                delay_nanos: need(param)?,
+            }),
+            "network_partition" => Ok(FaultKind::NetworkPartition {
+                duration_nanos: need(param)?,
+            }),
+            "disk_write_fail" => none(FaultKind::DiskWriteFail, param),
+            "clock_skew" => Ok(FaultKind::ClockSkew {
+                skew_nanos: need(param)?,
+            }),
+            "torn_write" => none(FaultKind::TornWrite, param),
+            "fsync_lie" => none(FaultKind::FsyncLie, param),
+            "network_duplicate" => none(FaultKind::NetworkDuplicate, param),
+            "network_reorder" => none(FaultKind::NetworkReorder, param),
+            other => Err(format!("unknown canonical fault {other:?}")),
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -461,5 +501,42 @@ mod tests {
         };
         let plan = FaultPlan::new(vec![a.clone(), b.clone()]);
         assert_eq!(plan.injections(), &[a, b]);
+    }
+
+    /// Every canonical rendering must survive a parse round trip — the
+    /// evidence-bundle rebuild path (C3 shrink lineage) depends on it.
+    #[test]
+    fn canonical_roundtrips_through_parse() {
+        let kinds = [
+            FaultKind::CrashRestart,
+            FaultKind::NetworkDelay {
+                delay_nanos: 12_345,
+            },
+            FaultKind::NetworkPartition {
+                duration_nanos: 999,
+            },
+            FaultKind::DiskWriteFail,
+            FaultKind::ClockSkew { skew_nanos: 0 },
+            FaultKind::TornWrite,
+            FaultKind::FsyncLie,
+            FaultKind::NetworkDuplicate,
+            FaultKind::NetworkReorder,
+        ];
+        for kind in kinds {
+            let rendered = kind.canonical();
+            let parsed = FaultKind::parse_canonical(&rendered).unwrap();
+            assert_eq!(parsed, kind, "roundtrip failed for {rendered:?}");
+        }
+    }
+
+    #[test]
+    fn parse_canonical_fails_closed() {
+        // Unknown label, missing parameter, extra parameter, junk number.
+        assert!(FaultKind::parse_canonical("meteor_strike").is_err());
+        assert!(FaultKind::parse_canonical("network_delay").is_err());
+        assert!(FaultKind::parse_canonical("crash_restart:7").is_err());
+        assert!(FaultKind::parse_canonical("clock_skew:oops").is_err());
+        assert!(FaultKind::parse_canonical("network_delay:-3").is_err());
+        assert!(FaultKind::parse_canonical("").is_err());
     }
 }
