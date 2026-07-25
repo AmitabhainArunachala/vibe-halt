@@ -95,19 +95,35 @@ REPO = Path(__file__).resolve().parent.parent
 
 ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\b"
 RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
-POINTER_MODULE_PATTERN = r"\b(std|core)\s*::\s*(ptr\b|\{[^}]*\bptr\b)"
-POINTER_MACRO_PATTERN = r"\baddr_of(?:_mut)?\s*!"
+# rustc tokenizes a block comment like whitespace, so `core/* gap */::ptr`
+# and `addr_of/* gap */!` compile as pointer operations while a plain \s*
+# separator never bridges the comment (PR #35 thread r3649116245). Line
+# scanning still cannot see a comment spanning lines — that stays inside
+# the documented lexical-layer limits.
+COMMENT_SEP = r"(?:\s|/\*.*?\*/)*"
+POINTER_MODULE_PATTERN = (
+    r"\b(std|core)" + COMMENT_SEP + r"::" + COMMENT_SEP + r"(ptr\b|\{[^}]*\bptr\b)"
+)
+POINTER_MACRO_PATTERN = r"\baddr_of(?:_mut)?" + COMMENT_SEP + r"!"
 POINTER_API_PATTERN = (
     r"\bNonNull\s*::|(?<!fn\s)\b(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\s*\("
     r"|\.\s*addr\s*\("
 )
+# `[\s(]*` instead of `\s*`: `let leak = (from_ref);` is the same function
+# item merely wrapped in parentheses (PR #35 thread r3649116236). The
+# anchor set (=, ::, .) is unchanged, so `fn from_ref(...)` declarations
+# and `let from_ref = 3;` shadowing stay clean.
 POINTER_ITEM_PATTERN = (
-    r"(?:=\s*|::\s*|\.\s*)(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"(?:=|::|\.)[\s(]*(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b"
 )
 POINTER_TRAIT_PATTERN = r"\b(std|core)\s*::\s*fmt\s*::\s*Pointer\b"
-POINTER_FORMAT_PATTERN = r"\{(?:[A-Za-z_][A-Za-z0-9_]*|\d*)?:[^{}]*p\}"
+# `[^\W\d]\w*` (Unicode identifier: any non-digit word char, then word
+# chars) instead of the ASCII-only `[A-Za-z_][A-Za-z0-9_]*`: Rust
+# identifiers are XID-based, so `format!("{指针:p}")` formats an address
+# exactly like `format!("{p:p}")` (PR #35 thread r3649116243).
+POINTER_FORMAT_PATTERN = r"\{(?:[^\W\d]\w*|\d*)?:[^{}]*p\}"
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
@@ -264,6 +280,12 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("let leak = Vec::<u8>::as_ptr;", True, True),
     ("let leak = from_ref;", True, True),
     ("let p = values.as_ptr();", True, True),
+    # PR #35 review-debt mutants (threads r3649116236 / r3649116243 /
+    # r3649116245): each bypassed the patterns as merged. Known-answer
+    # cases first (red), then the pattern repair — never the reverse.
+    ("let leak = (from_ref);", True, True),
+    ('let 指针 = &value; format!("{指针:p}");', True, True),
+    ("let p = core/* gap */::ptr::addr_of/* gap */!(value);", True, True),
     ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
     ("let erased: &dyn Debug = &value;", False, False),
     ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
@@ -273,6 +295,12 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ('format!("{:?}", &value)', False, False),
     ("fn from_ref<T>(value: &T) -> &T { value }", False, False),
     ("fn from_ref(value: &u64) -> &u64 { value }", False, False),
+    # Negative probes for the r36491162xx repairs: shadowing declarations,
+    # non-address debug formatting, and ':p...'-prefixed format words must
+    # all stay clean after the mutants above turn red->green.
+    ("let from_ref = 3;", False, False),
+    ('format!("{p:?}")', False, False),
+    ('format!("{x:pretty}")', False, False),
     ("struct NonNull;", False, False),
     ("struct NonNullCounter(u64);", False, False),
     ("fn as_ptr() -> usize { 0 }", False, False),
@@ -910,6 +938,15 @@ def self_test() -> int:
         ("crates/vh-core/src/lib.rs", "let p = &x as *const u64;", True),
         ("crates/vh-core/src/lib.rs", "let p = std::ptr::from_ref(&x);", True),
         ("crates/vh-core/src/lib.rs", "let p = NonNull::new(raw);", True),
+        # The three PR #35 mutants pinned to the exact kernel path the
+        # review threads probed (patterns_for must hit all three).
+        ("crates/vh-core/src/lib.rs", "let leak = (from_ref);", True),
+        ("crates/vh-core/src/lib.rs", 'let 指针 = &value; format!("{指针:p}");', True),
+        (
+            "crates/vh-core/src/lib.rs",
+            "let p = core/* gap */::ptr::addr_of/* gap */!(value);",
+            True,
+        ),
         ("crates/vh-core/src/lib.rs", "fn show<T: Debug>(x: T) { observe(x); }", False),
     ]
     for rel, sample, expected in boundary_cases:
