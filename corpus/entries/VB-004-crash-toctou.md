@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[act_epoch_matches_check] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `8970b7cdd44582e9005aa3a8ba334f93` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **38**; clean **62**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 62 exactly (>=1) at the pinned budget; pinned clean universe 1: `vh run --workload corpus-crash-toctou --seed 0xD1CE --universe 1` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | per-action check-epoch and act-epoch facts must be present and equal, AND required-progress holds: a universe where no check->act pair was ever exercised fails closed (PR #32). |
 
@@ -41,7 +42,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-crash-toctou --seed 0xD1CE --universes 100
 always-failures: 38 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 62
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 9): trace hash

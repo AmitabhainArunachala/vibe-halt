@@ -33,6 +33,7 @@ never computed by hand.
 | `oracle_contract` | the CLI-printed `required_oracles=[…] required_always=[…] required_sometimes=[…]` line; a missing required oracle is a contract violation, pinned 0 |
 | `generator` | palette id and fault-plan schema from the CLI banner, plus the failing-repro universe's fault-plan digest |
 | `schedule` | schedule policy and decision-tape requirement (`tape=` banner fact; tape digest when recorded) |
+| `divergence_check` | whether run-twice divergence comparison was enabled (`divergence-check=` banner fact), plus the CLI evidence label |
 | `counts` | ALL six summary counters, exact: always-failures, clean, divergent, sometimes unreached, invalid completions, contract violations |
 | `expected_exit` | the exact process exit code and verdict line of the pinned campaign |
 | `control` | the fault-free control: exact clean count (must be >=1 where the model permits) plus one pinned clean universe with its expected exit |

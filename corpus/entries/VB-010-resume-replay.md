@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[resume_at_most_once] required_always=[] required_sometimes=[crash_resume]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `8cbbebd87af43b61abaf92c923d7f0f8` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **70**; clean **30**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 30 exactly (>=1) at the pinned budget; pinned clean universe 0: `vh run --workload corpus-resume-replay --seed 0xD1CE --universe 0` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | `applied:<step>` facts must be present and well-formed with a progress claim — "never ran at all" no longer satisfies at-most-once (PR #32); the `crash_resume` sometimes-property must be reached within the budget (`sometimes unreached` pinned 0). |
 
@@ -63,7 +64,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-resume-replay --seed 0xD1CE --universes 100
 always-failures: 70 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 30
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 1): trace hash

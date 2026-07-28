@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[published_implies_durable] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `f2aa300293954b8fd2955ef1a0b666af` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **96**; clean **4**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 4 exactly (>=1) at the pinned budget; pinned clean universe 23: `vh run --workload corpus-dirty-read --seed 0xD1CE --universe 23` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | every `published:<record>` fact must be intact in the final durable state, AND required-progress holds: a universe where no record was ever published fails closed — silence is not success (PR #32). |
 
@@ -41,7 +42,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-dirty-read --seed 0xD1CE --universes 100
 always-failures: 96 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 4
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 0): trace hash
