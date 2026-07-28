@@ -97,10 +97,14 @@ ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\
 RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
 # rustc tokenizes a block comment like whitespace, so `core/* gap */::ptr`
 # and `addr_of/* gap */!` compile as pointer operations while a plain \s*
-# separator never bridges the comment (PR #35 thread r3649116245). Line
-# scanning still cannot see a comment spanning lines — that stays inside
-# the documented lexical-layer limits.
-COMMENT_SEP = r"(?:\s|/\*.*?\*/)*"
+# separator never bridges the comment (PR #35 thread r3649116245). Keep
+# each separator token unambiguous and make the outer repetition possessive:
+# the old `(?:\s|/\*.*?\*/)*` had exponentially many partitions when a run
+# of adjacent comments was followed by a failing suffix (PR #38 thread
+# r3649933850). Line scanning still cannot see a comment spanning lines —
+# that stays inside the documented lexical-layer limits.
+BLOCK_COMMENT = r"/\*(?:[^*]|\*(?!/))*\*/"
+COMMENT_SEP = rf"(?:(?:\s++|{BLOCK_COMMENT}))*+"
 POINTER_MODULE_PATTERN = (
     r"\b(std|core)" + COMMENT_SEP + r"::" + COMMENT_SEP + r"(ptr\b|\{[^}]*\bptr\b)"
 )
@@ -110,20 +114,32 @@ POINTER_API_PATTERN = (
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\s*\("
     r"|\.\s*addr\s*\("
 )
-# `[\s(]*` instead of `\s*`: `let leak = (from_ref);` is the same function
-# item merely wrapped in parentheses (PR #35 thread r3649116236). The
-# anchor set (=, ::, .) is unchanged, so `fn from_ref(...)` declarations
-# and `let from_ref = 3;` shadowing stay clean.
+# Parentheses and same-line block comments are both Rust whitespace-like
+# separators before a function item: `let leak = (/* gap */from_ref);`
+# carries the same item as `let leak = from_ref;` (PR #35 thread
+# r3649116236; PR #38 thread r3649933845). The anchor set (=, ::, .) is
+# unchanged, so `fn from_ref(...)` declarations and `let from_ref = 3;`
+# shadowing stay clean.
+POINTER_ITEM_SEP = rf"(?:(?:[\s(]++|{BLOCK_COMMENT}))*+"
 POINTER_ITEM_PATTERN = (
-    r"(?:=|::|\.)[\s(]*(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"(?:=|::|\.)" + POINTER_ITEM_SEP + r"(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b"
 )
+COMMENT_NORMALIZED_PATTERNS = frozenset(
+    {POINTER_MODULE_PATTERN, POINTER_MACRO_PATTERN, POINTER_ITEM_PATTERN}
+)
 POINTER_TRAIT_PATTERN = r"\b(std|core)\s*::\s*fmt\s*::\s*Pointer\b"
-# `[^\W\d]\w*` (Unicode identifier: any non-digit word char, then word
-# chars) instead of the ASCII-only `[A-Za-z_][A-Za-z0-9_]*`: Rust
-# identifiers are XID-based, so `format!("{指针:p}")` formats an address
-# exactly like `format!("{p:p}")` (PR #35 thread r3649116243).
+# Retain the original Python-Unicode word branch for ordinary identifiers,
+# then add a non-overlapping conservative fallback below. Python `re` has no
+# XID_Start/XID_Continue character properties, and Rust accepts XID
+# characters such as `℘` that Python excludes from `\w` (PR #38 thread
+# r3649933848). The fallback admits any non-delimiter token not already
+# matched here: a conservative lexical superset of Rust XID placeholders
+# that, like the rest of this line-regex layer, may reject inert text.
 POINTER_FORMAT_PATTERN = r"\{(?:[^\W\d]\w*|\d*)?:[^{}]*p\}"
+POINTER_FORMAT_XID_FALLBACK_PATTERN = (
+    r"\{(?!(?:[^\W\d]\w*|\d*):)[^{}:\s]+:[^{}]*p\}"
+)
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
@@ -214,6 +230,9 @@ DENYLIST: dict[str, str] = {
     r"std::net": "network I/O in the kernel; simulated network lands in Phase 1",
     r"std::process": "process control in the kernel; subprocess universes live in the Tier-2 sandbox",
     POINTER_FORMAT_PATTERN: "pointer-address formatting; addresses vary per run (ASLR)",
+    POINTER_FORMAT_XID_FALLBACK_PATTERN: (
+        "pointer-address formatting through a Rust XID identifier; addresses vary per run (ASLR)"
+    ),
     RAW_POINTER_TYPE_PATTERN: "raw-pointer types/casts can expose allocator or ASLR identity",
     POINTER_MODULE_PATTERN: "pointer construction/address operations are not deterministic observables",
     POINTER_MACRO_PATTERN: "pointer address macros are forbidden in kernel crates",
@@ -238,6 +257,13 @@ DENYLIST: dict[str, str] = {
         "(adversarial fixtures need an explicit per-file exemption)"
     ),
 }
+
+# Stress fixtures stay deterministic: no wall-clock threshold enters the
+# mandatory self-test. Their size makes a nested/backtracking regression
+# mechanically expensive while the linear scanner stays cheap; the review
+# receipt separately records measured timings.
+DEEP_NESTED_BLOCK_COMMENT = "/* " * 256 + "deep" + " */" * 256
+LONG_ADJACENT_BLOCK_COMMENTS = "/*x*/" * 2_048
 
 # --self-test regex corpus: (sample line, must_hit_in_src, must_hit_in_tests).
 # src/tests distinction retained to PROVE there is no directory-based
@@ -291,6 +317,39 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("let leak = (from_ref);", True, True),
     ('let 指针 = &value; format!("{指针:p}");', True, True),
     ("let p = core/* gap */::ptr::addr_of/* gap */!(value);", True, True),
+    # PR #38 late review debt (threads r3649933845 / r3649933848): block
+    # comments remain separators inside a parenthesized function-item alias,
+    # and Rust XID_Start is broader than Python regex `\w`.
+    ("let leak = (/* gap */from_ref);", True, True),
+    ('let ℘ = &value; format!("{℘:p}");', True, True),
+    # Follow-up adversarial review: Rust block comments nest. The exact
+    # accepted-Rust mutant and a depth-256 version must both hit without
+    # reviving the old nested-regex performance path.
+    ("let leak = (/* outer /* inner */ outer */from_ref);", True, True),
+    (f"let leak = ({DEEP_NESTED_BLOCK_COMMENT}from_ref);", True, True),
+    # Literal delimiters before the real comment must not poison lexical
+    # depth. All are accepted Rust at the pinned toolchain.
+    ('let s = "/*"; let leak = (/* outer /* inner */ outer */from_ref);', True, True),
+    (
+        r'''let s = "\"/*"; let leak = (/* outer /* inner */ outer */from_ref);''',
+        True,
+        True,
+    ),
+    ('let s = r#"/*"#; let leak = (/* outer /* inner */ outer */from_ref);', True, True),
+    ('let s = b"/*"; let leak = (/* outer /* inner */ outer */from_ref);', True, True),
+    ('let s = br#"/*"#; let leak = (/* outer /* inner */ outer */from_ref);', True, True),
+    (
+        "fn f<'a>(x: &'a u64) { let leak = (/* outer /* inner */ outer */from_ref); }",
+        True,
+        True,
+    ),
+    # Failing suffixes force the scanner to consume the full separator
+    # stress input before deciding clean.
+    ("// core" + LONG_ADJACENT_BLOCK_COMMENTS + "X", False, False),
+    ("// core" + DEEP_NESTED_BLOCK_COMMENT + "X", False, False),
+    # Comment normalization is additive only: raw rules still inspect inert
+    # comment text under this deliberately conservative line-regex policy.
+    ("/* Instant::now() */", True, True),
     ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
     ("let erased: &dyn Debug = &value;", False, False),
     ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
@@ -535,6 +594,119 @@ def patterns_for(rel_path: str) -> dict[str, str]:
     for exempt_pattern in EXEMPT.get(rel_path, set()):
         pats.pop(exempt_pattern, None)
     return pats
+
+
+def _quoted_string_end(line: str, quote: int) -> int:
+    """Return just after a same-line quoted string, or EOL if unclosed."""
+    i = quote + 1
+    while i < len(line):
+        if line[i] == "\\":
+            i = min(i + 2, len(line))
+        elif line[i] == '"':
+            return i + 1
+        else:
+            i += 1
+    return len(line)
+
+
+def _char_literal_end(line: str, quote: int) -> int | None:
+    """Recognize one Rust char/byte-char without mistaking lifetimes."""
+    i = quote + 1
+    if i >= len(line) or line[i] in "'\r\n":
+        return None
+    if line[i] == "\\":
+        i += 1
+        if i >= len(line):
+            return None
+        if line[i] == "x":
+            i += 3  # `x` plus two hex digits; closing quote checked below.
+        elif line[i] == "u" and i + 1 < len(line) and line[i + 1] == "{":
+            close = line.find("}", i + 2)
+            if close < 0:
+                return None
+            i = close + 1
+        else:
+            i += 1
+    else:
+        i += 1
+    if i < len(line) and line[i] == "'":
+        return i + 1
+    return None
+
+
+def _rust_literal_end(line: str, start: int) -> int | None:
+    """Recognize Rust string/byte-string/char prefixes at ``start``."""
+    # Raw strings: r"...", r#"..."#, br##"..."##, and C-string `cr`.
+    for prefix in ("br", "cr", "r"):
+        if not line.startswith(prefix, start):
+            continue
+        quote = start + len(prefix)
+        while quote < len(line) and line[quote] == "#":
+            quote += 1
+        if quote >= len(line) or line[quote] != '"':
+            continue
+        hashes = quote - (start + len(prefix))
+        terminator = '"' + "#" * hashes
+        end = line.find(terminator, quote + 1)
+        return len(line) if end < 0 else end + len(terminator)
+
+    for prefix in ("b", "c", ""):
+        quote = start + len(prefix)
+        if quote < len(line) and line.startswith(prefix, start) and line[quote] == '"':
+            return _quoted_string_end(line, quote)
+
+    if line.startswith("b'", start):
+        return _char_literal_end(line, start + 1)
+    if line[start] == "'":
+        return _char_literal_end(line, start)
+    return None
+
+
+def _normalize_same_line_nested_block_comments(line: str) -> str | None:
+    """Replace complete same-line Rust block comments with one space.
+
+    Rust block comments nest, which a regular expression cannot recognize at
+    arbitrary depth without a bounded false-confidence claim. This tiny lexer
+    is linear in the line length. It returns ``None`` for an unterminated
+    comment so the documented cross-line lexical limit remains explicit;
+    every raw regex still runs before this additive normalized path.
+    """
+    out: list[str] = []
+    depth = 0
+    saw_comment = False
+    i = 0
+    while i < len(line):
+        literal_end = _rust_literal_end(line, i) if depth == 0 else None
+        if literal_end is not None:
+            out.append(line[i:literal_end])
+            i = literal_end
+        elif line.startswith("/*", i):
+            if depth == 0:
+                out.append(" ")
+            depth += 1
+            saw_comment = True
+            i += 2
+        elif depth > 0 and line.startswith("*/", i):
+            depth -= 1
+            i += 2
+        elif depth > 0:
+            i += 1
+        else:
+            out.append(line[i])
+            i += 1
+    if depth != 0 or not saw_comment:
+        return None
+    return "".join(out)
+
+
+def pattern_hits(pattern: str, line: str) -> bool:
+    """Raw defense-in-depth match plus an additive nested-comment path."""
+    if re.search(pattern, line):
+        return True
+    if pattern not in COMMENT_NORMALIZED_PATTERNS:
+        return False
+    normalized = _normalize_same_line_nested_block_comments(line)
+    return normalized is not None and re.search(pattern, normalized) is not None
 
 
 def all_crates() -> list[Path]:
@@ -864,7 +1036,7 @@ def self_test() -> int:
     for sample, expect_src, expect_test in SELF_TEST:
         for kind, expected in (("src", expect_src), ("tests", expect_test)):
             pseudo_path = f"crates/vh-x/{kind}/sample.rs"
-            hit = any(re.search(p, sample) for p in patterns_for(pseudo_path))
+            hit = any(pattern_hits(p, sample) for p in patterns_for(pseudo_path))
             if hit != expected:
                 failures += 1
                 print(
@@ -952,10 +1124,36 @@ def self_test() -> int:
             "let p = core/* gap */::ptr::addr_of/* gap */!(value);",
             True,
         ),
+        # The exact PR #38 late-review mutants, pinned at a kernel path.
+        (
+            "crates/vh-core/src/lib.rs",
+            "let leak = (/* gap */from_ref);",
+            True,
+        ),
+        (
+            "crates/vh-core/src/lib.rs",
+            'let ℘ = &value; format!("{℘:p}");',
+            True,
+        ),
+        (
+            "crates/vh-core/src/lib.rs",
+            "let leak = (/* outer /* inner */ outer */from_ref);",
+            True,
+        ),
+        (
+            "crates/vh-core/src/lib.rs",
+            f"let leak = ({DEEP_NESTED_BLOCK_COMMENT}from_ref);",
+            True,
+        ),
+        (
+            "crates/vh-core/src/lib.rs",
+            'let s = "/*"; let leak = (/* outer /* inner */ outer */from_ref);',
+            True,
+        ),
         ("crates/vh-core/src/lib.rs", "fn show<T: Debug>(x: T) { observe(x); }", False),
     ]
     for rel, sample, expected in boundary_cases:
-        hit = any(re.search(p, sample) for p in patterns_for(rel))
+        hit = any(pattern_hits(p, sample) for p in patterns_for(rel))
         if hit != expected:
             failures += 1
             print(
@@ -1011,7 +1209,7 @@ def main() -> int:
                 path.read_text(encoding="utf-8").splitlines(), start=1
             ):
                 for pattern, reason in pats.items():
-                    if re.search(pattern, line):
+                    if pattern_hits(pattern, line):
                         violations.append(
                             f"{rel}:{lineno}: [{pattern}] {reason}\n    {line.strip()}"
                         )
