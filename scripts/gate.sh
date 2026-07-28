@@ -236,9 +236,17 @@ echo "gate: demo-disk-buggy correctly caught (exit 1, oracle:wal_durability)"
 # red. Each entry's pinned fault-free control universe must then replay
 # with no finding — exit 3 under the single-replay UNCHECKED policy —
 # so "the oracle fails everything" can never masquerade as recall.
+corpus_campaign_banner() { # workload divergence-check
+  local workload="$1" divergence="$2"
+  printf 'vibe-halt: workload=%s seed=0xd1ce universes=100 palette=v0 divergence-check=%s schedule=fifo tape=false fault-plan-schema=vh-fault-plan-v1' \
+    "$workload" "$divergence"
+}
+
 corpus_recall_gate() { # entry workload oracle manifestations invalid clean control_universe
   local entry="$1" workload="$2" oracle="$3" fails_pin="$4" invalid_pin="$5" clean_pin="$6" control_u="$7"
   echo "== corpus recall gate: $entry ($workload) must report EXACTLY ${fails_pin} manifestation(s) + ${invalid_pin} invalid assumption(s) / 100 (exit 1) =="
+  local banner
+  banner=$(corpus_campaign_banner "$workload" true)
   local summary="  always-failures: ${fails_pin} universe(s); divergent: 0; sometimes unreached: 0; invalid completions: ${invalid_pin}; contract violations: 0; clean: ${clean_pin}"
   set +e
   out=$(cargo run -q --locked --offline -p vh-cli -- run --workload "$workload" --seed 0xD1CE --universes 100)
@@ -246,9 +254,12 @@ corpus_recall_gate() { # entry workload oracle manifestations invalid clean cont
   set -e
   verdicts=$(printf '%s\n' "$out" | grep -cFx -- '  verdict: FINDINGS (see above)' || true)
   anchored=$(printf '%s\n' "$out" | grep -c "^  FAIL universe .*: oracle:$oracle" || true)
+  exact_banner=$(printf '%s\n' "$out" | grep -cFx -- "$banner" || true)
   exact=$(printf '%s\n' "$out" | grep -cFx -- "$summary" || true)
-  if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$anchored" -eq 0 ] || [ "$exact" -ne 1 ]; then
-    echo "GATE FAIL: $entry ($workload) expected exit 1 + FINDINGS + anchored oracle:$oracle + EXACT pinned summary, got exit $code / verdicts $verdicts / anchored $anchored / exact-summary $exact"
+  if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$anchored" -eq 0 ] || [ "$exact_banner" -ne 1 ] || [ "$exact" -ne 1 ]; then
+    echo "GATE FAIL: $entry ($workload) expected exit 1 + FINDINGS + anchored oracle:$oracle + EXACT campaign banner + EXACT pinned summary, got exit $code / verdicts $verdicts / anchored $anchored / exact-banner $exact_banner / exact-summary $exact"
+    echo "  pinned banner:  $banner"
+    printf '%s\n' "$out" | grep '^vibe-halt: ' | sed 's/^/  actual banner:  /' || true
     echo "  pinned:  $summary"
     printf '%s\n' "$out" | grep '^  always-failures: ' | sed 's/^  /  actual:  /' || true
     exit 1
@@ -265,6 +276,28 @@ corpus_recall_gate() { # entry workload oracle manifestations invalid clean cont
   fi
   echo "gate: $entry split is exactly ${fails_pin} manifestation(s) + ${invalid_pin} invalid assumption(s) + ${clean_pin} clean / 100 (exit 1, oracle:$oracle); control universe $control_u clean (exit 3)"
 }
+
+# One live negative probe is sufficient to prove the exact banner pin
+# rejects an otherwise identical campaign when replay agreement is
+# disabled. Keeping this outside corpus_recall_gate avoids ten redundant
+# no-divergence campaigns.
+echo "== corpus banner negative gate: --no-divergence-check cannot satisfy the pinned campaign banner =="
+corpus_banner_probe_expected=$(corpus_campaign_banner corpus-lost-update true)
+corpus_banner_probe_disabled=$(corpus_campaign_banner corpus-lost-update false)
+set +e
+corpus_banner_probe_out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-lost-update --seed 0xD1CE --universes 100 --no-divergence-check)
+corpus_banner_probe_code=$?
+set -e
+corpus_banner_probe_expected_matches=$(printf '%s\n' "$corpus_banner_probe_out" | grep -cFx -- "$corpus_banner_probe_expected" || true)
+corpus_banner_probe_disabled_matches=$(printf '%s\n' "$corpus_banner_probe_out" | grep -cFx -- "$corpus_banner_probe_disabled" || true)
+if [ "$corpus_banner_probe_code" -ne 1 ] || [ "$corpus_banner_probe_expected_matches" -ne 0 ] || [ "$corpus_banner_probe_disabled_matches" -ne 1 ]; then
+  echo "GATE FAIL: --no-divergence-check banner probe expected exit 1 + zero pinned-banner matches + one disabled-banner match, got exit $corpus_banner_probe_code / pinned $corpus_banner_probe_expected_matches / disabled $corpus_banner_probe_disabled_matches"
+  echo "  pinned banner:    $corpus_banner_probe_expected"
+  echo "  disabled banner:  $corpus_banner_probe_disabled"
+  printf '%s\n' "$corpus_banner_probe_out" | grep '^vibe-halt: ' | sed 's/^/  actual banner:    /' || true
+  exit 1
+fi
+echo "gate: --no-divergence-check emits divergence-check=false and cannot satisfy the exact divergence-check=true banner pin"
 
 # Pins transcribed from each entry's K1 contract freeze
 # (corpus/entries/VB-*.md `counts` and `control` fields, 2026-07-25).
