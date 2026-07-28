@@ -37,7 +37,7 @@ classification corrected 2026-07-28.
 ## Contract freeze (K1 v1.2 truth correction, 2026-07-28)
 
 All counts measured twice consecutively at engine head
-`a256b955a93ae7d1a5d6f958da5cd24f07ca3cb7`,
+`53adaea32b7a002d645f84cb62924194f29c32cb`,
 byte-identical summaries both passes (corpus/** edits never touch
 the engine, so this entry's PR does not move them):
 
@@ -71,7 +71,7 @@ dirty-read manifestations. PR #32 (`0f75659`, commit `9c8cae3`) then made
 13 no-publication universes fail closed, but the 2026-07-25 K1 freeze
 incorrectly added those coverage findings to manifestation recall and
 reported 96/100. Core classification commit
-`a256b955a93ae7d1a5d6f958da5cd24f07ca3cb7` moves those 13 universes to
+`53adaea32b7a002d645f84cb62924194f29c32cb` moves those 13 universes to
 typed `InvalidAssumption` invalid completions. The corrected split is
 83 manifestation + 13 coverage-invalid + 4 clean; total finding
 universes remain 96, so no fail-closed evidence was discarded.
