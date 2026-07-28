@@ -97,10 +97,14 @@ ATOMIC_PATTERN = r"\bAtomic(Bool|Ptr|I8|I16|I32|I64|Isize|U8|U16|U32|U64|Usize)\
 RAW_POINTER_TYPE_PATTERN = r"\*\s*(const|mut)\b|&\s*raw\s+(const|mut)\b"
 # rustc tokenizes a block comment like whitespace, so `core/* gap */::ptr`
 # and `addr_of/* gap */!` compile as pointer operations while a plain \s*
-# separator never bridges the comment (PR #35 thread r3649116245). Line
-# scanning still cannot see a comment spanning lines — that stays inside
-# the documented lexical-layer limits.
-COMMENT_SEP = r"(?:\s|/\*.*?\*/)*"
+# separator never bridges the comment (PR #35 thread r3649116245). Keep
+# each separator token unambiguous and make the outer repetition possessive:
+# the old `(?:\s|/\*.*?\*/)*` had exponentially many partitions when a run
+# of adjacent comments was followed by a failing suffix (PR #38 thread
+# r3649933850). Line scanning still cannot see a comment spanning lines —
+# that stays inside the documented lexical-layer limits.
+BLOCK_COMMENT = r"/\*(?:[^*]|\*(?!/))*\*/"
+COMMENT_SEP = rf"(?:(?:\s++|{BLOCK_COMMENT}))*+"
 POINTER_MODULE_PATTERN = (
     r"\b(std|core)" + COMMENT_SEP + r"::" + COMMENT_SEP + r"(ptr\b|\{[^}]*\bptr\b)"
 )
@@ -110,20 +114,29 @@ POINTER_API_PATTERN = (
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\s*\("
     r"|\.\s*addr\s*\("
 )
-# `[\s(]*` instead of `\s*`: `let leak = (from_ref);` is the same function
-# item merely wrapped in parentheses (PR #35 thread r3649116236). The
-# anchor set (=, ::, .) is unchanged, so `fn from_ref(...)` declarations
-# and `let from_ref = 3;` shadowing stay clean.
+# Parentheses and same-line block comments are both Rust whitespace-like
+# separators before a function item: `let leak = (/* gap */from_ref);`
+# carries the same item as `let leak = from_ref;` (PR #35 thread
+# r3649116236; PR #38 thread r3649933845). The anchor set (=, ::, .) is
+# unchanged, so `fn from_ref(...)` declarations and `let from_ref = 3;`
+# shadowing stay clean.
+POINTER_ITEM_SEP = rf"(?:(?:[\s(]++|{BLOCK_COMMENT}))*+"
 POINTER_ITEM_PATTERN = (
-    r"(?:=|::|\.)[\s(]*(from_ref|from_mut|as_ptr|as_mut_ptr|"
+    r"(?:=|::|\.)" + POINTER_ITEM_SEP + r"(from_ref|from_mut|as_ptr|as_mut_ptr|"
     r"into_raw|from_raw|expose_provenance|with_exposed_provenance)\b"
 )
 POINTER_TRAIT_PATTERN = r"\b(std|core)\s*::\s*fmt\s*::\s*Pointer\b"
-# `[^\W\d]\w*` (Unicode identifier: any non-digit word char, then word
-# chars) instead of the ASCII-only `[A-Za-z_][A-Za-z0-9_]*`: Rust
-# identifiers are XID-based, so `format!("{指针:p}")` formats an address
-# exactly like `format!("{p:p}")` (PR #35 thread r3649116243).
+# Retain the original Python-Unicode word branch for ordinary identifiers,
+# then add a non-overlapping conservative fallback below. Python `re` has no
+# XID_Start/XID_Continue character properties, and Rust accepts XID
+# characters such as `℘` that Python excludes from `\w` (PR #38 thread
+# r3649933848). The fallback admits any non-delimiter token not already
+# matched here: a conservative lexical superset of Rust XID placeholders
+# that, like the rest of this line-regex layer, may reject inert text.
 POINTER_FORMAT_PATTERN = r"\{(?:[^\W\d]\w*|\d*)?:[^{}]*p\}"
+POINTER_FORMAT_XID_FALLBACK_PATTERN = (
+    r"\{(?!(?:[^\W\d]\w*|\d*):)[^{}:\s]+:[^{}]*p\}"
+)
 
 # Per-file, per-pattern exemptions (never whole-file, never whole-directory).
 # - vh-verify soak binary (PR #2 timing-boundary ruling): wall-clock upH
@@ -214,6 +227,9 @@ DENYLIST: dict[str, str] = {
     r"std::net": "network I/O in the kernel; simulated network lands in Phase 1",
     r"std::process": "process control in the kernel; subprocess universes live in the Tier-2 sandbox",
     POINTER_FORMAT_PATTERN: "pointer-address formatting; addresses vary per run (ASLR)",
+    POINTER_FORMAT_XID_FALLBACK_PATTERN: (
+        "pointer-address formatting through a Rust XID identifier; addresses vary per run (ASLR)"
+    ),
     RAW_POINTER_TYPE_PATTERN: "raw-pointer types/casts can expose allocator or ASLR identity",
     POINTER_MODULE_PATTERN: "pointer construction/address operations are not deterministic observables",
     POINTER_MACRO_PATTERN: "pointer address macros are forbidden in kernel crates",
@@ -291,6 +307,11 @@ SELF_TEST: list[tuple[str, bool, bool]] = [
     ("let leak = (from_ref);", True, True),
     ('let 指针 = &value; format!("{指针:p}");', True, True),
     ("let p = core/* gap */::ptr::addr_of/* gap */!(value);", True, True),
+    # PR #38 late review debt (threads r3649933845 / r3649933848): block
+    # comments remain separators inside a parenthesized function-item alias,
+    # and Rust XID_Start is broader than Python regex `\w`.
+    ("let leak = (/* gap */from_ref);", True, True),
+    ('let ℘ = &value; format!("{℘:p}");', True, True),
     ("fn show<T: Debug>(value: T) { observe(value); }", False, False),
     ("let erased: &dyn Debug = &value;", False, False),
     ("let nested: Vec<Box<dyn Debug>> = values;", False, False),
@@ -950,6 +971,17 @@ def self_test() -> int:
         (
             "crates/vh-core/src/lib.rs",
             "let p = core/* gap */::ptr::addr_of/* gap */!(value);",
+            True,
+        ),
+        # The exact PR #38 late-review mutants, pinned at a kernel path.
+        (
+            "crates/vh-core/src/lib.rs",
+            "let leak = (/* gap */from_ref);",
+            True,
+        ),
+        (
+            "crates/vh-core/src/lib.rs",
+            'let ℘ = &value; format!("{℘:p}");',
             True,
         ),
         ("crates/vh-core/src/lib.rs", "fn show<T: Debug>(x: T) { observe(x); }", False),
