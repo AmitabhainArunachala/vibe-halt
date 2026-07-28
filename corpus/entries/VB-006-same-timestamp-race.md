@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[init_before_commit] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); universe-0 fault-plan digest `b8dfda3b7737d29c93d2b74c7ae65d67` — no faults are injected, the race is pure scheduling, so the digest is identical under both schedules |
 | `schedule` | control: `fifo`, `tape=false`; recall: `pct:3` with `--record-tape` (`tape=true`), universe-0 decision-tape digest `4fac47fe998a6b61b690b3564a9e4940` (`vh-decision-tape-v1`) |
+| `divergence_check` | enabled for both campaigns (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | FIFO 10000: always-failures **0**; clean **10000**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0. PCT d=3 100: always-failures **76**; clean **24**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | FIFO control: exit 0, `verdict: CLEAN`. PCT d=3: exit 1, `verdict: FINDINGS` |
+| `expected_exit` | FIFO control: exit 0, `verdict: CLEAN`. PCT d=3: exit 1, `verdict: FINDINGS (see above)` |
 | `control` | the FIFO run is the fault-free control (0/10000, exit 0 — invisibility by construction); pinned clean universe 0 under FIFO: `vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universe 0` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | every commit must observe its init: `commit_base:<round>` must equal "ok"; the failure detail names every round whose commit ran against a missing base |
 
@@ -72,11 +73,11 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 10000
 always-failures: 0 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 10000
-verdict: CLEAN   (exit 0)
+verdict: CLEAN
 
 $ vh run --workload corpus-same-timestamp-race --seed 0xD1CE --universes 100 --schedule pct:3 --record-tape
 always-failures: 76 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 24
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 0, `pct:3`, taped): trace hash
