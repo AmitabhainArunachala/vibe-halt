@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[checkpoint_recoverable] required_always=[] required_sometimes=[]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `3ea7abf11207f577e931a3d8444c4266` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **96**; clean **4**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 4 exactly (>=1) at the pinned budget; pinned clean universe 17: `vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universe 17` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | the oracle independently re-derives checkpoint membership from the raw durable dump plus each checkpoint's expected framed record; it never trusts a workload-precomputed `recovered:<ckpt>` Boolean (PR #32). |
 
@@ -61,7 +62,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-unvalidated-checkpoint --seed 0xD1CE --universes 100
 always-failures: 96 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 4
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 0): trace hash

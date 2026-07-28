@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[session_complete] required_always=[] required_sometimes=[session_aborted]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `8b20a2ce772578b9a826220b865f64cc` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **79**; clean **21**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 21 exactly (>=1) at the pinned budget; pinned clean universe 8: `vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universe 8` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | every accepted task must reach completion; the `session_aborted` sometimes-property must be reached within the budget (`sometimes unreached` pinned 0), so the abort window is provably exercised. |
 
@@ -63,7 +64,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-transient-fatal-abort --seed 0xD1CE --universes 100
 always-failures: 79 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 21
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 0): trace hash

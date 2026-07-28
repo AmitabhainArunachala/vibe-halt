@@ -16,8 +16,9 @@
 | `oracle_contract` | `required_oracles=[exactly_once_dispatch] required_always=[] required_sometimes=[redispatch_fired]` (CLI-printed; a missing required oracle counts as a contract violation, pinned 0) |
 | `generator` | palette `v0`, fault-plan schema `vh-fault-plan-v1` (CLI banner); failing-repro fault-plan digest `02d424ef2a581d30d8652a4a668605f7` |
 | `schedule` | `fifo`, no decision tape (`tape=false`) |
+| `divergence_check` | enabled (`divergence-check=true`); evidence: `pairwise replay agreement (sampled falsifier — not proof; Tier-1 claim rests on the D0 boundary)` |
 | `counts` | always-failures **91**; clean **9**; divergent 0; sometimes unreached 0; invalid completions 0; contract violations 0 |
-| `expected_exit` | exit 1, `verdict: FINDINGS` |
+| `expected_exit` | exit 1, `verdict: FINDINGS (see above)` |
 | `control` | fault-free/harmless universes must PASS: clean = 9 exactly (>=1) at the pinned budget; pinned clean universe 11: `vh run --workload corpus-stale-redispatch --seed 0xD1CE --universe 11` -> no finding, exit 3 (single-replay UNCHECKED policy) |
 | `required_facts` | per-task applied-count facts must show exactly one apply; the `redispatch_fired` sometimes-property must be reached within the budget (`sometimes unreached` pinned 0), so a palette that never opens the redispatch window cannot pass silently. |
 
@@ -72,7 +73,7 @@ the engine, so this entry's PR does not move them):
 ```
 $ vh run --workload corpus-stale-redispatch --seed 0xD1CE --universes 100
 always-failures: 91 universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: 9
-verdict: FINDINGS   (exit 1)
+verdict: FINDINGS (see above)
 ```
 
 Failing-repro receipt (universe 0): trace hash
