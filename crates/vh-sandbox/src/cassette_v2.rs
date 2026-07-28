@@ -232,18 +232,27 @@ impl LlmRequestV2 {
         vh_digest::sha256_hex(&self.canonical_bytes())
     }
 
-    pub fn parse(bytes: &[u8]) -> Result<LlmRequestV2, CassetteParseError> {
+    /// Parse a request while preserving the original public `String` error API.
+    pub fn parse(bytes: &[u8]) -> Result<LlmRequestV2, String> {
+        Self::parse_detailed(bytes).map_err(|error| error.to_string())
+    }
+
+    /// Parse a request and retain the structured fail-closed rejection.
+    pub fn parse_detailed(bytes: &[u8]) -> Result<LlmRequestV2, CassetteParseError> {
         let mut r = FrameReader::new(bytes);
         r.expect_line("vh-llm-request-v2")?;
         let provider = r.field_string("provider")?;
         let model = r.field_string("model")?;
         let n_messages = r.bounded_count("messages", MIN_MESSAGE_BYTES)?;
-        let mut messages = Vec::with_capacity(n_messages);
+        // Do not reserve from an untrusted count. Grow only after each item
+        // has actually parsed, so padding cannot turn a malformed frame into
+        // a second, attacker-sized eager allocation.
+        let mut messages = Vec::new();
         for _ in 0..n_messages {
             messages.push((r.field_string("role")?, r.field_string("content")?));
         }
         let n_tools = r.bounded_count("tools", MIN_TOOL_BYTES)?;
-        let mut tools = Vec::with_capacity(n_tools);
+        let mut tools = Vec::new();
         for _ in 0..n_tools {
             tools.push((r.field_string("tool-name")?, r.field_string("tool-schema")?));
         }
@@ -316,7 +325,13 @@ impl TapeEntry {
         w.finish()
     }
 
-    pub fn parse(bytes: &[u8]) -> Result<TapeEntry, CassetteParseError> {
+    /// Parse an entry while preserving the original public `String` error API.
+    pub fn parse(bytes: &[u8]) -> Result<TapeEntry, String> {
+        Self::parse_detailed(bytes).map_err(|error| error.to_string())
+    }
+
+    /// Parse an entry and retain the structured fail-closed rejection.
+    pub fn parse_detailed(bytes: &[u8]) -> Result<TapeEntry, CassetteParseError> {
         let mut r = FrameReader::new(bytes);
         let head = r.take_line()?;
         let entry = if let Some(status) = head.strip_prefix("success ") {
@@ -347,7 +362,7 @@ impl TapeEntry {
                 value: n.to_string(),
             })?;
             r.ensure_count_fits("stream chunks", n, MIN_STREAM_CHUNK_BYTES)?;
-            let mut chunks = Vec::with_capacity(n);
+            let mut chunks = Vec::new();
             for _ in 0..n {
                 chunks.push(r.field_bytes("chunk")?);
             }
@@ -401,7 +416,13 @@ impl CassetteV2 {
         w.finish()
     }
 
-    pub fn parse(bytes: &[u8]) -> Result<CassetteV2, CassetteParseError> {
+    /// Parse a cassette while preserving the original public `String` error API.
+    pub fn parse(bytes: &[u8]) -> Result<CassetteV2, String> {
+        Self::parse_detailed(bytes).map_err(|error| error.to_string())
+    }
+
+    /// Parse a cassette and retain the structured fail-closed rejection.
+    pub fn parse_detailed(bytes: &[u8]) -> Result<CassetteV2, CassetteParseError> {
         let mut r = FrameReader::new(bytes);
         let head = r.take_line()?;
         let count = head
@@ -416,8 +437,8 @@ impl CassetteV2 {
         r.ensure_count_fits("cassette entries", n, MIN_CASSETTE_ENTRY_BYTES)?;
         let mut cassette = CassetteV2::default();
         for _ in 0..n {
-            let request = LlmRequestV2::parse(&r.field_bytes("request")?)?;
-            let entry = TapeEntry::parse(&r.field_bytes("response")?)?;
+            let request = LlmRequestV2::parse_detailed(&r.field_bytes("request")?)?;
+            let entry = TapeEntry::parse_detailed(&r.field_bytes("response")?)?;
             cassette.push(request, entry);
         }
         r.expect_end()?;
@@ -802,31 +823,34 @@ mod tests {
         let max = usize::MAX;
         let messages = format!("vh-llm-request-v2\nprovider 0:\nmodel 0:\nmessages {max}\n");
         assert_impossible_count(
-            LlmRequestV2::parse(messages.as_bytes()).unwrap_err(),
+            LlmRequestV2::parse_detailed(messages.as_bytes()).unwrap_err(),
             "messages",
         );
 
         let tools = format!("vh-llm-request-v2\nprovider 0:\nmodel 0:\nmessages 0\ntools {max}\n");
-        assert_impossible_count(LlmRequestV2::parse(tools.as_bytes()).unwrap_err(), "tools");
+        assert_impossible_count(
+            LlmRequestV2::parse_detailed(tools.as_bytes()).unwrap_err(),
+            "tools",
+        );
 
         let params = format!(
             "vh-llm-request-v2\nprovider 0:\nmodel 0:\nmessages 0\ntools 0\n\
              tool-choice absent\nstructured-output absent\nparams {max}\n"
         );
         assert_impossible_count(
-            LlmRequestV2::parse(params.as_bytes()).unwrap_err(),
+            LlmRequestV2::parse_detailed(params.as_bytes()).unwrap_err(),
             "params",
         );
 
         let stream = format!("stream {max}\n");
         assert_impossible_count(
-            TapeEntry::parse(stream.as_bytes()).unwrap_err(),
+            TapeEntry::parse_detailed(stream.as_bytes()).unwrap_err(),
             "stream chunks",
         );
 
         let cassette = format!("{CASSETTE_SCHEMA_V2} {max}\n");
         assert_impossible_count(
-            CassetteV2::parse(cassette.as_bytes()).unwrap_err(),
+            CassetteV2::parse_detailed(cassette.as_bytes()).unwrap_err(),
             "cassette entries",
         );
     }
@@ -834,7 +858,7 @@ mod tests {
     #[test]
     fn usize_max_field_length_is_a_typed_arithmetic_rejection() {
         let frame = format!("vh-llm-request-v2\nprovider {}:\n", usize::MAX);
-        let error = LlmRequestV2::parse(frame.as_bytes()).unwrap_err();
+        let error = LlmRequestV2::parse_detailed(frame.as_bytes()).unwrap_err();
         assert!(
             matches!(
                 error,
@@ -861,6 +885,17 @@ mod tests {
             terminal: String::new(),
         };
         assert_eq!(TapeEntry::parse(&stream.response_frame()).unwrap(), stream);
+    }
+
+    #[test]
+    fn public_parse_api_remains_string_error_compatible() {
+        let request: fn(&[u8]) -> Result<LlmRequestV2, String> = LlmRequestV2::parse;
+        let entry: fn(&[u8]) -> Result<TapeEntry, String> = TapeEntry::parse;
+        let cassette: fn(&[u8]) -> Result<CassetteV2, String> = CassetteV2::parse;
+
+        assert!(request(b"invalid\n").is_err());
+        assert!(entry(b"invalid\n").is_err());
+        assert!(cassette(b"invalid\n").is_err());
     }
 
     #[test]
