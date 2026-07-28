@@ -23,6 +23,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Every gate invocation gets a private temp namespace. The C6 reference
+# and replay harnesses intentionally use fixed paths beneath `temp_dir()` so
+# their spec identities reproduce; without an invocation-local TMPDIR,
+# concurrent worktrees can remove each other's fixture/workspace trees and
+# manufacture divergence or transport taint.
+gate_tmp_root="$(mktemp -d)"
+cleanup_gate_tmp() {
+  rm -rf -- "$gate_tmp_root"
+}
+trap cleanup_gate_tmp EXIT
+export TMPDIR="$gate_tmp_root"
+
 echo "== gate 0: determinism deny-list =="
 python3 scripts/check_determinism_denylist.py --self-test
 python3 scripts/check_determinism_denylist.py
@@ -236,19 +248,30 @@ echo "gate: demo-disk-buggy correctly caught (exit 1, oracle:wal_durability)"
 # red. Each entry's pinned fault-free control universe must then replay
 # with no finding — exit 3 under the single-replay UNCHECKED policy —
 # so "the oracle fails everything" can never masquerade as recall.
-corpus_recall_gate() { # entry workload oracle fails_pin clean_pin control_universe
-  local entry="$1" workload="$2" oracle="$3" fails_pin="$4" clean_pin="$5" control_u="$6"
-  echo "== corpus recall gate: $entry ($workload) must recall EXACTLY ${fails_pin}/100 (exit 1) =="
-  local summary="  always-failures: ${fails_pin} universe(s); divergent: 0; sometimes unreached: 0; invalid completions: 0; contract violations: 0; clean: ${clean_pin}"
+corpus_campaign_banner() { # workload divergence-check
+  local workload="$1" divergence="$2"
+  printf 'vibe-halt: workload=%s seed=0xd1ce universes=100 palette=v0 divergence-check=%s schedule=fifo tape=false fault-plan-schema=vh-fault-plan-v1' \
+    "$workload" "$divergence"
+}
+
+corpus_recall_gate() { # entry workload oracle manifestations invalid clean control_universe
+  local entry="$1" workload="$2" oracle="$3" fails_pin="$4" invalid_pin="$5" clean_pin="$6" control_u="$7"
+  echo "== corpus recall gate: $entry ($workload) must report EXACTLY ${fails_pin} manifestation(s) + ${invalid_pin} invalid assumption(s) / 100 (exit 1) =="
+  local banner
+  banner=$(corpus_campaign_banner "$workload" true)
+  local summary="  always-failures: ${fails_pin} universe(s); divergent: 0; sometimes unreached: 0; invalid completions: ${invalid_pin}; contract violations: 0; clean: ${clean_pin}"
   set +e
   out=$(cargo run -q --locked --offline -p vh-cli -- run --workload "$workload" --seed 0xD1CE --universes 100)
   code=$?
   set -e
-  verdicts=$(printf '%s\n' "$out" | grep -c '^  verdict: FINDINGS' || true)
+  verdicts=$(printf '%s\n' "$out" | grep -cFx -- '  verdict: FINDINGS (see above)' || true)
   anchored=$(printf '%s\n' "$out" | grep -c "^  FAIL universe .*: oracle:$oracle" || true)
+  exact_banner=$(printf '%s\n' "$out" | grep -cFx -- "$banner" || true)
   exact=$(printf '%s\n' "$out" | grep -cFx -- "$summary" || true)
-  if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$anchored" -eq 0 ] || [ "$exact" -ne 1 ]; then
-    echo "GATE FAIL: $entry ($workload) expected exit 1 + FINDINGS + anchored oracle:$oracle + EXACT pinned summary, got exit $code / verdicts $verdicts / anchored $anchored / exact-summary $exact"
+  if [ "$code" -ne 1 ] || [ "$verdicts" -ne 1 ] || [ "$anchored" -eq 0 ] || [ "$exact_banner" -ne 1 ] || [ "$exact" -ne 1 ]; then
+    echo "GATE FAIL: $entry ($workload) expected exit 1 + FINDINGS + anchored oracle:$oracle + EXACT campaign banner + EXACT pinned summary, got exit $code / verdicts $verdicts / anchored $anchored / exact-banner $exact_banner / exact-summary $exact"
+    echo "  pinned banner:  $banner"
+    printf '%s\n' "$out" | grep '^vibe-halt: ' | sed 's/^/  actual banner:  /' || true
     echo "  pinned:  $summary"
     printf '%s\n' "$out" | grep '^  always-failures: ' | sed 's/^  /  actual:  /' || true
     exit 1
@@ -263,22 +286,46 @@ corpus_recall_gate() { # entry workload oracle fails_pin clean_pin control_unive
     echo "GATE FAIL: $entry fault-free control universe $control_u must replay with no finding (exit 3 UNCHECKED), got exit $ctl_code / unchecked $ctl_unchecked / findings $ctl_findings"
     exit 1
   fi
-  echo "gate: $entry recalled at exactly ${fails_pin}/100 (exit 1, oracle:$oracle); control universe $control_u clean (exit 3)"
+  echo "gate: $entry split is exactly ${fails_pin} manifestation(s) + ${invalid_pin} invalid assumption(s) + ${clean_pin} clean / 100 (exit 1, oracle:$oracle); control universe $control_u clean (exit 3)"
 }
 
+# One live negative probe is sufficient to prove the exact banner pin
+# rejects an otherwise identical campaign when replay agreement is
+# disabled. Keeping this outside corpus_recall_gate avoids ten redundant
+# no-divergence campaigns.
+echo "== corpus banner negative gate: --no-divergence-check cannot satisfy the pinned campaign banner =="
+corpus_banner_probe_expected=$(corpus_campaign_banner corpus-lost-update true)
+corpus_banner_probe_disabled=$(corpus_campaign_banner corpus-lost-update false)
+set +e
+corpus_banner_probe_out=$(cargo run -q --locked --offline -p vh-cli -- run --workload corpus-lost-update --seed 0xD1CE --universes 100 --no-divergence-check)
+corpus_banner_probe_code=$?
+set -e
+corpus_banner_probe_expected_matches=$(printf '%s\n' "$corpus_banner_probe_out" | grep -cFx -- "$corpus_banner_probe_expected" || true)
+corpus_banner_probe_disabled_matches=$(printf '%s\n' "$corpus_banner_probe_out" | grep -cFx -- "$corpus_banner_probe_disabled" || true)
+if [ "$corpus_banner_probe_code" -ne 1 ] || [ "$corpus_banner_probe_expected_matches" -ne 0 ] || [ "$corpus_banner_probe_disabled_matches" -ne 1 ]; then
+  echo "GATE FAIL: --no-divergence-check banner probe expected exit 1 + zero pinned-banner matches + one disabled-banner match, got exit $corpus_banner_probe_code / pinned $corpus_banner_probe_expected_matches / disabled $corpus_banner_probe_disabled_matches"
+  echo "  pinned banner:    $corpus_banner_probe_expected"
+  echo "  disabled banner:  $corpus_banner_probe_disabled"
+  printf '%s\n' "$corpus_banner_probe_out" | grep '^vibe-halt: ' | sed 's/^/  actual banner:    /' || true
+  exit 1
+fi
+echo "gate: --no-divergence-check emits divergence-check=false and cannot satisfy the exact divergence-check=true banner pin"
+
 # Pins transcribed from each entry's K1 contract freeze
-# (corpus/entries/VB-*.md `counts` and `control` fields, 2026-07-25):
-#                  entry   workload                      oracle                    fail clean ctl-universe
-corpus_recall_gate VB-001 corpus-lost-update            no_lost_updates            29  71  0
-corpus_recall_gate VB-002 corpus-retry-double-apply     exactly_once               76  24  0
-corpus_recall_gate VB-003 corpus-dirty-read             published_implies_durable  96   4 23
-corpus_recall_gate VB-004 corpus-crash-toctou           act_epoch_matches_check    38  62  1
-corpus_recall_gate VB-005 corpus-fsync-lie              wal_durability             21  79  0
-corpus_recall_gate VB-007 corpus-stale-redispatch       exactly_once_dispatch      91   9 11
-corpus_recall_gate VB-008 corpus-unvalidated-checkpoint checkpoint_recoverable     96   4 17
-corpus_recall_gate VB-009 corpus-transient-fatal-abort  session_complete           79  21  8
-corpus_recall_gate VB-010 corpus-resume-replay          resume_at_most_once        70  30  0
-corpus_recall_gate VB-011 corpus-blind-stream-append    stream_integrity           58  42  0
+# (corpus/entries/VB-*.md `counts` and `control` fields, 2026-07-25).
+# VB-003/VB-004 refine the same total FINDINGS count into actual oracle
+# manifestations versus typed no-opportunity InvalidAssumption outcomes.
+#                  entry   workload                      oracle                    fail invalid clean ctl-universe
+corpus_recall_gate VB-001 corpus-lost-update            no_lost_updates            29   0  71  0
+corpus_recall_gate VB-002 corpus-retry-double-apply     exactly_once               76   0  24  0
+corpus_recall_gate VB-003 corpus-dirty-read             published_implies_durable  83  13   4 23
+corpus_recall_gate VB-004 corpus-crash-toctou           act_epoch_matches_check    21  17  62  1
+corpus_recall_gate VB-005 corpus-fsync-lie              wal_durability             21   0  79  0
+corpus_recall_gate VB-007 corpus-stale-redispatch       exactly_once_dispatch      91   0   9 11
+corpus_recall_gate VB-008 corpus-unvalidated-checkpoint checkpoint_recoverable     96   0   4 17
+corpus_recall_gate VB-009 corpus-transient-fatal-abort  session_complete           79   0  21  8
+corpus_recall_gate VB-010 corpus-resume-replay          resume_at_most_once        70   0  30  0
+corpus_recall_gate VB-011 corpus-blind-stream-append    stream_integrity           58   0  42  0
 
 echo "== negative gate: seeded bug (exact exit 1 + one anchored FINDINGS verdict) =="
 set +e

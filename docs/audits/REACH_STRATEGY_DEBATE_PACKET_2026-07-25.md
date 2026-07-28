@@ -14,7 +14,10 @@ remains `docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07
 `== gate battery: ALL PASS ==`; frozen identities held (trace
 `9ce6199f133f4d3c9dd0da0075e352d2`, 45 events; doctor
 `669b4cdef41ede292761c5a47cd69f37`, `vh-doctor-observable-v4`). Seat-run workloads at seed `0xD1CE`,
-100 universes: `corpus-dirty-read` 96, `corpus-crash-toctou` 38,
+100 universes: `corpus-dirty-read` 96 total findings (83 dirty-read
+manifestations + 13 no-opportunity invalid assumptions),
+`corpus-crash-toctou` 38 total findings (21 crossed-epoch manifestations
++ 17 no-opportunity invalid assumptions),
 `corpus-stale-redispatch` 91, `demo-net` CLEAN 100/100.
 
 **Process.** Four rounds as chartered: independent briefs; cross-examination
@@ -25,16 +28,21 @@ review findings on `414e2e9`; re-approved by all three seats.
 
 ## 0. What the debate established
 
-1. **The published-number defect is real; every seat reproduced it.**
+1. **The published-number defect was a classification defect; every seat
+   reproduced the aggregate mismatch.**
    `corpus/entries/VB-003-dirty-read.md:10` pins `found 83/100`; the pinned
-   command measures **96/100**. `VB-004-crash-toctou.md:10` pins `21/100`;
-   measures **38/100**. Gates stayed green because the affected recall gates
+   command reported **96/100 total fail-closed findings: 83 actual
+   manifestations + 13 no-opportunity runs**. `VB-004-crash-toctou.md:10`
+   pins `21/100`; its **38/100 total** likewise splits into 21 actual
+   manifestations + 17 no-opportunity runs. Those 13/17 runs are now typed
+   `InvalidAssumption` outcomes rather than oracle failures; they remain
+   FINDINGS without inflating bug recall. Gates originally stayed green
+   because the affected recall gates
    assert only `"$fails" -lt 1` (`scripts/gate.sh:173` VB-003, `:186`
    VB-004; same pattern at `:147`) against a FAIL list the CLI truncates at ten
    (`crates/vh-cli/src/main.rs:410` `.take(10)`; observed
-   `... and 86 more failing universes`). This is audit B.1 live on merged
-   main; repair is owned by the unstarted C2b/K1 packages. Control: VB-007
-   pins 91/100 and measures 91/100.
+   `... and 86 more failing universes`). This was audit B.1 live at the
+   debate baseline. Control: VB-007 pins 91/100 and measures 91/100.
 2. **Criterion 4 (≥3 previously unknown, human-confirmed bugs in real code —
    `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md:109`) stands at zero on
    every seat's first milestone.** Seat A conceded its "SERVED" claim
@@ -78,10 +86,11 @@ entries and contract prose, owner `vibe-bug-corpus-2026-07`
 — the exact `scripts/gate.sh` assertions, one separate serialized C2-core
 writer. Two exact-head PRs. Cost: **2 agent-days**.
 Acceptance: every corpus entry's recall gate asserts exact equality of the
-measured `always-failures` count against the entry's pinned count (replacing
-`-lt 1`); VB-003 re-pinned at 96/100 and VB-004 at 38/100 with before/after
-receipts in the PR body; the full battery passes twice consecutively with
-exact asserts. Kill: any entry whose count is not bit-stable across two
+full untruncated six-counter summary (replacing `-lt 1`); VB-003 pins
+83/100 actual manifestations plus 13 typed invalid assumptions, and VB-004
+pins 21/100 plus 17, while both aggregate fail-closed totals remain 96/100
+and 38/100; the full battery passes twice consecutively with exact split
+asserts. Kill: any entry whose count is not bit-stable across two
 consecutive runs at the pinned seed is quarantined `UNCHECKED`, never
 silently re-pinned.
 

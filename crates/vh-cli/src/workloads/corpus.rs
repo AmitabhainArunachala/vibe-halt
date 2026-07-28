@@ -269,6 +269,8 @@ impl Workload for RetryDoubleApply {
 const DR_NODE: u32 = 0;
 const DR_OPS: u64 = 18;
 const DR_OP_SPACING: u64 = 20_000;
+const DR_NO_PUBLISH_PROGRESS: &str =
+    "no record was ever published; published_implies_durable had no opportunity to judge";
 
 /// VB-003 dirty read: a reporter publishes values it read from the FULL
 /// disk view — buffer and OS cache included — as if they were settled
@@ -291,17 +293,12 @@ fn published_durable_oracle(end: &EndState) -> Result<(), String> {
             }
         }
     }
-    // Required-progress (Codex audit B.2): a universe where the reporter
-    // never published anything cannot demonstrate the law held — it never
-    // had the opportunity to violate it either. Silence must fail closed,
-    // not be indistinguishable from a verified-clean pass.
+    // A no-publish execution is not a dirty-read manifestation. The
+    // workload returns a typed InvalidAssumption for that no-opportunity
+    // path, which remains FINDINGS without inflating this oracle's bug
+    // manifestation count.
     if published_count == 0 {
-        return Err(
-            "required-progress violated: no record was ever published — the oracle had no \
-             published:<record> fact to check (every op timer was consumed by crashes before \
-             the first publish point)"
-                .to_string(),
-        );
+        return Ok(());
     }
     if violations.is_empty() {
         Ok(())
@@ -398,7 +395,11 @@ impl Workload for DirtyRead {
             }
         }
         rt.finish();
-        RunOutcome::Completed
+        if published.is_empty() {
+            RunOutcome::InvalidAssumption(DR_NO_PUBLISH_PROGRESS.to_string())
+        } else {
+            RunOutcome::Completed
+        }
     }
 }
 
@@ -412,6 +413,8 @@ const TT_ACT_DELTA: u64 = 10_000;
 const TT_SETUP_TOKEN: u64 = 1_000;
 const TT_CHECK_BASE_TOKEN: u64 = 2_000;
 const TT_ACT_BASE_TOKEN: u64 = 3_000;
+const TT_NO_ACTION_PROGRESS: &str =
+    "no check-then-act action completed; act_epoch_matches_check had no opportunity to judge";
 
 /// VB-004 crash-window TOCTOU: a session token lives in the VOLATILE
 /// disk layers by design. Each privileged action is guarded by a
@@ -437,17 +440,12 @@ fn toctou_oracle(end: &EndState) -> Result<(), String> {
             }
         }
     }
-    // Required-progress (Codex audit B.2): if a crash wipes the volatile
-    // session token before the first check, no action ever fires and the
-    // check-then-act law is never exercised. That is not evidence the law
-    // held — it is evidence the oracle got no opportunity to check it.
+    // A no-action execution is not a crossed-epoch manifestation. The
+    // workload returns a typed InvalidAssumption for that no-opportunity
+    // path, which remains FINDINGS without inflating this oracle's bug
+    // manifestation count.
     if acted_count == 0 {
-        return Err(
-            "required-progress violated: no check-then-act action ever completed — the oracle \
-             had no acted:<k> fact to check (the volatile session token never survived to a \
-             check)"
-                .to_string(),
-        );
+        return Ok(());
     }
     if violations.is_empty() {
         Ok(())
@@ -561,7 +559,11 @@ impl Workload for CrashToctou {
             rt.declare_end(&format!("act_epoch:{k}"), &act.to_string());
         }
         rt.finish();
-        RunOutcome::Completed
+        if acted.is_empty() {
+            RunOutcome::InvalidAssumption(TT_NO_ACTION_PROGRESS.to_string())
+        } else {
+            RunOutcome::Completed
+        }
     }
 }
 
@@ -1468,17 +1470,14 @@ mod oracle_fact_tests {
 
     // ---- VB-003 published_durable_oracle ----------------------------
 
-    /// Pre-fix: the loop only visited `published:*` keys; an end state
-    /// with none produced zero violations and returned `Ok(())` — a
-    /// universe where every op timer was consumed by crashes before the
-    /// first publish point (never exercising the law) was indistinguishable
-    /// from one that published and verified everything durable.
+    /// Zero published facts are neutral at the oracle layer: the workload
+    /// classifies that execution as `InvalidAssumption`, so it remains a
+    /// fail-closed finding without being counted as a dirty-read
+    /// manifestation.
     #[test]
-    fn published_durable_oracle_rejects_zero_progress() {
+    fn published_durable_oracle_is_neutral_on_zero_opportunity() {
         let e = end(&[]);
-        let r = published_durable_oracle(&e);
-        assert!(r.is_err(), "no published record must fail closed");
-        assert!(r.unwrap_err().contains("required-progress violated"));
+        assert_eq!(published_durable_oracle(&e), Ok(()));
     }
 
     #[test]
@@ -1495,16 +1494,14 @@ mod oracle_fact_tests {
 
     // ---- VB-004 toctou_oracle ----------------------------------------
 
-    /// Pre-fix: the loop only visited `acted:*` keys; zero acted actions
-    /// (the volatile session token never surviving to a check) produced
-    /// zero violations and `Ok(())` — the oracle never got to check its
-    /// law but silently reported success anyway.
+    /// Zero acted facts are neutral at the oracle layer: the workload
+    /// classifies that execution as `InvalidAssumption`, so it remains a
+    /// fail-closed finding without being counted as a crossed-epoch
+    /// manifestation.
     #[test]
-    fn toctou_oracle_rejects_zero_progress() {
+    fn toctou_oracle_is_neutral_on_zero_opportunity() {
         let e = end(&[]);
-        let r = toctou_oracle(&e);
-        assert!(r.is_err(), "no acted action must fail closed");
-        assert!(r.unwrap_err().contains("required-progress violated"));
+        assert_eq!(toctou_oracle(&e), Ok(()));
     }
 
     #[test]
