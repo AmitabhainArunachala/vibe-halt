@@ -50,8 +50,10 @@ Every acknowledged checkpoint must be recoverable at retrieval:
 the way out). The failure detail names each acknowledged-but-
 unrecoverable checkpoint.
 
-Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
-(corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+Harvested regression entry: its real-issue provenance and pinned
+manifestation count test the reduced mechanism, but it receives no
+retrospective holdout credit (`corpus/SCHEMA.md` laws 3–4). Recall measured
+then pinned 2026-07-22.
 
 ## Contract freeze (K1, 2026-07-25)
 

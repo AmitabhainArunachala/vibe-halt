@@ -1,5 +1,23 @@
 # VIBE-HALT — Reach Strategy Decision Packet (2026-07-25)
 
+> **EXECUTION UPDATE (2026-07-29).** WP1's exact recall repair
+> ([PR #40](https://github.com/AmitabhainArunachala/vibe-halt/pull/40)), the C5
+> child-visible transport ([PR #44](https://github.com/AmitabhainArunachala/vibe-halt/pull/44)),
+> and the C6 measured D2 campaign
+> ([PR #46](https://github.com/AmitabhainArunachala/vibe-halt/pull/46)) have
+> landed. The later truth/repair PRs
+> [#49](https://github.com/AmitabhainArunachala/vibe-halt/pull/49),
+> [#50](https://github.com/AmitabhainArunachala/vibe-halt/pull/50),
+> [#52](https://github.com/AmitabhainArunachala/vibe-halt/pull/52), and
+> [#53](https://github.com/AmitabhainArunachala/vibe-halt/pull/53) are also on
+> merged `main` at `ab259c07` (runnable ancestry:
+> `git log --first-parent --oneline 35a7fc7..ab259c07`). C7 remains deferred at
+> 2/14 (`docs/audits/C7_ADMISSION_LEDGER_2026-07-25.md:9-14`). The next admitted
+> proposal metabolizing this packet is
+> [`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](../prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md).
+> Its foreign-target lane still requires exact human authorization; this
+> update grants none. Preserve the debate and its nulls below unchanged.
+
 **Status: ADVISORY ONLY.** Produced by the three-seat adversarial debate chartered in
 PR #36 (`docs/prompts/VIBE_HALT_REACH_STRATEGY_DEBATE_2026-07-25.md`, PR head
 `c0e78be`; the charter is itself an unmerged proposal and grants no authority —

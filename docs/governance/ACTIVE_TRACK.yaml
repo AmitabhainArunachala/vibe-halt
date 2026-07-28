@@ -57,27 +57,30 @@ tracks:
       - docs/prompts/**
       - Makefile
       - .github/workflows/ci.yml
+      - VISION.md
       - DESIGN.md
       - CLAUDE.md
       - README.md
     acceptance:
       # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
+      # Criterion 3 is a material measurement-contract amendment; human
+      # merge of the containing PR ratifies it.
       - "Tier 1: same seed => bit-identical trace hash across 1000 runs and two machines"
       - "Tier 2: divergence rate measured and published, never hidden (<5% target on reference workloads)"
-      - ">=80% recall on a seeded vibe-bug corpus of >=25 real bugs"
+      - "for an independently curated, preregistered holdout of N >=25 provenance-qualified real defects introduced by disclosed AI-generated or coding-agent-authored PRs/commits, aggregate recall >=80% means detections >=ceil(0.8*N); mere later agent maintenance is ineligible; before candidate reveal, human-merge to public main a candidate-secret freeze artifact binding exact engine/adapter commits, executable digest, protocol schemas, evaluation policy, budgets, independent oracles, roles, sampling-frame/cutoff/selection/dedupe/diversity rules, and a curator-authenticated opaque cohort commitment, then bind a separately curator-authenticated reveal to that commit/digest and require its canonical bytes to open the commitment; require >=5 repositories and >=5 root-cause/mechanism clusters with each repository and cluster contributing <=ceil(0.2*N); every non-detection remains in the denominator; only the first complete run under that freeze earns acceptance credit, later implementations may rerun the revealed cohort only as non-credit calibration, and a new acceptance attempt requires a newly curated unseen cohort"
       - ">=3 previously unknown, human-confirmed bugs in real code"
       - "every failure ships a one-command deterministic repro; median shrink >=90% events removed"
       - ">=1000 Tier-1 universes/hour/reference-workload on the build box"
       - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
     next:
-      - "RESUMED 2026-07-22 after Track 2 closeout: close issue #24's audit truth gaps, deliver child-visible cassette-backed Tier-2/D2 reach, and preserve every open channel as D2/UNCHECKED"
-      - "implement only the safe C1-C6 and CD packages admitted by docs/prompts/VIBE_HALT_POST_AUDIT_TIER2_REACH_LONG_RUNNING_GOAL_2026-07-22.md; verifier-owned surfaces still require an interface request"
-      - "core package split: C1 observation identity; C2-core oracle and gate truth; C3 evidence v2 and safe digest; C4 sandbox truth envelope; C5 cassette transport; C6 measured D2 reach; CD doctrine and observation documentation"
-      - "prepare a docs-only C7 decision packet for the capped Linux supervisor spike only after safe foundations merge; no helper implementation begins without separate human ratification"
-      - "serialize integration writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer"
+      - "REALITY BRIDGE 2026-07-29: execute docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md only after its admission PR is human-merged"
+      - "replace the Python quarantine with a strict transport to the Rust CLI: machine-readable verified evidence only, typed CLEAN/FINDINGS/UNCHECKED/error outcomes, no stdout inference and no manufactured success"
+      - "extract the cooperative cassette protocol into a reusable D2 transport without closing or hiding any of the 29 capability channels"
+      - "prepare exact admission dossiers for the VB-008 and VB-010 foreign-target confirmation probes; execute neither target without separate human approval of repository, revision, license, data boundary, and disposable environment"
+      - "serialize writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer; verifier-owned surfaces still require an exact interface request"
     non_goals:
       - "a general Tier 3 hypervisor or arbitrary multithreaded-binary determinism promise; the only supervisor work permitted here is a docs-only proposal for a separately human-ratified Linux x86-64 one-process/one-thread spike"
-      - "C0 grants no unsafe code, external dependency, helper implementation, sibling repository creation, public-harness execution, credential use, spending, paid-provider call, merge, approval, or self-approval authority"
+      - "the Reality Bridge grants no unsafe code or external dependency absent an explicit same-PR determinism review and named operator-ratified exception; it grants no helper implementation, sibling repository creation, unratified foreign-target execution, credential use, spending, paid-provider call, merge, approval, or self-approval authority"
       - "replacing dharma_swarm governance — this repo imports the lean subset only"
 
   - id: vibe-halt-verify-2026-07
@@ -118,19 +121,19 @@ tracks:
     owned_surfaces:
       - corpus/**
     acceptance:
-      - ">=25 corpus entries harvested from real (AI-generated) code by end of Phase 2"
-      - ">=80% recall within each entry's pinned universe budget (build-plan Success criterion 3)"
-      - "every entry carries a one-command deterministic repro (vh run --workload ... --seed ... --universe K)"
-      - "recall gates for every seeded entry run in scripts/gate.sh with exact exits and anchored verdicts"
+      - "the existing admitted entries remain a regression/training corpus with exact provenance and pinned manifestation counts"
+      - "a separate independently curated, preregistered holdout freezes N >=25 provenance-qualified real defects introduced by disclosed AI-generated or coding-agent-authored PRs/commits; mere later agent maintenance is ineligible and curator/evaluator roles differ from the engine/adapter builder; before reveal a candidate-secret artifact binding exact engine/adapter commits, executable digest, protocol schemas, evaluation policy, independent oracles, budgets, roles, sampling-frame/cutoff/selection/dedupe/diversity rules, and a curator-authenticated opaque cohort commitment is human-merged to public main, then a curator-authenticated reveal binds to that commit/digest and opens the commitment; require >=5 repositories and >=5 root-cause/mechanism clusters with each repository and cluster contributing <=ceil(0.2*N); it retains every non-detection and detects >=ceil(0.8*N); only the first complete run under that freeze earns acceptance credit, later implementations use the revealed cohort only for non-credit calibration, and a new acceptance attempt requires a newly curated unseen cohort"
+      - "every detected regression entry carries a one-command deterministic repro (vh run --workload ... --seed ... --universe K)"
+      - "recall gates for every admitted regression entry run in scripts/gate.sh with exact exits, exact counters, and anchored verdicts"
     next:
-      - "seed the corpus with the five Phase-1 bug classes (lost update, retry double-apply, dirty read, crash-window TOCTOU, fsync-lie hole)"
-      - "harvest real vibe-coded bugs from public AI-generated PRs per the playbook"
-      - "C6 (convergence 2026-07-22) harvest sprint: admit >=5 new entries harvested from real AI-generated code (public repos, merged AI PRs, agent-framework issue trackers), each modeled as a seeded workload + oracle per corpus/PLAYBOOK.md and corpus/SCHEMA.md, with a pinned one-command repro, an anchored recall gate in scripts/gate.sh, and cited provenance (source repo, PR/commit, defect description); kill (audit R7): <3 admissible real bugs after 4 weeks of sustained harvesting falsifies rig REALISM -> stop exploration investment and propose fidelity fixes"
-      - "K1 owns exact recall/control corpus contracts for C2-core; any later K2 or public-target corpus admission requires its own typed provenance, pinned oracle, and human-ratified execution authority"
+      - "preserve the eleven current regression entries: six seeded instruments and five reductions of published issues; they earn no holdout or previously-unknown credit"
+      - "define a versioned holdout manifest that records candidates before execution, including misses and nulls, without weakening corpus/SCHEMA.md's regression-entry contract"
+      - "prepare read-only target dossiers for VB-008/langgraph #6491 and VB-010/langgraph #7361; any execution requires its own typed provenance, pinned oracle, fixed budget, and human-ratified target authority"
+      - "a future unknown-candidate lane may report evidence for independent human confirmation but may never self-award criterion-4 credit"
     non_goals:
-      - "no real-code live-fire in this track before Phase 4 (build plan owns that)"
-      - "no entry without a pinned recall gate — an unfindable bug is not a corpus entry"
-      - "no third active track beyond this portfolio without operator lifecycle authorization"
+      - "no foreign-code execution, credential use, live provider call, or target write without exact operator authorization"
+      - "no admitted regression entry without a pinned recall gate; holdout misses remain in the separate manifest instead of disappearing"
+      - "no fourth active track beyond this portfolio without operator lifecycle authorization"
 
   - id: vibe-halt-1000x-exploration
     title: "Track 2 — 1000x guided exploration and finding depth"

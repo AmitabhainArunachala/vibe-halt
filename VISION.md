@@ -1,35 +1,160 @@
 # Mega Hyper Vibration Multiverse Halting Machine — Vision
 
-We are building the software equivalent of a **mega hyper vibration shaker table + HALT rig + multiverse simulator** for vibe-coded (AI-generated) systems.
+`vibe-halt` is a deterministic multiverse bench for agent-shaped state
+machines: engine-owned execution, semantic fault injection, executable
+properties, content-addressed fail-closed replay evidence, and
+capture-enabled fault-plan minimization whose receipt states every
+uncontrolled channel.
 
-### The Problem
-Vibe-coded repositories contain latent defects that normal testing rarely catches:
-- Hallucinated APIs and dependencies
-- Fragile or incorrect cross-file state
-- Non-deterministic behavior
-- Security and error-handling slop
-- Partial/broken diffs
-- Poor resilience under variation or faults
+The physical metaphor is an electrodynamic shaker table plus HALT rig. The
+software is stressed across many reproducible worlds so that weak assumptions
+fail quickly and every retained finding has inspectable evidence.
 
-### The Solution
-Subject the code to *extremely high, controlled vibrational stress* across thousands of deterministic universes while enforcing strong integrity properties.
+## Why it exists
 
-This is not gentle testing. This is **mega hyper vibration** designed to break weak code fast and reveal what actually holds.
+AI-generated and agent-maintained systems concentrate defects at boundaries:
+retries, acknowledgements, persistence, checkpoints, cancellation, tool calls,
+and cross-file state. Ordinary happy-path tests often miss those defects.
+`vibe-halt` should make the relevant orderings and failures cheap to explore
+without pretending that an opaque process is deterministic.
 
-### Phase Roadmap
+## Enduring laws
 
-**Phase 1 (Current)**: Lightweight Multiverse Harness
-Core engine for seeded universes, relevant fault injection, safe diff application, and property checking. Focused on the most damaging forms of AI slop.
+1. **The engine owns truth.** A client may request work; it cannot manufacture
+   a clean verdict, capability grade, digest, or receipt.
+2. **Every claim names its boundary.** Tier 1/D0 is closed simulation. The
+   present subprocess path is Tier 2/D2 unless every relevant channel is
+   mechanically closed. Agreement from two runs is a sampled falsifier, never
+   a proof.
+3. **Evidence fails closed.** Missing, malformed, stale, ambiguous, tainted, or
+   unverifiable evidence is `UNCHECKED` or an error, never `CLEAN`.
+4. **Real utility outranks self-demonstration.** Seeded fixtures and reductions
+   are regression assets. They do not count as previously unknown,
+   human-confirmed bugs.
+5. **A negative result is a result.** Predeclared nulls, stopped investments,
+   and unreachable grades remain visible.
+6. **Humans merge and confirm.** Green automation is evidence, not approval.
 
-**Phase 2**: Intelligent Exploration + Richer Fault Models
-Guided search, network/I/O/concurrency gremlins, LLM-stochastic simulation.
+## Proven boundary on 2026-07-29
 
-**Phase 3**: Deep Integration & Self-Improvement
-Mandatory gate in Darwin Engine. The shaker itself evolves under strict telos gates.
+At merged `main` commit `ab259c07`, the repository demonstrates the
+repo-local boundary below; recheck it with `git rev-parse HEAD` and
+`make gate`. Cross-platform evidence cited here is the latest PR synthetic
+merge run, not a retained exact-`ab259c07` push run.
 
-**Phase 4+**: Full repo-level analysis, multi-axis stress, production screening.
+- a dependency-free Rust determinism kernel, simulated network and disk,
+  semantic gremlins, executable properties, and multiverse execution
+  (`scripts/check_determinism_denylist.py`; runnable check: `make gate`);
+- frozen Tier-1 identities plus a 1,000-replay complete-observation job on
+  Linux, macOS, and Windows (`.github/workflows/verify.yml:386-493`;
+  [Verify #129](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30365776537));
+- strict v2 evidence bundles, standalone semantic replay,
+  content-digest self-consistency checks, and exact-fingerprint fault-plan
+  shrinking for the currently capture-enabled demo workloads
+  (`crates/vh-cli/src/receipts_v2.rs:26-31`, `scripts/gate.sh:397-479`);
+- a child-visible ordered cassette transport and a reference Tier-2 campaign
+  with 0 divergent pairs in 100, while all 29 capability channels remain open
+  (`scripts/gate.sh:104-190` and
+  `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33`); this is D2, never D1;
+- eleven regression-corpus entries: six seeded instruments and five reductions
+  of already-published real issues (run
+  `find corpus/entries -maxdepth 1 -type f -name 'VB-*' | sort`).
 
-### Success Vision
-When a proposal or generated artifact passes the Mega Hyper Vibration Multiverse Halting Machine with strong evidence, it can be trusted far more than current review or test suites.
+The project has **not** yet demonstrated:
 
-This becomes the definitive "vibe code integrity tester".
+- a strict Python or `dharma_swarm` adapter backed by verified Rust evidence
+  (`clients/python/vibe_halt/core/runner.py:10-30`);
+- a real foreign target executed through that adapter;
+- a pre-registered holdout whose misses remain in the recall denominator;
+- any previously unknown, independently human-confirmed bug
+  (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`);
+- D1 subprocess containment or Tier 3 hypervisor determinism.
+
+The Python execution entry points are quarantined, but the package still
+exports legacy Python-side simulator and caller-constructible evidence
+surfaces. None is trusted. The Reality Bridge must remove or package-exclude
+them before the client can return only engine-verified outcomes
+(`clients/python/vibe_halt/core/runner.py:10-30`,
+`clients/python/vibe_halt/__init__.py:5-9`,
+`clients/python/vibe_halt/core/evidence.py:24-62`).
+
+## Current frontier — the reality bridge
+
+The next proof milestone is:
+
+> Run one operator-authorized, version-pinned foreign target through a strict
+> Rust-backed adapter and either produce one independently forward-confirmed
+> candidate or publish the predeclared null.
+
+The implementation campaign is scoped in
+[`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md).
+It first replaces the Python quarantine with a fail-closed transport to the
+existing Rust evidence authority. It then prepares exact target-admission
+packets and runs foreign code only after the operator approves the named
+repository, revision, license, data boundary, and disposable environment.
+
+Known published defects may validate transfer from a reduced model to a real
+target, but they do not satisfy the unknown-bug criterion. A candidate counts
+there only after an independent human confirms it was previously unknown and
+real.
+
+## Rebased 12-week path
+
+### 1. Truth substrate — proven, keep ratcheting
+
+Maintain the deterministic kernel, complete-observation identity, evidence
+schemas, replay, shrink, D2 capability ledger, and exact regression gates.
+Never weaken these to accelerate reach.
+
+### 2. Reality bridge — current
+
+Ship the strict Python-to-Rust evidence protocol, preserve typed
+`CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes, and validate one
+operator-authorized foreign target or publish the predeclared null.
+
+### 3. Honest external evaluation
+
+Create a pre-registered holdout of at least 25 provenance-qualified real
+defects introduced by disclosed AI-generated or coding-agent-authored
+PRs/commits. Mere later agent maintenance and generic conventional-code
+defects are ineligible. An independent curator—not the engine or adapter
+builder—owns candidate identity, eligibility, and the ground-truth oracle.
+Freeze the exact engine and adapter commits, executable digest, protocol
+schemas, evaluation policy, sampling frame/cutoff/selection/dedupe/diversity
+rules, and a curator-authenticated opaque cohort commitment before reveal by
+human-merging a candidate-secret artifact to public `main`; bind a later
+curator-authenticated reveal to that commit/digest and require its canonical
+bytes to open the commitment. Require at least five repositories and five
+root-cause/mechanism clusters, with no repository or cluster contributing more
+than `ceil(0.2 * N)`. Misses stay in the denominator. For a frozen cohort of
+size `N`, detect at least `ceil(0.8 * N)` within fixed, predeclared per-target
+budgets and independently fixed oracles (at least 20 only when `N = 25`).
+Only the first complete execution under that pre-reveal freeze earns
+acceptance credit. Later implementations may rerun the revealed cohort only as
+non-credit calibration; a new acceptance attempt requires a newly curated
+unseen cohort. The existing eleven entries remain the regression/training
+corpus, not the acceptance denominator.
+
+Pursue three previously unknown candidates, but award no credit without
+independent human confirmation.
+
+### 4. Integration, scale, and release
+
+Produce one end-to-end `dharma_swarm` receipt through the strict adapter,
+certify at least 1,000 Tier-1 universes/hour on a named build box, measure
+representative median shrink of at least 90%, and package an independently
+reproducible release.
+
+D1 supervisor work remains a separately admitted option. It is not a
+prerequisite for proving external utility, and it cannot begin from this
+vision document.
+
+## Claim boundary
+
+A passing `vibe-halt` campaign is not a general safety certificate and does
+not solve the halting problem. It increases confidence only for the named
+target, revision, workload, properties, fault model, universe budget,
+toolchain, evidence tier, and open-channel ledger recorded in its receipt.
+
+The week-12 measurable contract and current criterion ledger live in
+[`docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`](docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md).

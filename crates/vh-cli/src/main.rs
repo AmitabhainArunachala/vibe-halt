@@ -123,9 +123,11 @@ Deterministic per (seed, universe); decisions enter the decision tape
 under --record-tape. Conflicts with --shrink and --out (their replay
 paths do not carry a policy yet).
 
-`vh sandbox-demo` is the Tier-2/D1 MVP smoke: Rust-owned subprocess
-universes with env scrubbing, pinned Python env, fixture cassette replay,
-run-twice divergence reporting, and an explicit unmanaged-channel ledger.
+`vh sandbox-demo` is a Tier-2/D2 cooperative subprocess smoke:
+Rust-owned subprocess universes with env scrubbing, pinned Python env,
+fixture cassette replay, run-twice divergence reporting, and an explicit
+unmanaged-channel ledger. All 29 capability channels remain open; this
+command never claims D1.
 ";
 
 struct RunArgs {

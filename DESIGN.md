@@ -1,13 +1,13 @@
-> **HISTORICAL — SUPERSEDED (2026-07-22, convergence C7).** The sign-off
-> requirement in this section (≥7 frontier LLMs at ≥90% confidence) predates
-> the ratified evidence doctrine and is **no longer operative**. The
-> 2026-07-21 audit (`docs/audits/antithesis-dst-2026-07-21/`, finding D4)
-> and Track-2 standing law §7 (`docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md`)
-> reject multi-LLM sign-off percentages as evidence: claims are admitted by
-> mechanical receipts — `make gate` exits, pinned one-command repros,
-> `file:line` citations — never by model confidence votes. The requirement
-> text and the recorded sign-offs below are preserved unchanged as project
-> history; do not add new sign-offs here.
+> **HISTORICAL SNAPSHOT — NOT THE CURRENT ARCHITECTURE OR ROADMAP.** This
+> preserves the merged 2026-07-20 master spec and sign-offs; its D1-primary
+> posture, roadmap, schedule, and budget are not current authority. Use
+> `VISION.md`, `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`,
+> `docs/specs/DETERMINISM_TIERS.md`, and `docs/governance/ACTIVE_TRACK.yaml`.
+> The ≥7 frontier-LLM sign-off rule below was superseded on 2026-07-22:
+> mechanical receipts, pinned repros, and exact citations admit claims—not
+> model confidence votes (audit finding D4; Track-2 standing law §7).
+> The original requirement and recorded sign-offs remain project history;
+> do not add new sign-offs here.
 
 ## Review & Sign-off
 
@@ -265,6 +265,12 @@ Spending gates protect the determinism kernel and final review.
 ## 12. Governance
 
 This is a living document. All major design decisions must be recorded here with rationale and date. Changes after Week 2 require explicit justification and ratcheting.
+
+> **CURRENT DISPOSITION (2026-07-29):** The sentence above is preserved
+> verbatim as part of the 2026-07-20 snapshot. It is no longer operative.
+> Record current decisions in the canonical vision, build-plan,
+> determinism-doctrine, governance, and controller documents linked in the
+> banner above.
 
 **Primary sources synthesized**:
 - Claude response (2026-07-20)

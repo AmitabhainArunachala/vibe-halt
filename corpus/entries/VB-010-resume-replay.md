@@ -52,8 +52,10 @@ Recovery must resume, not replay: each step's side effect lands at most
 once across all crash epochs (`applied:<step>` <= 1). The failure detail
 names each replayed step and its count.
 
-Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
-(corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+Harvested regression entry: its real-issue provenance and pinned
+manifestation count test the reduced mechanism, but it receives no
+retrospective holdout credit (`corpus/SCHEMA.md` laws 3–4). Recall measured
+then pinned 2026-07-22.
 
 ## Contract freeze (K1, 2026-07-25)
 

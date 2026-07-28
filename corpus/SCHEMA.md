@@ -1,4 +1,4 @@
-# Corpus Entry Schema v1.2
+# Corpus Entry Schema v1.3
 
 One file per bug under `corpus/entries/`, named `VB-<nnn>-<slug>.md`.
 An entry without a pinned, mechanically-checked recall gate is NOT a
@@ -70,7 +70,36 @@ Contract laws:
    exactly.
 2. **Every entry names its tier** (DETERMINISM_TIERS.md: "deterministic"
    without a tier is an uncited claim).
-3. **Seeded entries are lower-bound evidence only.** They prove the rig
-   CAN find the class; they say nothing about real-code recall
-   (build-plan risk 4: demo-overfitting). Harvested entries are the
-   metric that counts toward the >=25 / >=80% acceptance.
+3. **Every admitted entry is a regression/training asset, not the acceptance
+   denominator.** Seeded entries prove only that the rig can find a modeled
+   class. Harvested entries add real-issue provenance and test whether a
+   reduced mechanism remains pinned, but they were observed before admission:
+   an undetected candidate cannot become an entry under this schema. Counting
+   admitted entries would therefore erase misses.
+4. **Week-12 recall uses a separate pre-registered holdout.** Before any
+   execution, an independent curator—not the engine or adapter builder—must
+   freeze at least 25 independently admissible, provenance-qualified real
+   defects introduced by disclosed AI-generated or coding-agent-authored
+   PRs/commits in an immutable cohort with fixed oracles and per-target
+   budgets. Mere later agent maintenance is not qualifying provenance. Before
+   candidate reveal, freeze the exact engine and adapter commits, executable
+   digest, protocol schemas, evaluation policy, closed sampling frame and
+   cutoff, deterministic selection procedure, dedupe/cluster and diversity
+   rules, and a curator-authenticated opaque commitment to the exact cohort
+   bytes in a candidate-secret artifact human-merged to public `main`; a later
+   curator-authenticated reveal must bind to that commit/digest and open the
+   cohort commitment. The cohort must span at least five repositories and five
+   root-cause/mechanism clusters; no repository or cluster may contribute more
+   than `ceil(0.2 * N)`. Generic conventional-code defects are ineligible.
+   Let `N` be that frozen cohort size. Success requires at least
+   `ceil(0.8 * N)` detections (at least 20 when `N = 25`). Every
+   non-detection—including a post-freeze invalid run—remains in the primary
+   denominator. Only the first complete run under the pre-reveal freeze may
+   earn acceptance credit. Later implementation versions may rerun the
+   revealed cohort only as non-credit calibration; a new acceptance attempt
+   requires a newly curated unseen cohort. Existing corpus entries receive no
+   retrospective holdout credit.
+
+The holdout manifest is a separate versioned artifact to be introduced by the
+Reality Bridge R3 package. Until that artifact is human-merged and a cohort is
+frozen, criterion 3 remains unmeasured.

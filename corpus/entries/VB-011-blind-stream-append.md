@@ -50,8 +50,10 @@ The assembled stream must equal the sent stream exactly (`assembled` ==
 `expected`); the failure detail prints both, exposing the duplicated or
 transposed tokens.
 
-Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
-(corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+Harvested regression entry: its real-issue provenance and pinned
+manifestation count test the reduced mechanism, but it receives no
+retrospective holdout credit (`corpus/SCHEMA.md` laws 3–4). Recall measured
+then pinned 2026-07-22.
 
 ## Contract freeze (K1, 2026-07-25)
 

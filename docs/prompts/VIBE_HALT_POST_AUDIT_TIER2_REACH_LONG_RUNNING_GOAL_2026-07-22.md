@@ -1,5 +1,19 @@
 # VIBE-HALT — Post-Audit Truth Bridge, Tier-2 Reach, and Supervisor Spike
 
+> **DISPOSITION — SAFE PHASE COMPLETE (2026-07-29).** The C1–C6, CD, V1,
+> and K1 safe packages this controller admitted have landed on merged `main`
+> (runnable history:
+> `git log --first-parent --oneline fb0ca58..ab259c07`).
+> Child-visible cassette transport and the measured D2 campaign now exist
+> (`scripts/gate.sh:104-190`; runnable proof: `make gate`).
+> The supervisor package C7 remains separately gated and deferred at 2/14
+> admission decisions (`docs/audits/C7_ADMISSION_LEDGER_2026-07-25.md:9-14`);
+> this historical controller grants no authority to implement it. The current
+> critical-path controller is
+> [`VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md).
+> Preserve the body below as the admission and execution record for the
+> completed safe phase.
+
 **Artifact type:** long-running autonomous `/goal` controller
 **Authored:** 2026-07-22
 **Repository:** `AmitabhainArunachala/vibe-halt`
