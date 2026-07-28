@@ -23,6 +23,18 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Every gate invocation gets a private temp namespace. The C6 reference
+# and replay harnesses intentionally use fixed paths beneath `temp_dir()` so
+# their spec identities reproduce; without an invocation-local TMPDIR,
+# concurrent worktrees can remove each other's fixture/workspace trees and
+# manufacture divergence or transport taint.
+gate_tmp_root="$(mktemp -d)"
+cleanup_gate_tmp() {
+  rm -rf -- "$gate_tmp_root"
+}
+trap cleanup_gate_tmp EXIT
+export TMPDIR="$gate_tmp_root"
+
 echo "== gate 0: determinism deny-list =="
 python3 scripts/check_determinism_denylist.py --self-test
 python3 scripts/check_determinism_denylist.py
