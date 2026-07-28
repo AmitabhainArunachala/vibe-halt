@@ -112,7 +112,8 @@ binds its digest into each runtime universe's observable result and the
 single-universe output. OPT-IN: recording costs ~50% wall at the
 200-universe runtime demo (the C1 overhead kill criterion fired; the
 default path is the original pop, bit-for-bit). The frozen execution
-trace and doctor identity are untouched either way.
+trace and doctor identity are untouched either way. Conflicts with
+--out because v2 bundle replay does not yet consume decision tapes.
 
 `vh run --schedule pct:<d>|uniform` (convergence C2, OPT-IN — fifo is
 and stays the default) pops same-timestamp scheduler frontiers by a PCT
@@ -196,6 +197,15 @@ fn parse_run_args(args: &[String]) -> Result<RunArgs, String> {
     // thing bundles point AT, not a receipt producer.
     if out.out.is_some() && out.single_universe.is_some() {
         return Err("--out conflicts with --universe (receipts describe a multiverse run)".into());
+    }
+    // A taped v2 bundle records an observation the replay path cannot
+    // reconstruct yet. Refuse before running or writing rather than emit
+    // evidence that `vh replay-bundle` unconditionally rejects.
+    if out.out.is_some() && out.record_tape {
+        return Err(
+            "--record-tape conflicts with --out (v2 bundle replay does not consume decision tapes yet)"
+                .into(),
+        );
     }
     // Shrinking needs a campaign to pick a failing universe from, and the
     // v1 oracle replays under the default palette only.
