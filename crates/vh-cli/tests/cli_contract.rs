@@ -340,6 +340,41 @@ fn out_conflicts_with_single_universe_replay() {
     );
 }
 
+/// A decision-taped v2 bundle is not replayable by today's FIFO/untaped
+/// replay path. Refuse the incompatible request before running or creating
+/// the output directory instead of emitting evidence the same binary rejects.
+#[test]
+fn record_tape_conflicts_with_out_before_any_write() {
+    let tmp = unique_tmp("taped-out");
+    let out = tmp.join("must-not-exist");
+    let (code, stdout, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo-net-buggy",
+        "--seed",
+        "0xD1CE",
+        "--universes",
+        "100",
+        "--record-tape",
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        code, 2,
+        "incompatible evidence modes must be a usage error, not a run verdict:\n\
+         stdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stderr.contains("--record-tape conflicts with --out"),
+        "missing typed conflict diagnostic:\n{stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "conflict must be rejected before creating the output directory"
+    );
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
 // ---- dirty --out refusal (C3-honesty; PR #19 thread PRRT_kwDOTdlCIM6S0Hr9) ----
 
 /// Recursive (relative-path, bytes) snapshot, sorted, for byte-identity
