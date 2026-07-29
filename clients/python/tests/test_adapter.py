@@ -80,6 +80,21 @@ class AdapterSmokeTests(unittest.TestCase):
         self.assertTrue(outcome.verified)
         self.assertGreater(outcome.findings_count, 0)
 
+    def test_cooperative_echo_clean(self):
+        runner = MultiverseRunner(self.policy)
+        outcome = runner.run(RunRequest("cooperative-echo", 10))
+        self.assertEqual(outcome.verdict, Verdict.CLEAN)
+        self.assertEqual(outcome.tier, Tier.TIER1)
+        self.assertEqual(outcome.grade, Grade.D0)
+        self.assertTrue(outcome.verified)
+        self.assertIsNotNone(outcome.evidence_digest)
+        self.assertEqual(outcome.findings_count, 0)
+
+        rev = runner.reverify(outcome.receipt_dir)
+        self.assertEqual(rev.evidence_digest, outcome.evidence_digest)
+        self.assertTrue(rev.verified)
+        self.assertEqual(rev.verdict, Verdict.CLEAN)
+
     def test_demo_unchecked(self):
         runner = MultiverseRunner(self.policy)
         outcome = runner.run(RunRequest("demo", 10, check_divergence=False))

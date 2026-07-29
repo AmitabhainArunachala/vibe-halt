@@ -199,6 +199,11 @@ EXEMPT: dict[str, set[str]] = {
     # reference campaign, leak battery, and receipt replay. Subprocesses
     # are spawned by vh-sandbox, not here; every other rule still binds.
     "crates/vh-cli/src/sandbox_campaign.rs": {r"std::env", r"std::fs"},
+    # R2 cooperative echo workload: host tempdir setup for a sandbox child
+    # that exercises the child-visible cassette transport. Subprocesses are
+    # spawned by vh-sandbox, not here; the file performs only tempdir path
+    # and cleanup through std::env/std::fs.
+    "crates/vh-cli/src/workloads/cooperative.rs": {r"std::env", r"std::fs"},
     # Evidence-store boundary (convergence C4, audit R4): receipt/bundle
     # file I/O for `vh run --out` and `vh replay-bundle`. The new
     # `vh verify-run` subcommand orchestrates per-finding replay by

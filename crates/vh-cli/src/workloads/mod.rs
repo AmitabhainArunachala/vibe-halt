@@ -6,6 +6,7 @@
 //! acknowledged writes and the `durability` always-property fires with a
 //! one-command repro.
 
+mod cooperative;
 mod corpus;
 mod disk;
 mod net;
@@ -14,6 +15,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
+pub use cooperative::CooperativeEcho;
 pub use corpus::{
     BlindStreamAppend, CrashToctou, DirtyRead, LostUpdate, ResumeReplay, RetryDoubleApply,
     SameTimestampRace, StaleRedispatch, TransientFatalAbort, UnvalidatedCheckpoint,
@@ -224,6 +226,7 @@ impl Workload for NondetDemo {
 
 pub fn by_name(name: &str) -> Option<Box<dyn Workload>> {
     match name {
+        "cooperative-echo" => Some(Box::new(CooperativeEcho)),
         "demo" => Some(Box::new(KvDemo {
             ack_before_flush: false,
             plan_capture: None,

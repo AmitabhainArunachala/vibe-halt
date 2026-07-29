@@ -537,4 +537,55 @@ if [ -z "$rep_a" ] || [ "$rep_a" != "$rep_b" ]; then
 fi
 echo "gate: PCT replay byte-identical across processes (trace hash + tape digest agree)"
 
+echo "== R2 gate: cooperative-echo workload behind vh run (exit 0, CLEAN, Tier-1 D0) =="
+set +e
+out=$(cargo run -q --locked --offline -p vh-cli -- run --workload cooperative-echo --seed 0xD1CE --universes 10)
+code=$?
+set -e
+clean=$(printf '%s\n' "$out" | grep -c '^  verdict: CLEAN')
+if [ "$code" -ne 0 ] || [ "$clean" -ne 1 ]; then
+  echo "GATE FAIL: cooperative-echo expected exit 0 + CLEAN, got exit $code / clean $clean"
+  printf '%s\n' "$out" | tail -n 30
+  exit 1
+fi
+echo "gate: cooperative-echo runs CLEAN through the R1 request/runner surface (exit 0, 10 universes)"
+
+echo "== R2 gate: cooperative-echo receipts are reproducible and replay standalone =="
+coop_tmp="$(mktemp -d)"
+trap 'rm -rf "$bundle_tmp" "$coop_tmp"' EXIT
+set +e
+cargo run -q --locked --offline -p vh-cli -- run --workload cooperative-echo --seed 0xD1CE --universes 2 --out "$coop_tmp/A" >/dev/null
+a_code=$?
+cargo run -q --locked --offline -p vh-cli -- run --workload cooperative-echo --seed 0xD1CE --universes 2 --out "$coop_tmp/B" >/dev/null
+b_code=$?
+set -e
+if [ "$a_code" -ne 0 ] || [ "$b_code" -ne 0 ]; then
+  echo "GATE FAIL: cooperative-echo --out runs must exit 0 (got $a_code / $b_code)"
+  exit 1
+fi
+if ! diff -r "$coop_tmp/A" "$coop_tmp/B" >/dev/null; then
+  echo "GATE FAIL: two identical cooperative-echo runs wrote different receipt bytes"
+  exit 1
+fi
+# No findings are expected for the clean fixture, but the same pipeline must
+# not abort under pipefail when the findings directory does not exist.
+set +e
+coop_bundle=$(find "$coop_tmp/A/findings" -name finding.ndjson 2>/dev/null | sort | { head -n 1; cat >/dev/null; })
+coop_bundle_find_status=$?
+set -e
+if [ -n "$coop_bundle" ]; then
+  set +e
+  out=$(cargo run -q --locked --offline -p vh-cli -- replay-bundle "$coop_bundle")
+  code=$?
+  set -e
+  reproduced=$(printf '%s\n' "$out" | grep -c '^replay-bundle: REPRODUCED')
+  if [ "$code" -ne 0 ] || [ "$reproduced" -ne 1 ]; then
+    echo "GATE FAIL: cooperative-echo finding bundle replay expected exit 0 + REPRODUCED, got $code / $reproduced"
+    exit 1
+  fi
+  echo "gate: cooperative-echo finding bundle replays standalone (exit 0, REPRODUCED)"
+else
+  echo "gate: cooperative-echo receipts are byte-identical across two runs (no findings to replay)"
+fi
+
 echo "== gate battery: ALL PASS =="
