@@ -25,25 +25,42 @@ reports therefore carry the evidence name
 "pairwise replay agreement", not a tier proof (hardening-loop-4
 BLOCKER 2).
 
-## Tier 2 — Hermetic reproducibility (D2 MVP shipped; D1 future backend)
+## Tier 2 — subprocess evidence (D2 shipped; hermetic D1 future)
 
-Target state: arbitrary code (including AI-generated Python) in a hermetic
+**D1 target state:** arbitrary code (including AI-generated Python) in a hermetic
 subprocess sandbox with fixed seeds, virtual/faked clock, recorded-replay LLM
 cassettes, and fault-injecting network and filesystem interposition.
 
-Guarantee: the *environment* is deterministic; interpreter scheduling is
-not. So every universe runs twice and trace hashes are compared — the
-divergence detector (`crates/vh-multiverse/src/lib.rs`) reports the
-divergence rate instead of hiding it. A Tier-2 verdict always carries
-that rate.
+Only after those controls and every relevant capability channel are
+mechanically proven closed may a D1 receipt claim exact replay of controlled
+effects. Interpreter scheduling still remains outside that guarantee unless
+it is separately controlled.
 
-**Current implementation status (2026-07-23, CDa):** the shipped boundary is
-the **Tier-2 D2 subprocess MVP; D1 is a future backend**. `vh-cli` and
-`vh-sandbox` are the boundary crates; the deterministic kernel crates remain
-pure. The current child process is not connected to cassette replay, and
-environment scrubbing does not virtualize all effects. Those open channels cap
-the present claim at D2. Cgroups, netns, fault proxy, clock control, and a
-child-connected cassette boundary are planned work, not implied D1 coverage.
+**Current D2 guarantee:** no deterministic environment is claimed. The
+controller bounds execution, records the declared world and all observed
+outcomes, lists every uncontrolled capability channel, runs the subprocess
+twice, and publishes divergence instead of hiding it. A D2 pair that agrees is
+evidence inside that exact boundary, never a determinism certificate.
+
+**Current implementation status (2026-07-29, `ab259c07`):** the shipped
+boundary is the **Tier-2 D2 subprocess harness; D1 is a future backend**.
+`vh-cli` and `vh-sandbox` are the boundary crates; the deterministic kernel
+crates remain pure.
+
+The child can now consume an ordered, identity-bound cassette through the C5
+cooperative Python fixture. Cassette miss and unconsumed history taint the run
+`UNCHECKED`. The C6 reference campaign publishes raw run-twice counts and
+records 0 divergent pairs in 100; its leak battery proves that probed leaks
+diverge and unprobed channels cannot become false `CLEAN` results
+(`scripts/gate.sh:104-190`).
+
+That transport closes no capability channel by itself. Every one of the 29
+channels in `vh-sandbox-capability-v1` remains `Open`, so D1 is unreachable
+through the public API. Cgroups, netns, fault proxy, clock control, process
+tree enforcement, and controller-proven closure remain unimplemented.
+The separately proposed C7 supervisor is deferred at 2/14 admission
+decisions (`docs/audits/C7_ADMISSION_LEDGER_2026-07-25.md:9-14`). Neither the
+cassette result nor a low D2 divergence rate implies D1 coverage.
 
 ## Tier 3 — Hypervisor determinism (explicit non-goal)
 

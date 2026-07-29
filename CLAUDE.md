@@ -31,7 +31,7 @@ merge approval, or proof any acceptance criterion holds.
 ## The Determinism Deny-List (this repo's #1 law)
 
 Every crate under `crates/` is kernel-grade unless listed as a boundary
-crate (fail-closed classification; today only `vh-cli`). Kernel crates
+crate (fail-closed classification; today `vh-cli` and `vh-sandbox`). Kernel crates
 must be pure: no wall clock, no OS randomness, no hash-order iteration,
 no threads, no I/O, no env access, no global mutable state, no unsafe
 code. Enforcement is layered (`scripts/check_determinism_denylist.py`,
@@ -62,11 +62,14 @@ Declared intent lives in `docs/governance/ACTIVE_TRACK.yaml` (rendered by
   scheduler. `crates/vh-trace` — chain-hashed append-only trace.
   `crates/vh-gremlin` — fault plans. `crates/vh-props` — always/sometimes
   properties. `crates/vh-multiverse` — universe runner + divergence
-  detector. `crates/vh-shrink` — deterministic fault-plan minimization.
-  `crates/vh-verify` — independent replay-soak verification. `crates/vh-cli`
-  — the `vh` binary and demo workloads.
-- `clients/python/` — future integration client (dharma_swarm et al.).
-  Currently a stub; the Rust core is the only engine.
+  detector. `crates/vh-sandbox` — bounded Tier-2 subprocess boundary,
+  capability ledger, and cassette protocol. `crates/vh-digest` —
+  dependency-free evidence digest. `crates/vh-shrink` — deterministic
+  fault-plan minimization. `crates/vh-verify` — independent replay-soak
+  verification. `crates/vh-cli` — the `vh` binary and demo workloads.
+- `clients/python/` — quarantined/legacy integration surface (dharma_swarm et
+  al.). Its runner is a stub and its old simulator/evidence modules are not a
+  trusted engine; the Rust core is the only truth authority.
 - Determinism doctrine: `docs/specs/DETERMINISM_TIERS.md`. Build plan:
   `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`.
 

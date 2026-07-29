@@ -59,8 +59,10 @@ at the worker; or the sweep must verify liveness rather than assume a
 deadline). Final `applied:<task>` == 1 for every task; the failure
 detail names each over-applied task and its count.
 
-Harvested entry: counts toward the >=25 / >=80% real-recall acceptance
-(corpus/SCHEMA.md law 3). Recall measured then pinned 2026-07-22.
+Harvested regression entry: its real-issue provenance and pinned
+manifestation count test the reduced mechanism, but it receives no
+retrospective holdout credit (`corpus/SCHEMA.md` laws 3–4). Recall measured
+then pinned 2026-07-22.
 VB-006 is intentionally skipped: reserved for the convergence C2
 same-timestamp race (docs/prompts/CONVERGENCE_CAMPAIGN_EXECUTOR_2026-07-22.md §4).
 
