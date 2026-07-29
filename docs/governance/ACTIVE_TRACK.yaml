@@ -86,6 +86,7 @@ tracks:
       - "SHIPPED 2026-08-05 at merged main 63ccd32: the strict local Python-to-Rust transport, fresh generic/cooperative re-verification, reusable cooperative D2 transport, and R3 holdout/dossier law are gate-protected substrate; all 29 capability channels remain open"
       - "complete versioned operation/feature negotiation and observed-target-revision binding before claiming a production or dharma_swarm adapter receipt"
       - "P0 OPERATOR GATE: issue #60 may authorize one exact VB-008 or VB-010 foreign-target confirmation or its predeclared null; execute neither without separate human approval of repository, revision, license, data boundary, oracle, fixed budget, and disposable environment"
+      - "TRUTH KERNEL 2026-07-29: execute docs/prompts/TRUTH_KERNEL_LONG_RUNNING_GOAL_2026-07-29.md only after its admission PR is human-merged; K1 spec first, K2+ gated on merges per its §4"
       - "serialize writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer; verifier-owned surfaces still require an exact interface request"
       - "measure the representative shrink median (issue #59) and named-box Tier-1 throughput (issue #64) before claiming criteria 5 or 6"
     non_goals:
