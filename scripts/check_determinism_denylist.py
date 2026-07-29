@@ -208,6 +208,10 @@ EXEMPT: dict[str, set[str]] = {
     # vh_cli::receipts module (fully deny-listed). Clock, env, net,
     # and hash-order rules still bind here.
     "crates/vh-cli/src/bundle.rs": {r"std::fs", r"std::process"},
+    # Wave B/C R3: evaluation-contract dossier validator reads one file
+    # from the command-line path; it does not execute targets, access the
+    # network, or read environment/credentials.
+    "crates/vh-cli/src/eval.rs": {r"std::fs"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.
