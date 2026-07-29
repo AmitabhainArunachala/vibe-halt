@@ -378,21 +378,19 @@ if [ "$code" -ne 3 ] || ! grep -q '^  replay verdict: UNCHECKED' <<< "$out"; the
 fi
 echo "gate: single-universe replay correctly UNCHECKED (exit 3)"
 
-echo "== negative gate: Python client quarantine holds (no manufactured success) =="
+echo "== Python adapter gate: strict Python-to-Rust client (no manufactured success) =="
 set +e
-PYTHONPATH=clients/python python3 -c "
-from vibe_halt import MultiverseRunner
-MultiverseRunner('/definitely/not/a/repository', 3, 42)
-" 2>/dev/null
-runner_code=$?
+VH_ENGINE="$(pwd)/target/debug/vh"
+PYTHONPATH=clients/python VIBE_HALT_ENGINE="$VH_ENGINE" python3 -m unittest discover -s clients/python/tests -v
+py_code=$?
 PYTHONPATH=clients/python python3 -m vibe_halt.cli >/dev/null 2>&1
 cli_code=$?
 set -e
-if [ "$runner_code" -eq 0 ] || [ "$cli_code" -ne 2 ]; then
-  echo "GATE FAIL: quarantined Python client executed (runner exit $runner_code, cli exit $cli_code) — it must fail as unimplemented, never simulate"
+if [ "$py_code" -ne 0 ] || [ "$cli_code" -ne 2 ]; then
+  echo "GATE FAIL: Python adapter gate failed (tests exit $py_code, cli exit $cli_code) — the Python client must be a strict client of the Rust engine, never a simulator"
   exit 1
 fi
-echo "gate: python client quarantine holds (runner refuses, cli exit 2)"
+echo "gate: python adapter passes (strict client, cli exit 2)"
 
 echo "== evidence-store gate: receipts deterministic + bundle replays standalone (C4/R4) =="
 bundle_tmp="$(mktemp -d)"

@@ -1,18 +1,18 @@
-"""QUARANTINED console script (PR #1 hardening-loop-4 BLOCKER 3).
+"""Console entry point for the strict Python client.
 
-The installed `vibe-halt` command used to manufacture success — "All
-properties held across N universes" — without executing its target. It
-now fails explicitly as unimplemented instead of emitting fabricated
-evidence. Use the Rust engine: `cargo run -p vh-cli -- run ...`.
+The Python package is an adapter library, not a simulator. The Rust `vh`
+binary remains the primary command-line tool.
 """
 
 import sys
 
-from .core.runner import QUARANTINE_MESSAGE
-
 
 def main() -> None:
-    print(f"error: {QUARANTINE_MESSAGE}", file=sys.stderr)
+    print(
+        "error: the vibe-halt Python CLI is intentionally minimal; "
+        "use the Rust `vh` engine or the `vibe_halt.MultiverseRunner` Python API",
+        file=sys.stderr,
+    )
     raise SystemExit(2)
 
 

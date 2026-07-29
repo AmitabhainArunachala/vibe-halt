@@ -12,8 +12,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use vh_cli::receipts::{palette_by_name, parse_line, render_line, FindingBundle, Val};
+use vh_cli::receipts::{json_escape, palette_by_name, parse_line, render_line, FindingBundle, Val};
 use vh_cli::receipts_v2::{
     finding_id_v2, FindingBundleV2, Provenance, ShrinkLineage, FINDING_BUNDLE_SCHEMA_V2,
     RUN_RECEIPTS_SCHEMA_V2,
@@ -518,6 +519,343 @@ fn replay_v2(text: &str, file: &Path) -> i32 {
         }
         1
     }
+}
+
+/// `vh verify-run --out DIR`: verify a `vh run --out` receipt directory.
+/// Reads `DIR/run.ndjson`, recomputes its content digest, checks the
+/// manifest schema/verdict, and re-executes every finding bundle via
+/// `vh replay-bundle`. Emits exactly one NDJSON machine record
+/// (`vh-verify-run-v1`) to stdout: exit 0 if every bundle reproduces and
+/// the manifest is intact, exit 1 if any verification fails, exit 2 on
+/// usage or unreadable input.
+pub fn cmd_verify_run(args: &[String], usage: &str) -> i32 {
+    let mut out_dir: Option<String> = None;
+    let mut engine: Option<String> = None;
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--out" => match it.next() {
+                Some(v) => out_dir = Some(v.clone()),
+                None => {
+                    eprintln!("error: --out requires a value\n\n{usage}");
+                    return 2;
+                }
+            },
+            "--engine" => match it.next() {
+                Some(v) => engine = Some(v.clone()),
+                None => {
+                    eprintln!("error: --engine requires a value\n\n{usage}");
+                    return 2;
+                }
+            },
+            other => {
+                eprintln!("error: unknown argument {other:?}\n\n{usage}");
+                return 2;
+            }
+        }
+    }
+    let Some(dir) = out_dir else {
+        eprintln!("error: verify-run requires --out DIR\n\n{usage}");
+        return 2;
+    };
+    let Some(engine) = engine else {
+        eprintln!("error: verify-run requires --engine PATH\n\n{usage}");
+        return 2;
+    };
+    let dir_path = Path::new(&dir);
+    let engine_path = Path::new(&engine);
+    let run_path = dir_path.join("run.ndjson");
+    let text = match fs::read_to_string(&run_path) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("error: cannot read {}: {e}", run_path.display());
+            return 2;
+        }
+    };
+
+    let raw: Vec<&str> = text.split('\n').collect();
+    let (tail, body_and_digest) = match raw.split_last() {
+        Some(split) => split,
+        None => {
+            eprintln!("error: empty run receipt");
+            return 2;
+        }
+    };
+    if !tail.is_empty() {
+        eprintln!("error: run receipt must end with a newline");
+        return 2;
+    }
+    if body_and_digest.iter().any(|l| l.is_empty()) {
+        eprintln!("error: blank line inside run receipt");
+        return 2;
+    }
+
+    let digest_line = match body_and_digest.last() {
+        Some(l) => *l,
+        None => {
+            eprintln!("error: empty run receipt");
+            return 2;
+        }
+    };
+    let body_lines = &body_and_digest[..body_and_digest.len() - 1];
+    let mut body = String::new();
+    for l in body_lines {
+        body.push_str(l);
+        body.push('\n');
+    }
+
+    let result_digest = vh_digest::sha256_hex(text.as_bytes());
+    let mut errors: Vec<String> = Vec::new();
+
+    // Content-digest check.
+    let evidence_digest = match parse_line(digest_line) {
+        Ok(rec) => {
+            let kind = rec
+                .iter()
+                .find(|(k, _)| k == "record")
+                .and_then(|(_, v)| v.as_str());
+            if kind != Some("digest") {
+                render_verify_run_record(
+                    false,
+                    "",
+                    &result_digest,
+                    "",
+                    0,
+                    0,
+                    &["last record is not a digest record".into()],
+                );
+                return 1;
+            }
+            let recorded = match rec
+                .iter()
+                .find(|(k, _)| k == "value")
+                .and_then(|(_, v)| v.as_str())
+            {
+                Some(v) => v,
+                None => {
+                    render_verify_run_record(
+                        false,
+                        "",
+                        &result_digest,
+                        "",
+                        0,
+                        0,
+                        &["digest record missing value".into()],
+                    );
+                    return 1;
+                }
+            };
+            let recomputed = vh_digest::sha256_hex(body.as_bytes());
+            if recorded != recomputed {
+                render_verify_run_record(
+                    false,
+                    "",
+                    &result_digest,
+                    "",
+                    0,
+                    0,
+                    &[format!(
+                        "content digest mismatch: recorded {recorded}, recomputed {recomputed}"
+                    )],
+                );
+                return 1;
+            }
+            recomputed
+        }
+        Err(e) => {
+            render_verify_run_record(
+                false,
+                "",
+                &result_digest,
+                "",
+                0,
+                0,
+                &[format!("malformed digest record: {e}")],
+            );
+            return 1;
+        }
+    };
+
+    // Manifest check.
+    let manifest = match body_lines.first() {
+        Some(line) => match parse_line(line) {
+            Ok(rec) => rec,
+            Err(e) => {
+                render_verify_run_record(
+                    false,
+                    "",
+                    &result_digest,
+                    &evidence_digest,
+                    0,
+                    0,
+                    &[format!("malformed manifest: {e}")],
+                );
+                return 1;
+            }
+        },
+        None => {
+            render_verify_run_record(
+                false,
+                "",
+                &result_digest,
+                &evidence_digest,
+                0,
+                0,
+                &["no manifest record".into()],
+            );
+            return 1;
+        }
+    };
+    let schema = manifest
+        .iter()
+        .find(|(k, _)| k == "schema")
+        .and_then(|(_, v)| v.as_str());
+    if schema != Some(RUN_RECEIPTS_SCHEMA_V2) {
+        render_verify_run_record(
+            false,
+            "",
+            &result_digest,
+            &evidence_digest,
+            0,
+            0,
+            &[format!("unsupported run receipt schema {schema:?}")],
+        );
+        return 1;
+    }
+    let verdict = manifest
+        .iter()
+        .find(|(k, _)| k == "verdict")
+        .and_then(|(_, v)| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let findings_total = manifest
+        .iter()
+        .find(|(k, _)| k == "findings")
+        .and_then(|(_, v)| v.as_u64())
+        .unwrap_or(0) as usize;
+
+    // Collect finding records.
+    let mut finding_paths: Vec<(String, String)> = Vec::new();
+    for line in body_lines.iter().skip(1) {
+        let rec = match parse_line(line) {
+            Ok(r) => r,
+            Err(e) => {
+                errors.push(format!("malformed record: {e}"));
+                continue;
+            }
+        };
+        let record_type = rec
+            .iter()
+            .find(|(k, _)| k == "record")
+            .and_then(|(_, v)| v.as_str());
+        if record_type == Some("finding") {
+            let id = rec
+                .iter()
+                .find(|(k, _)| k == "finding_id")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("unknown")
+                .to_string();
+            let path = rec
+                .iter()
+                .find(|(k, _)| k == "path")
+                .and_then(|(_, v)| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            finding_paths.push((id, path));
+        }
+    }
+    if finding_paths.len() != findings_total {
+        errors.push(format!(
+            "manifest claims {} finding(s) but receipt lists {}",
+            findings_total,
+            finding_paths.len()
+        ));
+    }
+
+    // Re-execute each finding bundle by invoking the pinned vh binary.
+    let mut verified_count = 0usize;
+    for (id, path) in &finding_paths {
+        let abs = dir_path.join(path);
+        let output = match Command::new(engine_path)
+            .arg("replay-bundle")
+            .arg(&abs)
+            .output()
+        {
+            Ok(o) => o,
+            Err(e) => {
+                errors.push(format!("finding {id}: cannot spawn replay-bundle: {e}"));
+                continue;
+            }
+        };
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            errors.push(format!(
+                "finding {id}: replay-bundle failed (exit {}): stderr={stderr} stdout={stdout}",
+                output.status.code().unwrap_or(-1)
+            ));
+            continue;
+        }
+        verified_count += 1;
+    }
+
+    let verified = errors.is_empty();
+    let final_verdict = if verified {
+        verdict.clone()
+    } else {
+        "ERROR".to_string()
+    };
+    render_verify_run_record(
+        verified,
+        &final_verdict,
+        &result_digest,
+        &evidence_digest,
+        finding_paths.len(),
+        verified_count,
+        &errors,
+    );
+    if verified {
+        0
+    } else {
+        1
+    }
+}
+
+fn render_verify_run_record(
+    verified: bool,
+    verdict: &str,
+    result_digest: &str,
+    evidence_digest: &str,
+    findings_total: usize,
+    findings_verified: usize,
+    errors: &[String],
+) {
+    let errors_json = if errors.is_empty() {
+        "[]".to_string()
+    } else {
+        format!(
+            "[{}]",
+            errors
+                .iter()
+                .map(|e| format!("\"{}\"", json_escape(e)))
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
+    println!(
+        "{}",
+        render_line(&[
+            ("record", Val::S("verify-run".into())),
+            ("schema", Val::S("vh-verify-run-v1".into())),
+            ("verified", Val::B(verified)),
+            ("verdict", Val::S(verdict.to_string())),
+            ("evidence_digest", Val::S(evidence_digest.to_string())),
+            ("result_digest", Val::S(result_digest.to_string())),
+            ("findings_total", Val::N(findings_total as u64)),
+            ("findings_verified", Val::N(findings_verified as u64)),
+            ("errors", Val::S(errors_json)),
+        ])
+    );
 }
 
 fn compare_result_to_v2(a: &UniverseResult, bundle: &FindingBundleV2, out: &mut Vec<String>) {
