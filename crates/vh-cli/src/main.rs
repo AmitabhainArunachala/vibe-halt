@@ -30,6 +30,7 @@ fn main() {
     let code = match args.first().map(String::as_str) {
         Some("run") => cmd_run(&args[1..]),
         Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
+        Some("verify-run") => bundle::cmd_verify_run(&args[1..], USAGE),
         Some("shrink") => cmd_shrink(&args[1..]),
         Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
         Some("sandbox-campaign") => sandbox_campaign::cmd_sandbox_campaign(&args[1..], USAGE),
@@ -51,6 +52,7 @@ USAGE:
            [--shrink]
            [--record-tape] [--schedule fifo|pct:<d>|uniform]
     vh replay-bundle PATH
+    vh verify-run --out DIR --engine PATH
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh sandbox-campaign [--mode reference|leak-battery|replay] [--pairs N] [--out FILE] [--receipt FILE]

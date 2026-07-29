@@ -200,11 +200,14 @@ EXEMPT: dict[str, set[str]] = {
     # are spawned by vh-sandbox, not here; every other rule still binds.
     "crates/vh-cli/src/sandbox_campaign.rs": {r"std::env", r"std::fs"},
     # Evidence-store boundary (convergence C4, audit R4): receipt/bundle
-    # file I/O for `vh run --out` and `vh replay-bundle`. Receipt CONTENT
-    # is built and parsed by the pure vh_cli::receipts module (fully
-    # deny-listed); this file only reads/writes those bytes, so clock,
-    # env, net, process, and hash-order rules all still bind here.
-    "crates/vh-cli/src/bundle.rs": {r"std::fs"},
+    # file I/O for `vh run --out` and `vh replay-bundle`. The new
+    # `vh verify-run` subcommand orchestrates per-finding replay by
+    # invoking the pinned `vh replay-bundle` executable (`std::process`);
+    # the engine path is passed explicitly by the caller (`--engine`),
+    # and receipt CONTENT is still built/parsed by the pure
+    # vh_cli::receipts module (fully deny-listed). Clock, env, net,
+    # and hash-order rules still bind here.
+    "crates/vh-cli/src/bundle.rs": {r"std::fs", r"std::process"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.
