@@ -208,6 +208,12 @@ EXEMPT: dict[str, set[str]] = {
     # vh_cli::receipts module (fully deny-listed). Clock, env, net,
     # and hash-order rules still bind here.
     "crates/vh-cli/src/bundle.rs": {r"std::fs", r"std::process"},
+    # R2 cooperative D2 transport boundary: host tempdirs, fixture
+    # staging, and a test-only `std::time::Duration` deadline for the
+    # timeout-taint red-matrix test. Subprocesses are spawned by
+    # vh-sandbox; this file only orchestrates the reusable fixture and
+    # emits an engine-only outcome.
+    "crates/vh-cli/src/cooperative.rs": {r"std::env", r"std::fs", r"std::time"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.

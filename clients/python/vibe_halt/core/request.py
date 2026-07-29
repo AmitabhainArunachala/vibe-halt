@@ -50,9 +50,15 @@ class RunRequest:
     source_commit: Optional[str] = None
     output_root: Optional[str] = None
     invocation_id: Optional[str] = None
+    transport: Optional[str] = None
+    cassette_path: Optional[str] = None
 
     def __post_init__(self):
         if self.universes <= 0:
             raise ValueError(f"universes must be positive, got {self.universes}")
         if self.output_root is not None and not os.path.isabs(self.output_root):
             raise ValueError(f"output_root must be absolute: {self.output_root!r}")
+        if self.cassette_path is not None and not os.path.isabs(self.cassette_path):
+            raise ValueError(f"cassette_path must be absolute: {self.cassette_path!r}")
+        if self.transport is not None and self.transport not in {"cooperative"}:
+            raise ValueError(f"unknown transport: {self.transport!r}")

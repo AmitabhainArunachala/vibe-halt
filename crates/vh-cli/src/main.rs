@@ -5,6 +5,7 @@
 //! is manual to keep the workspace zero-dependency.
 
 mod bundle;
+mod cooperative;
 mod sandbox_campaign;
 mod sandbox_demo;
 
@@ -34,6 +35,7 @@ fn main() {
         Some("shrink") => cmd_shrink(&args[1..]),
         Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
         Some("sandbox-campaign") => sandbox_campaign::cmd_sandbox_campaign(&args[1..], USAGE),
+        Some("cooperative") => cooperative::cmd_cooperative(&args[1..], USAGE),
         Some("doctor") => cmd_doctor(),
         _ => {
             eprint!("{}", USAGE);
@@ -56,6 +58,7 @@ USAGE:
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh sandbox-campaign [--mode reference|leak-battery|replay] [--pairs N] [--out FILE] [--receipt FILE]
+    vh cooperative --workload cooperative-echo [--cassette PATH] [--out DIR]
     vh doctor
 
 WORKLOADS:

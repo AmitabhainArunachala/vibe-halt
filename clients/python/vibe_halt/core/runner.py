@@ -110,6 +110,36 @@ def _parse_verify_run(stdout: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _parse_cooperative_outcome(stdout: str) -> Optional[Dict[str, Any]]:
+    for line in reversed(stdout.splitlines()):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            rec.get("record") == "cooperative-outcome"
+            and rec.get("schema") == "vh-cooperative-outcome-v1"
+        ):
+            return rec
+    return None
+
+
+def _build_cooperative_args(request: RunRequest, out_dir: Path) -> List[str]:
+    args: List[str] = [
+        "cooperative",
+        "--workload",
+        request.workload,
+        "--out",
+        str(out_dir),
+    ]
+    if request.cassette_path is not None:
+        args.extend(["--cassette", request.cassette_path])
+    return args
+
+
 def _decode_errors(errors_field: Any) -> List[str]:
     if isinstance(errors_field, list):
         return [str(e) for e in errors_field]
@@ -178,6 +208,18 @@ class MultiverseRunner:
         request_dict.pop("output_root", None)
         request_dict.pop("invocation_id", None)
         request_digest = _sha256_hex(_canonical_json_bytes(request_dict))
+
+        if request.transport == "cooperative":
+            return self._run_cooperative(
+                request,
+                out_dir,
+                engine,
+                engine_dir,
+                untrusted,
+                invocation_id,
+                request_dict,
+                request_digest,
+            )
 
         run_proc = self._invoke(
             [str(engine)] + _build_run_args(request, out_dir), cwd=engine_dir
@@ -302,6 +344,121 @@ class MultiverseRunner:
             stdout=run_proc.stdout,
             stderr=run_proc.stderr,
             exit_code=run_proc.returncode,
+            verified=True,
+            findings_count=findings_total,
+            raw=raw,
+        )
+
+    def _run_cooperative(
+        self,
+        request: RunRequest,
+        out_dir: Path,
+        engine: Path,
+        engine_dir: Path,
+        untrusted: bool,
+        invocation_id: str,
+        request_dict: Dict[str, Any],
+        request_digest: str,
+    ) -> Outcome:
+        """Run a cooperative D2 transport workload through the Rust engine."""
+        coop_proc = self._invoke(
+            [str(engine)] + _build_cooperative_args(request, out_dir), cwd=engine_dir
+        )
+        coop_rec = _parse_cooperative_outcome(coop_proc.stdout)
+        if coop_rec is None:
+            return Outcome(
+                verdict=Verdict.ERROR,
+                tier=Tier.TIER2,
+                grade=Grade.UNTRUSTED if untrusted else Grade.D2,
+                scope=SCOPE,
+                request_digest=request_digest,
+                receipt_dir=str(out_dir),
+                stdout=coop_proc.stdout,
+                stderr=coop_proc.stderr,
+                exit_code=coop_proc.returncode,
+                verified=False,
+                errors=["cooperative command produced no valid machine outcome"],
+            )
+
+        evidence_digest = coop_rec.get("evidence_digest")
+        result_digest = coop_rec.get("result_digest")
+        engine_verdict = coop_rec.get("verdict", "UNCHECKED")
+        findings_total = int(coop_rec.get("findings_count", 0))
+        verified = bool(coop_rec.get("verified"))
+
+        raw: Dict[str, Any] = dict(coop_rec)
+        raw["coop_stdout"] = coop_proc.stdout
+        raw["coop_stderr"] = coop_proc.stderr
+        raw["coop_exit_code"] = coop_proc.returncode
+
+        envelope = {
+            "invocation_id": invocation_id,
+            "request": request_dict,
+            "engine_policy": {
+                "path": str(engine),
+                "expected_digest": self._policy.expected_digest,
+            },
+            "output_root": str(out_dir),
+            "result_digest": result_digest,
+            "evidence_digest": evidence_digest,
+        }
+        invocation_envelope_digest = _sha256_hex(_canonical_json_bytes(envelope))
+
+        if untrusted:
+            return Outcome(
+                verdict=Verdict.UNCHECKED,
+                tier=Tier.TIER2,
+                grade=Grade.UNTRUSTED,
+                scope=SCOPE,
+                request_digest=request_digest,
+                invocation_envelope_digest=invocation_envelope_digest,
+                evidence_digest=evidence_digest,
+                receipt_dir=str(out_dir),
+                stdout=coop_proc.stdout,
+                stderr=coop_proc.stderr,
+                exit_code=coop_proc.returncode,
+                verified=True,
+                errors=["no engine trust root configured; checked verdict refused"],
+                findings_count=findings_total,
+                raw=raw,
+            )
+
+        if not verified:
+            errors = _decode_errors(coop_rec.get("errors", "[]"))
+            return Outcome(
+                verdict=Verdict.ERROR,
+                tier=Tier.TIER2,
+                grade=Grade.D2,
+                scope=SCOPE,
+                request_digest=request_digest,
+                invocation_envelope_digest=invocation_envelope_digest,
+                evidence_digest=evidence_digest,
+                receipt_dir=str(out_dir),
+                stdout=coop_proc.stdout,
+                stderr=coop_proc.stderr,
+                exit_code=1,
+                verified=False,
+                errors=errors,
+                findings_count=findings_total,
+                raw=raw,
+            )
+
+        try:
+            verdict = Verdict(engine_verdict)
+        except ValueError:
+            verdict = Verdict.UNCHECKED
+        return Outcome(
+            verdict=verdict,
+            tier=Tier.TIER2,
+            grade=Grade.D2,
+            scope=SCOPE,
+            request_digest=request_digest,
+            invocation_envelope_digest=invocation_envelope_digest,
+            evidence_digest=evidence_digest,
+            receipt_dir=str(out_dir),
+            stdout=coop_proc.stdout,
+            stderr=coop_proc.stderr,
+            exit_code=coop_proc.returncode,
             verified=True,
             findings_count=findings_total,
             raw=raw,
