@@ -214,6 +214,10 @@ EXEMPT: dict[str, set[str]] = {
     # vh-sandbox; this file only orchestrates the reusable fixture and
     # emits an engine-only outcome.
     "crates/vh-cli/src/cooperative.rs": {r"std::env", r"std::fs", r"std::time"},
+    # Wave B/C R3: evaluation-contract dossier validator reads one file
+    # from the command-line path; it does not execute targets, access the
+    # network, or read environment/credentials.
+    "crates/vh-cli/src/eval.rs": {r"std::fs"},
 }
 
 # Pattern -> reason, applied to every scanned line of every scanned file.
