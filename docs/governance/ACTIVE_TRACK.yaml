@@ -40,6 +40,7 @@ tracks:
     # globs that swallow sibling tracks' crates and workflows.
     owned_surfaces:
       - rust-toolchain.toml
+      - .gitattributes
       - crates/vh-core/**
       - crates/vh-trace/**
       - crates/vh-gremlin/**

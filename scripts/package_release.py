@@ -124,6 +124,7 @@ def main() -> int:
                 if source.is_file() and "__pycache__" not in source.parts:
                     source_files[source.relative_to(REPO).as_posix()] = source
         for name in (
+            ".gitattributes",
             ".gitignore",
             "AGENTS.md",
             "CLAUDE.md",

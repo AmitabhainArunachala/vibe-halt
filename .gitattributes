@@ -1,0 +1,9 @@
+# Release archives include the tagged source tree. Normalize text checkouts so
+# platform-specific Git defaults cannot change source bytes.
+* text=auto eol=lf
+
+*.gz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.zip binary
