@@ -79,9 +79,15 @@ Declared intent lives in `docs/governance/ACTIVE_TRACK.yaml` (rendered by
 make onboard    # session status (run first)
 make test       # cargo test --workspace
 make gate       # deny-list + tests + live divergence/seeded-bug/detector gates
+make review     # fresh-context diff audit + gate before publication
 make demo       # watch the rig catch the ack-before-flush bug
 cargo run -p vh-cli -- run --workload demo --universes 200
 ```
 
 ALWAYS run `make gate` before committing. A red gate is a finding, not an
 obstacle: report it, don't route around it.
+
+GitHub issues and the linked project are the delivery SSOT. Do not create a
+second task ledger in Markdown. New work begins from an accepted issue, moves
+through one bounded branch and draft PR, and stops at human merge. Follow
+`docs/DEVELOPMENT_WORKFLOW.md`.

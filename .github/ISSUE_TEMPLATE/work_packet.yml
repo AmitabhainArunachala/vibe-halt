@@ -1,0 +1,71 @@
+name: Work packet
+description: Admit a feature, measurement, audit, integration, or governance change.
+title: "[WORK] "
+labels:
+  - triage
+body:
+  - type: markdown
+    attributes:
+      value: |
+        GitHub issues are the delivery queue. State exactly what can be proved and who has authority to promote it.
+  - type: textarea
+    id: objective
+    attributes:
+      label: Objective
+      description: One observable outcome.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Current evidence
+      description: File:line citations, commands, issue/PR links, and known counterevidence.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: Include public entry points, empty/boundary inputs, failure paths, ordering/de-duplication, and exact verification commands.
+      placeholder: |
+        - [ ] ...
+        - [ ] `make gate`
+    validations:
+      required: true
+  - type: dropdown
+    id: tier
+    attributes:
+      label: Claim boundary
+      options:
+        - Tier 1 / D0 closed simulation
+        - Tier 2 / D2 cooperative subprocess
+        - Documentation or governance only
+        - Measurement only
+        - Unknown — must fail closed
+    validations:
+      required: true
+  - type: dropdown
+    id: authority
+    attributes:
+      label: Highest authority required
+      options:
+        - Agent executable
+        - Human merge
+        - Operator approval
+        - External confirmation
+    validations:
+      required: true
+  - type: textarea
+    id: non_goals
+    attributes:
+      label: Non-goals and forbidden effects
+      description: Name credentials, spending, foreign execution, deployment, schema, or merge actions that are not authorized.
+    validations:
+      required: true
+  - type: textarea
+    id: rollback
+    attributes:
+      label: Rollback or kill condition
+      description: What evidence stops the lane, and how can the change be reverted safely?
+    validations:
+      required: true

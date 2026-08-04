@@ -1,0 +1,129 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing vX.Y.Z tag to build without publishing
+        required: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Validate tag, source, and workspace version
+        id: version
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag="$RELEASE_TAG"
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          version="${tag#v}"
+          cargo_version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)"
+          [[ "$version" == "$cargo_version" ]]
+          tagged_sha="$(git rev-list -n 1 "$tag")"
+          [[ "$(git rev-parse HEAD)" == "$tagged_sha" ]]
+          cargo metadata --locked --offline --no-deps >/dev/null
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            binary: vh
+          - os: macos-14
+            target: aarch64-apple-darwin
+            binary: vh
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            binary: vh.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Build exact tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo build --release --locked --offline -p vh-cli --target "${{ matrix.target }}"
+      - name: Package deterministic archive
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/package_release.py \
+            --version "${{ needs.validate.outputs.version }}" \
+            --binary "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
+            --target "${{ matrix.target }}" \
+            --out dist
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vh-${{ needs.validate.outputs.version }}-${{ matrix.target }}
+          path: dist/*
+          if-no-files-found: error
+
+  source-gate:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Full repository gate at exact tag
+        run: make gate
+
+  publish:
+    if: ${{ github.event_name == 'push' }}
+    needs: [validate, build, source-gate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: vh-${{ needs.validate.outputs.version }}-*
+          path: dist
+          merge-multiple: true
+      - name: Aggregate checksums
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat dist/*.sha256 | LC_ALL=C sort > dist/SHA256SUMS
+          cat dist/SHA256SUMS
+      - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v3
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/SHA256SUMS
+          generate_release_notes: true
+          fail_on_unmatched_files: true

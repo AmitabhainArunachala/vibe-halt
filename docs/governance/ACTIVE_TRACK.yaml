@@ -57,10 +57,18 @@ tracks:
       - docs/prompts/**
       - Makefile
       - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+      - .github/ISSUE_TEMPLATE/**
+      - .github/PULL_REQUEST_TEMPLATE.md
+      - .github/CODEOWNERS
       - VISION.md
       - DESIGN.md
       - CLAUDE.md
       - README.md
+      - docs/DEVELOPMENT_WORKFLOW.md
+      - scripts/package_release.py
+      - scripts/self_review.sh
+      - scripts/sync_github_project.py
     acceptance:
       # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
       # Criterion 3 is a material measurement-contract amendment; human

@@ -1,0 +1,11 @@
+# Human review boundary. This file requests review; it does not itself prove
+# approval or replace repository rulesets.
+* @AmitabhainArunachala
+
+/.github/ @AmitabhainArunachala
+/docs/governance/ @AmitabhainArunachala
+/docs/specs/ @AmitabhainArunachala
+/scripts/check_determinism_denylist.py @AmitabhainArunachala
+/scripts/gate.sh @AmitabhainArunachala
+/Cargo.toml @AmitabhainArunachala
+/Cargo.lock @AmitabhainArunachala
