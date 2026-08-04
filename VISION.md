@@ -35,12 +35,13 @@ without pretending that an opaque process is deterministic.
    and unreachable grades remain visible.
 6. **Humans merge and confirm.** Green automation is evidence, not approval.
 
-## Proven boundary on 2026-07-29
+## Proven boundary on 2026-08-05
 
-At merged `main` commit `ab259c07`, the repository demonstrates the
-repo-local boundary below; recheck it with `git rev-parse HEAD` and
-`make gate`. Cross-platform evidence cited here is the latest PR synthetic
-merge run, not a retained exact-`ab259c07` push run.
+Merged `main` commit `63ccd32` includes the accepted Reality Bridge slice and
+demonstrates the repo-local boundary below; recheck it with
+`git rev-parse HEAD` and `make gate`. The exact merged commit passed
+[CI run 30965578160](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578160)
+and [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578156).
 
 - a dependency-free Rust determinism kernel, simulated network and disk,
   semantic gremlins, executable properties, and multiverse execution
@@ -56,6 +57,13 @@ merge run, not a retained exact-`ab259c07` push run.
   with 0 divergent pairs in 100, while all 29 capability channels remain open
   (`scripts/gate.sh:104-190` and
   `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33`); this is D2, never D1;
+- a strict stdlib-only Python adapter that copies and optionally digest-pins the
+  Rust executable, consumes only Rust machine records, and re-verifies the run
+  receipt before returning a typed outcome
+  (`clients/python/vibe_halt/core/runner.py:39-57,161-308`);
+- a versioned holdout/dossier contract plus two calibration fixtures, with
+  misses and authority-blocked states retained
+  (`docs/specs/HOLDOUT_CONTRACT_V1.md`, `corpus/calibration/`);
 - eleven regression-corpus entries: six seeded instruments and five reductions
   of already-published real issues (run
   `find corpus/entries -maxdepth 1 -type f -name 'VB-*' | sort`).
@@ -66,7 +74,7 @@ The project has **not** yet demonstrated:
   observed target revision (the strict local Rust-backed client is only the
   first bridge slice; see `clients/python/vibe_halt/core/runner.py`);
 - a real foreign target executed through that adapter;
-- a pre-registered holdout whose misses remain in the recall denominator;
+- an independently curated frozen `N >= 25` acceptance holdout;
 - any previously unknown, independently human-confirmed bug
   (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`);
 - D1 subprocess containment or Tier 3 hypervisor determinism.
@@ -87,12 +95,13 @@ The next proof milestone is:
 > Rust-backed adapter and either produce one independently forward-confirmed
 > candidate or publish the predeclared null.
 
-The implementation campaign is scoped in
+The campaign remains scoped in
 [`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md).
 The local fail-closed transport to the existing Rust evidence authority is now
 implemented. The remaining bridge prepares exact target-admission packets and
-runs foreign code only after the operator approves the named
-repository, revision, license, data boundary, and disposable environment.
+runs foreign code only after the operator approves the named repository,
+revision, license, data boundary, oracle, fixed budget, and disposable
+environment in issue #60.
 
 Known published defects may validate transfer from a reduced model to a real
 target, but they do not satisfy the unknown-bug criterion. A candidate counts

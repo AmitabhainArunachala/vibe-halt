@@ -11,7 +11,7 @@ superseded. The remaining balance is unknown; no executor has spending
 authority. C7 must refresh and ratify the balance before any spend or
 allocation change.
 
-## 2026-07-29 rebaseline — merged `main` at `ab259c07`
+## 2026-08-05 rebaseline — merged `main` at `63ccd32`
 
 This ledger is intentionally narrower than a percent-complete estimate. It
 changes sequencing but not the 12-week budget. It also proposes one material
@@ -26,18 +26,20 @@ current law.
 
 | # | week-12 criterion | current evidence | status |
 |---|---|---|---|
-| 1 | Tier-1 identity across 1,000 runs and two machines | workflow contract at `.github/workflows/verify.yml:386-493`; [Verify #129](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30365776537) passed on PR #53's synthetic merge, not an independently retained exact-`ab259c07` push run | **MET for the pinned reference workload; recertify every combined head** |
+| 1 | Tier-1 identity across 1,000 runs and two machines | workflow contract at `.github/workflows/verify.yml:394-493`; the exact merged `main` commit `63ccd32` passed [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578156), including the cross-OS aggregate | **MET for the pinned reference workload; recertify every combined head** |
 | 2 | publish Tier-2 divergence below 5% | current-tree command `make gate`; exact C5/C6 assertions at `scripts/gate.sh:104-190`; all-open ledger at `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33` | **MET narrowly at D2; never D1** |
-| 3 | at least 80% recall on at least 25 real defects | eleven regression entries exist (run `find corpus/entries -maxdepth 1 -type f -name 'VB-*' | sort`); no pre-registered holdout exists | **OPEN** |
+| 3 | at least 80% recall on at least 25 real defects | the versioned holdout/dossier law and calibration fixtures are merged (`docs/specs/HOLDOUT_CONTRACT_V1.md`, `corpus/calibration/`), but no independently curated frozen `N >= 25` acceptance cohort exists | **OPEN** |
 | 4 | three previously unknown, human-confirmed bugs | `docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71` records zero | **OPEN — 0/3** |
 | 5 | one-command replay and median shrink at least 90% | bundle replay and capture-enabled demo shrink gates are `scripts/gate.sh:397-479`; representative median is not measured | **PARTIAL** |
 | 6 | at least 1,000 Tier-1 universes/hour on the build box | no named build-box benchmark receipt certifies this threshold | **OPEN** |
 | 7 | one end-to-end `dharma_swarm` adapter receipt | a strict local Rust-backed client and fresh generic/cooperative reverification exist in `clients/python/vibe_halt/core/runner.py`; operation/feature negotiation, observed-target-revision binding, the `dharma_swarm` adapter, and a real receipt do not | **OPEN — local bridge slice implemented** |
 
-The load-bearing next move is therefore an external-utility bridge, not more
-internal simulation machinery. The current execution scope is
-`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`.
-The separately proposed C7 supervisor remains deferred.
+The load-bearing next move is still external utility, not more internal
+simulation machinery. With issue #61 closed and PR #57 merged, next obtain the
+exact operator authority in issue #60 and run one frozen foreign-target
+confirmation probe or publish its predeclared null. PR #66's delivery workflow
+is orthogonal to that authority gate. The separately proposed C7 supervisor
+remains deferred.
 
 ### Criterion 3 measurement-contract amendment
 
@@ -145,12 +147,13 @@ current critical path.
   `~/.dharma/` per dharma_swarm's rules; tier named in every receipt.
 - Live-fire demo on real vibe-coded repos.
 
-**2026-08-04 disposition:** this is the current frontier. The strict local
-Python-to-Rust evidence transport is implemented; versioned feature negotiation,
+**2026-08-05 disposition:** the strict local Python-to-Rust evidence transport,
+fresh generic/cooperative re-verification, and versioned holdout/dossier
+validator are merged. Versioned feature negotiation,
 observed-target-revision binding, the real `dharma_swarm` adapter receipt, and
-one exactly authorized version-pinned foreign-target confirmation attempt remain.
-No live target, provider, credential, or sibling-repository write is implied by
-this plan.
+one exactly authorized version-pinned foreign-target confirmation attempt via
+issue #60 remain. No live target, provider, credential, or sibling-repository
+write is implied by this plan.
 
 ## Budget
 
