@@ -77,7 +77,7 @@ def plan() -> list[Action]:
     existing_labels = {
         item["name"]
         for item in gh_json(
-            "label", "list", "--limit", "200", "--json", "name", "color"
+            "label", "list", "--limit", "200", "--json", "name,color"
         )
     }
     for name, color in LABELS.items():
@@ -242,14 +242,23 @@ def main() -> int:
         return 0
 
     applied = 0
+    executed: set[tuple[str, ...]] = set()
     for _ in range(5):
         actions = plan()
         if not actions:
             print(f"project-sync: applied {applied} additive action(s)")
             return 0
-        for action in actions:
+        fresh = [action for action in actions if tuple(action.command) not in executed]
+        if not fresh:
+            print(
+                "project-sync: no new additive actions; GitHub may still be "
+                "converging, rerun to confirm"
+            )
+            return 0
+        for action in fresh:
             print(f"- {action.description}")
             run(action.command)
+            executed.add(tuple(action.command))
             applied += 1
     raise SystemExit("project-sync: additive plan did not converge after five passes")
 
