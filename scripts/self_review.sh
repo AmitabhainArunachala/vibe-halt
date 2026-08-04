@@ -42,7 +42,7 @@ changed="$(
 )"
 if printf '%s\n' "$changed" | grep -Eq '^(crates/|clients/|scripts/|Cargo|Makefile|\.github/workflows/)'; then
   if [[ "$merge_base" != "$(git rev-parse HEAD)" ]] \
-    && ! git log -1 --format=%B | grep -Eiq '(test|gate|verify|evidence|receipt)'; then
+    && ! git log -1 --format=%B | grep -Eiq '(test|gate|verif|evidence|receipt)'; then
     echo "review: latest commit message does not name test/gate/verification evidence" >&2
     exit 1
   fi
