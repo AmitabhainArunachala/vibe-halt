@@ -30,8 +30,8 @@ Demonstrated now:
 
 Not yet demonstrated:
 
-- a production Python or `dharma_swarm` adapter
-  (`clients/python/vibe_halt/core/runner.py:10-30`);
+- a production deployment or a real `dharma_swarm` adapter (the local Python
+  client now exercises only the compiled demo/cooperative fixture registry);
 - arbitrary foreign repositories as deterministic targets
   (`docs/specs/DETERMINISM_TIERS.md:39-63`);
 - D1 subprocess containment or Tier 3 hypervisor determinism
@@ -42,13 +42,13 @@ Not yet demonstrated:
 The D2 harness records all 29 capability channels as open. Its clean reference
 campaign is useful evidence inside that stated boundary, not a D1 certificate
 (`docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33`).
-The Python runner refuses execution, but the package still exports legacy
-Python-side simulator and caller-constructible evidence surfaces; none is a
-trusted engine or result path. Wave A removes or package-excludes them while
-building the strict Rust-backed adapter
-(`clients/python/vibe_halt/core/runner.py:10-30`,
-`clients/python/vibe_halt/__init__.py:5-9`,
-`clients/python/vibe_halt/core/evidence.py:24-62`).
+The local Python package exposes a narrow request/runner/typed-result surface.
+It snapshots an explicitly configured engine, maps only strict Rust verifier
+records, and treats Python outcomes as caller-process data rather than an
+authority seal. A missing engine trust root prevents promotion: an otherwise
+admissible record is exposed as `UNCHECKED`/`UNTRUSTED`, while invalid evidence
+remains `ERROR`. This is a hardened local integration slice, not a production
+or `dharma_swarm` bridge.
 
 ## Quickstart
 
@@ -95,7 +95,7 @@ and do not authenticate source provenance
 | `crates/vh-shrink` | resource-bounded exact-fingerprint fault-plan shrinking |
 | `crates/vh-verify` | independent vectors, models, replay soak, and cross-platform verification |
 | `crates/vh-cli` | `vh` commands, workloads, receipts, bundles, and sandbox campaigns |
-| `clients/python` | quarantined integration surface; strict Rust-backed adapter is the next milestone |
+| `clients/python` | strict local Rust-backed adapter; no production or `dharma_swarm` integration claim |
 | `corpus` | regression entries, provenance, schemas, and harvesting playbook |
 | `docs/governance` | WIP-limited, surface-owned active-track portfolio |
 | `scripts` | onboarding, governance, deny-list, and the single gate battery |
@@ -111,18 +111,18 @@ offline and toolchain-pinned (runnable proof: `make gate`).
 2. **Divergence honesty.** Tier-1 checked universes run in two non-adjacent
    passes and complete observations must agree. Tier 2/D2 uses an adjacent
    bounded run-twice pair and publishes divergence
-   (`crates/vh-sandbox/src/lib.rs:439-447`). Either finite pair is a sampled
+   (`crates/vh-sandbox/src/lib.rs:771-802`). Either finite pair is a sampled
    falsifier. The Tier-1 claim rests on the D0 boundary, independent reference
    vectors, and cross-platform verification—not on replay agreement alone.
 
 ## Integration direction
 
-The next integration is a narrow Python transport that invokes an explicitly
-configured Rust engine whose exact artifact identity must be verified, and
-accepts only engine-verified receipts. A future
-`VibeHaltSandbox` may implement the `dharma_swarm` sandbox interface, but it
-must not parse human-oriented stdout, infer a clean verdict, or claim a
-stronger tier than the receipt supports.
+The narrow local Python transport now invokes an explicitly configured Rust
+engine, binds the admitted request and observed engine image, and accepts only
+closed Rust machine records after fresh replay. The next integration is
+versioned operation/feature negotiation plus a real `dharma_swarm` receipt
+consumer. Any future `VibeHaltSandbox` must not parse human-oriented stdout,
+infer a clean verdict, or claim a stronger tier than the receipt supports.
 
 ## Governance
 

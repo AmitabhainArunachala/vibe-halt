@@ -67,9 +67,9 @@ Declared intent lives in `docs/governance/ACTIVE_TRACK.yaml` (rendered by
   dependency-free evidence digest. `crates/vh-shrink` — deterministic
   fault-plan minimization. `crates/vh-verify` — independent replay-soak
   verification. `crates/vh-cli` — the `vh` binary and demo workloads.
-- `clients/python/` — quarantined/legacy integration surface (dharma_swarm et
-  al.). Its runner is a stub and its old simulator/evidence modules are not a
-  trusted engine; the Rust core is the only truth authority.
+- `clients/python/` — strict local request/runner/typed-result adapter over the
+  configured Rust engine. Python values remain caller-process data, not an
+  authority seal; no production or `dharma_swarm` bridge is claimed.
 - Determinism doctrine: `docs/specs/DETERMINISM_TIERS.md`. Build plan:
   `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`.
 

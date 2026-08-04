@@ -21,6 +21,8 @@ use vh_gremlin::FaultPalette;
 
 pub const RUN_RECEIPTS_SCHEMA: &str = "vh-run-receipts-v1";
 pub const FINDING_BUNDLE_SCHEMA: &str = "vh-finding-bundle-v1";
+pub const MAX_FLAT_RECORD_BYTES: usize = 64 << 10;
+pub const MAX_FLAT_FIELDS: usize = 64;
 
 /// JSON string escaping for exactly what we emit.
 pub fn json_escape(s: &str) -> String {
@@ -85,6 +87,9 @@ pub fn render_line(fields: &[(&str, Val)]) -> String {
 /// Parse one flat record line back into ordered fields. Rejects nesting,
 /// arrays, floats, and trailing garbage — receipts are the only dialect.
 pub fn parse_line(line: &str) -> Result<Vec<(String, Val)>, String> {
+    if line.len() > MAX_FLAT_RECORD_BYTES {
+        return Err("flat record exceeds the 65536-byte parse bound".into());
+    }
     let mut chars = line.trim().chars().peekable();
     if chars.next() != Some('{') {
         return Err("record must start with '{'".into());
@@ -138,6 +143,9 @@ pub fn parse_line(line: &str) -> Result<Vec<(String, Val)>, String> {
             }
             other => return Err(format!("unsupported value start {other:?} for key {key:?}")),
         };
+        if fields.len() == MAX_FLAT_FIELDS {
+            return Err("flat record exceeds the 64-field parse bound".into());
+        }
         fields.push((key, val));
         match chars.next() {
             Some(',') => {}

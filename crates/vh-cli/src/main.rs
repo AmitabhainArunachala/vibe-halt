@@ -27,21 +27,63 @@ const DEFAULT_UNIVERSES: u64 = 100;
 const DOCTOR_EXPECTED_HASH: &str = "9ce6199f133f4d3c9dd0da0075e352d2";
 const DOCTOR_EXPECTED_EVENTS: usize = 45;
 
+fn is_disallowed_cli_control(character: char) -> bool {
+    let scalar = character as u32;
+    character.is_control()
+        || matches!(scalar, 0x2028 | 0x2029)
+        || matches!(
+            scalar,
+            0x00ad
+                | 0x061c
+                | 0x06dd
+                | 0x070f
+                | 0x08e2
+                | 0x180e
+                | 0xfeff
+                | 0x110bd
+                | 0x110cd
+                | 0xe0001
+        )
+        || matches!(
+            scalar,
+            0x0600..=0x0605
+                | 0x0890..=0x0891
+                | 0x200b..=0x200f
+                | 0x202a..=0x202e
+                | 0x2060..=0x2064
+                | 0x2066..=0x206f
+                | 0xfff9..=0xfffb
+                | 0x13430..=0x1345f
+                | 0x1bca0..=0x1bca3
+                | 0x1d173..=0x1d17a
+                | 0xe0020..=0xe007f
+        )
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let code = match args.first().map(String::as_str) {
-        Some("run") => cmd_run(&args[1..]),
-        Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
-        Some("verify-run") => bundle::cmd_verify_run(&args[1..], USAGE),
-        Some("eval-validate") => eval::cmd_eval_validate(&args[1..], USAGE),
-        Some("shrink") => cmd_shrink(&args[1..]),
-        Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
-        Some("sandbox-campaign") => sandbox_campaign::cmd_sandbox_campaign(&args[1..], USAGE),
-        Some("cooperative") => cooperative::cmd_cooperative(&args[1..], USAGE),
-        Some("doctor") => cmd_doctor(),
-        _ => {
-            eprint!("{}", USAGE);
-            2
+    let code = if args
+        .iter()
+        .any(|argument| argument.len() > 4096 || argument.chars().any(is_disallowed_cli_control))
+    {
+        eprintln!("error: CLI argument exceeds the bounded printable request profile");
+        2
+    } else {
+        match args.first().map(String::as_str) {
+            Some("run") => cmd_run(&args[1..]),
+            Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
+            Some("verify-run") => bundle::cmd_verify_run(&args[1..], USAGE),
+            Some("eval-validate") => eval::cmd_eval_validate(&args[1..], USAGE),
+            Some("shrink") => cmd_shrink(&args[1..]),
+            Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
+            Some("sandbox-campaign") => sandbox_campaign::cmd_sandbox_campaign(&args[1..], USAGE),
+            Some("cooperative") => cooperative::cmd_cooperative(&args[1..], USAGE),
+            Some("verify-cooperative") => cooperative::cmd_verify_cooperative(&args[1..], USAGE),
+            Some("doctor") => cmd_doctor(),
+            _ => {
+                eprint!("{}", USAGE);
+                2
+            }
         }
     };
     std::process::exit(code);
@@ -62,6 +104,9 @@ USAGE:
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
     vh sandbox-campaign [--mode reference|leak-battery|replay] [--pairs N] [--out FILE] [--receipt FILE]
     vh cooperative --workload cooperative-echo [--cassette PATH] [--out DIR]
+    vh verify-cooperative --receipt PATH
+           [--expected-workload cooperative-echo]
+           [--expected-cassette PATH | --expect-default-cassette]
     vh doctor
 
 WORKLOADS:
@@ -274,14 +319,17 @@ fn cmd_run(args: &[String]) -> i32 {
     let run = match parse_run_args(args) {
         Ok(r) => r,
         Err(e) => {
-            eprintln!("error: {e}\n\n{USAGE}");
+            eprintln!("error: {}\n\n{USAGE}", cooperative::bounded_diagnostic(&e));
             return 2;
         }
     };
     let workload = match workloads::by_name(&run.workload) {
         Some(w) => w,
         None => {
-            eprintln!("error: unknown workload '{}'\n\n{USAGE}", run.workload);
+            eprintln!(
+                "error: unknown workload '{}'\n\n{USAGE}",
+                cooperative::bounded_diagnostic(&run.workload)
+            );
             return 2;
         }
     };
@@ -347,10 +395,20 @@ fn cmd_run(args: &[String]) -> i32 {
     }
 
     let requested = run.universes.unwrap_or(DEFAULT_UNIVERSES);
+    if run.out.is_some() && requested > bundle::MAX_VERIFY_UNIVERSES {
+        eprintln!(
+            "error: --out universe count exceeds the receipt verification work bound ({})",
+            bundle::MAX_VERIFY_UNIVERSES
+        );
+        return 2;
+    }
     let universes = match UniverseCount::try_from(requested) {
         Ok(n) => n,
         Err(e) => {
-            eprintln!("error: {e}\n\n{USAGE}");
+            eprintln!(
+                "error: {}\n\n{USAGE}",
+                cooperative::bounded_diagnostic(&e.to_string())
+            );
             return 2;
         }
     };
@@ -524,7 +582,7 @@ fn cmd_run(args: &[String]) -> i32 {
         match bundle::write_run_receipts(dir, &report, &identity) {
             Ok(summary) => println!("  {summary}"),
             Err(e) => {
-                eprintln!("error: {e}");
+                eprintln!("error: {}", cooperative::bounded_diagnostic(&e));
                 return 2;
             }
         }
@@ -548,7 +606,9 @@ fn cmd_run(args: &[String]) -> i32 {
 /// constants only, plus the caller-declared source commit (recorded,
 /// never verified). The toolchain identity is pinned repo-wide by
 /// rust-toolchain.toml rather than recorded per-receipt.
-fn build_provenance(declared_source_commit: Option<String>) -> vh_cli::receipts_v2::Provenance {
+pub(crate) fn build_provenance(
+    declared_source_commit: Option<String>,
+) -> vh_cli::receipts_v2::Provenance {
     vh_cli::receipts_v2::Provenance {
         cli_version: env!("CARGO_PKG_VERSION").to_string(),
         build_profile: if cfg!(debug_assertions) {
@@ -575,7 +635,10 @@ fn print_shrink(workload: &str, seed: u64, universe: u64) -> bool {
 fn print_shrink_result(result: &Result<vh_cli::shrink_cli::ShrinkOutcome, String>) -> bool {
     match result {
         Err(e) => {
-            println!("  shrink: UNAVAILABLE ({e})");
+            println!(
+                "  shrink: UNAVAILABLE ({})",
+                cooperative::bounded_diagnostic(e)
+            );
             false
         }
         Ok(o) => {
@@ -637,7 +700,7 @@ fn cmd_shrink(args: &[String]) -> i32 {
             other => Err(format!("unknown argument: {other}")),
         };
         if let Err(e) = parsed {
-            eprintln!("error: {e}\n\n{USAGE}");
+            eprintln!("error: {}\n\n{USAGE}", cooperative::bounded_diagnostic(&e));
             return 2;
         }
     }
@@ -646,12 +709,16 @@ fn cmd_shrink(args: &[String]) -> i32 {
         return 2;
     };
     if workloads::by_name(&workload).is_none() {
-        eprintln!("error: unknown workload '{workload}'\n\n{USAGE}");
+        eprintln!(
+            "error: unknown workload '{}'\n\n{USAGE}",
+            cooperative::bounded_diagnostic(&workload)
+        );
         return 2;
     }
     if workloads::by_name_capturing(&workload).is_none() {
         eprintln!(
-            "error: shrink does not support workload '{workload}' yet (capture is wired for demo/demo-buggy)"
+            "error: shrink does not support workload '{}' yet (capture is wired for demo/demo-buggy)",
+            cooperative::bounded_diagnostic(&workload)
         );
         return 2;
     }

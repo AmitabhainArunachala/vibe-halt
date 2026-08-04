@@ -162,6 +162,9 @@ EXEMPT: dict[str, set[str]] = {
         r"std::process",
         r"std::fs",
         r"\benv!\s*\(",
+        # PR #57 item 6: Unix symlink and permission fixtures prove linked or
+        # group/other-writable --out roots are refused before execution.
+        r"std::os",
     },
     "crates/vh-verify/src/main.rs": {r"std::time", r"Instant::now"},
     "crates/vh-cli/src/workloads/mod.rs": {ATOMIC_PATTERN},
@@ -185,11 +188,23 @@ EXEMPT: dict[str, set[str]] = {
         r"Instant::now",
         r"std::io",
         r"std::fs",
+        # PR #57 trust-boundary reads: OpenOptionsExt supplies O_NOFOLLOW
+        # and O_NONBLOCK so symlinks/special files are refused without a
+        # FIFO open hanging before the regular-file check.
+        r"std::os",
     },
     # Sandbox unit tests: host tempdirs plus a process-global counter that
     # hands each test a unique workspace (adversarial-fixture style; the
-    # atomic is the point). Clock/net/process rules still apply.
-    "crates/vh-sandbox/src/tests.rs": {r"std::env", ATOMIC_PATTERN},
+    # atomic is the point). Clock/net/thread rules still apply.
+    # PR #57 item 5: `std::fs` writes the exact-boundary and sparse
+    # oversize fixture files the bounded-reader tests measure against.
+    "crates/vh-sandbox/src/tests.rs": {
+        r"std::env",
+        r"std::process",
+        r"std::os",
+        ATOMIC_PATTERN,
+        r"std::fs",
+    },
     # CLI sandbox-demo boundary: host tempdir setup for the run-twice smoke
     # campaign only. It spawns nothing directly (the crate does) and stays
     # under the full pattern set for everything else.
@@ -199,21 +214,31 @@ EXEMPT: dict[str, set[str]] = {
     # reference campaign, leak battery, and receipt replay. Subprocesses
     # are spawned by vh-sandbox, not here; every other rule still binds.
     "crates/vh-cli/src/sandbox_campaign.rs": {r"std::env", r"std::fs"},
-    # Evidence-store boundary (convergence C4, audit R4): receipt/bundle
-    # file I/O for `vh run --out` and `vh replay-bundle`. The new
-    # `vh verify-run` subcommand orchestrates per-finding replay by
-    # invoking the pinned `vh replay-bundle` executable (`std::process`);
-    # the engine path is passed explicitly by the caller (`--engine`),
-    # and receipt CONTENT is still built/parsed by the pure
-    # vh_cli::receipts module (fully deny-listed). Clock, env, net,
-    # and hash-order rules still bind here.
-    "crates/vh-cli/src/bundle.rs": {r"std::fs", r"std::process"},
+    # Evidence-store boundary (convergence C4, audit R4): bounded receipt
+    # file I/O for `vh run --out`, `vh replay-bundle`, and `vh verify-run`.
+    # Fresh semantic replay now stays in-process, so process execution is
+    # deliberately NOT exempt. Clock, env, net, and hash-order rules bind too.
+    "crates/vh-cli/src/bundle.rs": {r"std::fs"},
     # R2 cooperative D2 transport boundary: host tempdirs, fixture
     # staging, and a test-only `std::time::Duration` deadline for the
     # timeout-taint red-matrix test. Subprocesses are spawned by
-    # vh-sandbox; this file only orchestrates the reusable fixture and
-    # emits an engine-only outcome.
-    "crates/vh-cli/src/cooperative.rs": {r"std::env", r"std::fs", r"std::time"},
+    # vh-sandbox; `std::process::id` is used only to make disposable
+    # workspace names collision-resistant and never enters evidence or
+    # semantic identity. This file otherwise only orchestrates the reusable
+    # fixture and emits an engine-only outcome. PR #57 item 6: `std::io` names
+    # `ErrorKind::NotFound` for create-only output-root refusal; `std::os`
+    # supplies OpenOptionsExt/DirBuilderExt modes 0600/0700 for exclusive
+    # receipt/workspace publication plus an anonymous UnixStream/OwnedFd
+    # metadata observation used to derive the invoking uid without touching an
+    # as-yet-untrusted output path.
+    "crates/vh-cli/src/cooperative.rs": {
+        r"std::env",
+        r"std::fs",
+        r"std::time",
+        r"std::io",
+        r"std::process",
+        r"std::os",
+    },
     # Wave B/C R3: evaluation-contract dossier validator reads one file
     # from the command-line path; it does not execute targets, access the
     # network, or read environment/credentials.

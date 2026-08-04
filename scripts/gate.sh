@@ -361,7 +361,7 @@ set -e
 # exits at first match and the writer can take SIGPIPE (exit 141), false-
 # failing the gate on a MATCHING diagnostic (reproduced on macOS
 # 2026-07-21: `printf | grep -q` returned 141 with the pattern present).
-if [ "$code" -ne 2 ] || ! grep -q -- '--universes must be nonzero — zero work is never certified' <<< "$err"; then
+if [ "$code" -ne 2 ] || ! grep -Fq -- '--universes must be nonzero \u{2014} zero work is never certified' <<< "$err"; then
   echo "GATE FAIL: --universes 0 must be rejected with exit 2 + the typed diagnostic, got exit $code"
   exit 1
 fi

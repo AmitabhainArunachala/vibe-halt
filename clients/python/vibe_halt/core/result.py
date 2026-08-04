@@ -26,8 +26,14 @@ class Grade(str, Enum):
 
 @dataclass(frozen=True)
 class Outcome:
-    """Immutable engine-result data. Every field is present; nothing is
-    manufactured by the Python side."""
+    """Frozen top-level caller-process data mapped from validated Rust records.
+
+    Python also constructs request/envelope digests and downgrade diagnostics;
+    this object is therefore not an authority or same-process trust boundary.
+    `verified` is trust-qualified: it is true only after authentic Rust replay
+    by an engine whose SHA-256 matches `EnginePolicy.expected_digest`. The raw
+    record may retain the engine's narrower mechanical verification fields.
+    """
 
     verdict: Verdict
     tier: Tier

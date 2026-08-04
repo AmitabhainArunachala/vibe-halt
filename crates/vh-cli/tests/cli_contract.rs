@@ -106,7 +106,7 @@ fn zero_universes_rejected_with_typed_diagnostic() {
     let (code, _, stderr) = vh(&["run", "--workload", "demo", "--universes", "0"]);
     assert_eq!(code, 2);
     assert!(
-        stderr.contains("--universes must be nonzero — zero work is never certified"),
+        stderr.contains("--universes must be nonzero \\u{2014} zero work is never certified"),
         "{stderr}"
     );
 }
@@ -127,6 +127,58 @@ fn absurd_universe_count_rejected_with_typed_diagnostic() {
         "resource-bound rejection must be exit 2, not a 101 abort"
     );
     assert!(stderr.contains("exceeds the v0 resource bound"), "{stderr}");
+}
+
+#[test]
+fn over_bound_source_commit_is_rejected_before_execution() {
+    let source_commit = "x".repeat(4097);
+    let (code, stdout, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--universes",
+        "1",
+        "--source-commit",
+        &source_commit,
+    ]);
+    assert_eq!(code, 2, "over-bound CLI input must be a usage error");
+    assert!(
+        stdout.is_empty(),
+        "execution started before refusal: {stdout}"
+    );
+    assert!(
+        stderr.contains("bounded printable request profile"),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn invisible_format_controls_are_refused_and_reflected_unicode_is_escaped() {
+    let (code, stdout, stderr) = vh(&[
+        "run",
+        "--workload",
+        "demo",
+        "--universes",
+        "1",
+        "--source-commit",
+        "right-to-left\u{202e}",
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stdout.is_empty(),
+        "execution started before refusal: {stdout}"
+    );
+    assert!(!stderr.contains('\u{202e}'), "{stderr:?}");
+    assert!(
+        stderr.contains("bounded printable request profile"),
+        "{stderr}"
+    );
+
+    let (code, stdout, stderr) = vh(&["sandbox-demo", "--mode", "caf\u{e9}"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(!stderr.contains('\u{e9}'), "{stderr:?}");
+    assert!(stderr.contains(r"caf\u{e9}"), "{stderr:?}");
 }
 
 #[test]
@@ -232,6 +284,248 @@ fn unique_tmp(label: &str) -> std::path::PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create tmp");
     dir
+}
+
+fn verify_run(out: &std::path::Path) -> (i32, String, String) {
+    vh(&[
+        "verify-run",
+        "--out",
+        out.to_str().unwrap(),
+        "--engine",
+        env!("CARGO_BIN_EXE_vh"),
+    ])
+}
+
+fn rewrite_run_digest(out: &std::path::Path, mutate: impl FnOnce(String) -> String) {
+    let path = out.join("run.ndjson");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    assert_eq!(lines.pop(), Some(""));
+    let digest_line = lines.pop().expect("digest line");
+    assert!(digest_line.contains("\"record\":\"digest\""));
+    let body = mutate(lines.join("\n") + "\n");
+    let digest = vh_digest::sha256_hex(body.as_bytes());
+    let digest_line = vh_cli::receipts::render_line(&[
+        ("record", vh_cli::receipts::Val::S("digest".into())),
+        ("alg", vh_cli::receipts::Val::S("sha256".into())),
+        ("value", vh_cli::receipts::Val::S(digest)),
+    ]);
+    std::fs::write(path, format!("{body}{digest_line}\n")).unwrap();
+}
+
+fn write_forged_manifest_only(out: &std::path::Path, universes: u64) {
+    std::fs::create_dir(out).unwrap();
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
+    };
+    let manifest = vh_cli::receipts::render_line(&[
+        ("record", vh_cli::receipts::Val::S("manifest".into())),
+        (
+            "schema",
+            vh_cli::receipts::Val::S(vh_cli::receipts_v2::RUN_RECEIPTS_SCHEMA_V2.into()),
+        ),
+        ("workload", vh_cli::receipts::Val::S("demo".into())),
+        ("seed", vh_cli::receipts::Val::S("0xd1ce".into())),
+        ("universes", vh_cli::receipts::Val::N(universes)),
+        ("palette", vh_cli::receipts::Val::S("v0".into())),
+        ("schedule_policy", vh_cli::receipts::Val::S("fifo".into())),
+        ("divergence_check", vh_cli::receipts::Val::B(true)),
+        ("verdict", vh_cli::receipts::Val::S("CLEAN".into())),
+        ("findings", vh_cli::receipts::Val::N(0)),
+        ("divergent", vh_cli::receipts::Val::N(0)),
+        ("sometimes_unreached", vh_cli::receipts::Val::N(0)),
+        (
+            "cli_version",
+            vh_cli::receipts::Val::S(env!("CARGO_PKG_VERSION").into()),
+        ),
+        ("build_profile", vh_cli::receipts::Val::S(profile.into())),
+        (
+            "target_os",
+            vh_cli::receipts::Val::S(std::env::consts::OS.into()),
+        ),
+        (
+            "target_arch",
+            vh_cli::receipts::Val::S(std::env::consts::ARCH.into()),
+        ),
+        ("declared_source_commit", vh_cli::receipts::Val::Null),
+    ]);
+    let body = format!("{manifest}\n");
+    let digest = vh_digest::sha256_hex(body.as_bytes());
+    let digest_line = vh_cli::receipts::render_line(&[
+        ("record", vh_cli::receipts::Val::S("digest".into())),
+        ("alg", vh_cli::receipts::Val::S("sha256".into())),
+        ("value", vh_cli::receipts::Val::S(digest)),
+    ]);
+    std::fs::write(out.join("run.ndjson"), format!("{body}{digest_line}\n")).unwrap();
+}
+
+#[test]
+fn verify_run_v2_freshly_reproduces_clean_findings_and_unchecked() {
+    let tmp = unique_tmp("verify-run-shapes");
+    let cases = [
+        ("clean", "demo", false, 0, "CLEAN", 0, true),
+        ("findings", "demo-buggy", false, 1, "FINDINGS", 1, true),
+        ("unchecked", "demo", true, 3, "UNCHECKED", 3, false),
+    ];
+    for (label, workload, unchecked, run_code, verdict, outcome_code, verified) in cases {
+        let out = tmp.join(label);
+        let mut args = vec![
+            "run",
+            "--workload",
+            workload,
+            "--universes",
+            "4",
+            "--out",
+            out.to_str().unwrap(),
+        ];
+        if unchecked {
+            args.push("--no-divergence-check");
+        }
+        let (actual_run_code, _, run_stderr) = vh(&args);
+        assert_eq!(actual_run_code, run_code, "{run_stderr}");
+        let (code, stdout, stderr) = verify_run(&out);
+        assert_eq!(code, 0, "{stderr}");
+        assert!(stdout.contains("\"schema\":\"vh-verify-run-v2\""));
+        assert!(stdout.contains("\"authentic\":true"), "{stdout}");
+        assert!(
+            stdout.contains(&format!("\"verified\":{verified}")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("\"verdict\":\"{verdict}\"")),
+            "{stdout}"
+        );
+        assert!(
+            stdout.contains(&format!("\"outcome_exit_code\":{outcome_code}")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("\"engine_request_digest\":"), "{stdout}");
+    }
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn verify_run_rejects_digest_valid_claim_forgery_before_promotion() {
+    let tmp = unique_tmp("verify-run-forgery");
+    let out = tmp.join("receipt");
+    write_forged_manifest_only(&out, 1);
+    let (code, stdout, _) = verify_run(&out);
+    assert_eq!(
+        code, 1,
+        "old claim-only verifier accepted a two-line forgery"
+    );
+    assert!(stdout.contains("\"authentic\":false"), "{stdout}");
+    assert!(stdout.contains("\"verdict\":\"ERROR\""), "{stdout}");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn verify_run_rejects_redigested_verdict_path_tree_and_bundle_tampering() {
+    let tmp = unique_tmp("verify-run-adversarial");
+
+    let verdict_out = tmp.join("verdict");
+    assert_eq!(
+        vh(&[
+            "run",
+            "--workload",
+            "demo",
+            "--universes",
+            "4",
+            "--out",
+            verdict_out.to_str().unwrap(),
+        ])
+        .0,
+        0
+    );
+    rewrite_run_digest(&verdict_out, |body| {
+        body.replacen("\"verdict\":\"CLEAN\"", "\"verdict\":\"FINDINGS\"", 1)
+    });
+    assert_eq!(verify_run(&verdict_out).0, 1);
+
+    let orphan_out = tmp.join("orphan");
+    assert_eq!(
+        vh(&[
+            "run",
+            "--workload",
+            "demo",
+            "--universes",
+            "4",
+            "--out",
+            orphan_out.to_str().unwrap(),
+        ])
+        .0,
+        0
+    );
+    std::fs::write(orphan_out.join("orphan"), b"must reject").unwrap();
+    assert_eq!(verify_run(&orphan_out).0, 1);
+
+    let path_out = tmp.join("path");
+    assert_eq!(
+        vh(&[
+            "run",
+            "--workload",
+            "demo-buggy",
+            "--universes",
+            "4",
+            "--out",
+            path_out.to_str().unwrap(),
+        ])
+        .0,
+        1
+    );
+    rewrite_run_digest(&path_out, |body| {
+        body.replacen("\"path\":\"findings/", "\"path\":\"../", 1)
+    });
+    assert_eq!(verify_run(&path_out).0, 1);
+
+    let bundle_out = tmp.join("bundle");
+    assert_eq!(
+        vh(&[
+            "run",
+            "--workload",
+            "demo-buggy",
+            "--universes",
+            "4",
+            "--out",
+            bundle_out.to_str().unwrap(),
+        ])
+        .0,
+        1
+    );
+    let bundle = dir_snapshot(&bundle_out)
+        .into_iter()
+        .find(|(path, _)| path.ends_with("finding.ndjson"))
+        .unwrap()
+        .0;
+    std::fs::write(bundle_out.join(bundle), b"{}\n").unwrap();
+    assert_eq!(verify_run(&bundle_out).0, 1);
+
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn verify_run_rejects_wrong_engine_and_oversized_work_claim_without_replay() {
+    let tmp = unique_tmp("verify-run-bounds");
+    let out = tmp.join("receipt");
+    write_forged_manifest_only(&out, 10_001);
+    let (code, stdout, _) = verify_run(&out);
+    assert_eq!(code, 1);
+    assert!(stdout.contains("work bound"), "{stdout}");
+
+    let fake_engine = tmp.join("fake-engine");
+    std::fs::write(&fake_engine, b"not the executing image").unwrap();
+    let (code, stdout, _) = vh(&[
+        "verify-run",
+        "--out",
+        out.to_str().unwrap(),
+        "--engine",
+        fake_engine.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    let _ = std::fs::remove_dir_all(tmp);
 }
 
 /// The full C4 acceptance in one flow: receipts are byte-deterministic
@@ -1061,6 +1355,54 @@ fn shrink_lineage_is_persisted_consumed_and_tamper_evident() {
     );
     assert!(stderr.contains("spliced"), "{stderr}");
 
+    // Attacker-controlled v2 fields are self-digested, not trusted. Their
+    // replay diagnostics must remain bounded, printable ASCII and incapable
+    // of adding terminal lines/state even when semantic verification fails.
+    let hostile_value = format!("line\n\x1b[31m\u{202e}{}", "x".repeat(4096));
+
+    let mut hostile_observation = parsed.clone();
+    hostile_observation.observation_sha256 = hostile_value.clone();
+    hostile_observation.finding_id = vh_cli::receipts_v2::finding_id_v2(
+        hostile_observation.universe,
+        &hostile_observation.observation_sha256,
+    );
+    let hostile_observation_path = tmp.join("hostile-observation.ndjson");
+    std::fs::write(&hostile_observation_path, hostile_observation.to_ndjson()).unwrap();
+    let (code, stdout, stderr) = vh(&["replay-bundle", hostile_observation_path.to_str().unwrap()]);
+    assert_eq!(code, 1, "{stdout}{stderr}");
+    assert_eq!(
+        stdout.lines().count(),
+        2,
+        "hostile field split output: {stdout:?}"
+    );
+    assert!(!stdout.contains('\x1b') && !stdout.contains('\u{202e}'));
+    assert!(stdout.lines().all(|line| line.len() < 512));
+
+    for (field, mutate) in [("workload", true), ("schedule_policy", false)] {
+        let mut hostile = parsed.clone();
+        if mutate {
+            hostile.workload = hostile_value.clone();
+        } else {
+            hostile.schedule_policy = hostile_value.clone();
+        }
+        let hostile_path = tmp.join(format!("hostile-{field}.ndjson"));
+        std::fs::write(&hostile_path, hostile.to_ndjson()).unwrap();
+        let (code, stdout, stderr) = vh(&["replay-bundle", hostile_path.to_str().unwrap()]);
+        assert_eq!(code, 2, "field={field}: {stdout}{stderr}");
+        assert!(stdout.is_empty(), "field={field}: {stdout:?}");
+        assert_eq!(
+            stderr.lines().count(),
+            1,
+            "field={field} split output: {stderr:?}"
+        );
+        assert!(!stderr.contains('\x1b') && !stderr.contains('\u{202e}'));
+        assert!(stderr.lines().all(|line| line.len() < 512));
+        assert!(
+            stderr.contains("...[truncated]"),
+            "field={field}: {stderr:?}"
+        );
+    }
+
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -1102,5 +1444,1202 @@ fn v1_bundles_stay_replayable_with_the_limitation_label() {
         stdout.contains("REPRODUCED") && stdout.contains("FIFO-only self-consistent replay"),
         "v1 replay must carry its limitation label:\n{stdout}"
     );
+
+    // Legacy v1 does not bind/recompute its finding id. Even a reproducible
+    // attacker-authored bundle must not inject terminal controls or extra
+    // output lines through that untrusted label.
+    let mut hostile = v1;
+    hostile.finding_id = "hostile\n\u{1b}[31m-label".into();
+    let hostile_path = tmp.join("v1-hostile-label.ndjson");
+    std::fs::write(&hostile_path, hostile.to_ndjson()).unwrap();
+    let (code, stdout, stderr) = vh(&["replay-bundle", hostile_path.to_str().unwrap()]);
+    assert_eq!(code, 0, "{stdout}{stderr}");
+    assert!(!stdout.contains('\u{1b}') && !stderr.contains('\u{1b}'));
+    assert_eq!(
+        stdout.lines().count(),
+        1,
+        "untrusted label split output: {stdout:?}"
+    );
+    assert!(stdout.contains(r"hostile\n\u{1b}[31m-label"), "{stdout:?}");
     let _ = std::fs::remove_dir_all(&tmp);
+}
+
+// ---- cooperative hardening (PR #57 / issue #61 findings 5, 6, 9) ----
+
+/// Item 6: an existing regular file as --out is refused BEFORE any
+/// cassette load or child launch, and its bytes are preserved.
+#[test]
+fn cooperative_out_regular_file_is_refused_and_preserved() {
+    let tmp = unique_tmp("coop-out-file");
+    let out = tmp.join("out");
+    std::fs::write(&out, b"precious").unwrap();
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 2, "existing file --out must be refused:\n{stderr}");
+    assert!(
+        stdout.is_empty(),
+        "refusal must happen before any child execution:\n{stdout}"
+    );
+    assert_eq!(std::fs::read(&out).unwrap(), b"precious");
+}
+
+/// Item 6: a symlink --out is refused before anything executes.
+#[test]
+#[cfg(unix)]
+fn cooperative_out_symlink_is_refused() {
+    let tmp = unique_tmp("coop-out-symlink");
+    let target = tmp.join("target");
+    std::fs::create_dir_all(&target).unwrap();
+    let link = tmp.join("link");
+    std::os::unix::fs::symlink(&target, &link).unwrap();
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", link.to_str().unwrap()]);
+    assert_eq!(code, 2, "symlink --out must be refused:\n{stderr}");
+    assert!(
+        stdout.is_empty(),
+        "refusal must happen before any child execution:\n{stdout}"
+    );
+    assert!(!target.join("outcome.ndjson").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn cooperative_out_parent_symlink_is_refused() {
+    let tmp = unique_tmp("coop-out-parent-symlink");
+    let real_parent = tmp.join("real-parent");
+    std::fs::create_dir(&real_parent).unwrap();
+    let linked_parent = tmp.join("linked-parent");
+    std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+    let out = linked_parent.join("out");
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 2, "parent symlink must be refused:\n{stderr}");
+    assert!(stdout.is_empty());
+    assert!(!real_parent.join("out").exists());
+}
+
+/// Item 6: a non-empty --out directory is refused before execution and
+/// every pre-existing byte is preserved.
+#[test]
+fn cooperative_out_non_empty_dir_is_refused_and_preserved() {
+    let tmp = unique_tmp("coop-out-nonempty");
+    let out = tmp.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("keep.txt"), b"keep").unwrap();
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 2, "non-empty --out must be refused:\n{stderr}");
+    assert!(
+        stdout.is_empty(),
+        "refusal must happen before any child execution:\n{stdout}"
+    );
+    assert_eq!(std::fs::read(out.join("keep.txt")).unwrap(), b"keep");
+    assert!(!out.join("outcome.ndjson").exists());
+}
+
+#[test]
+#[cfg(unix)]
+fn cooperative_out_group_or_other_writable_directory_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = unique_tmp("coop-out-shared-mode");
+    let out = tmp.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::set_permissions(&out, std::fs::Permissions::from_mode(0o777)).unwrap();
+
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    assert_eq!(code, 2, "shared --out must be refused: {stderr}");
+    assert!(
+        stdout.is_empty(),
+        "refusal must precede execution: {stdout}"
+    );
+    assert!(stderr.contains("group/other-writable"), "{stderr}");
+    assert_eq!(std::fs::read_dir(&out).unwrap().count(), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn cooperative_out_group_or_other_writable_non_sticky_parent_is_refused() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let shared = unique_tmp("coop-shared-parent");
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let out = shared.join("out");
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir(&shared).unwrap();
+    assert_eq!(code, 2);
+    assert!(
+        stdout.is_empty(),
+        "refusal must precede execution: {stdout}"
+    );
+    assert!(
+        stderr.contains("group/other-writable non-sticky parent"),
+        "{stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "refused parent must not receive an output root"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cooperative_out_non_root_owned_shared_sticky_parent_is_refused() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let shared = unique_tmp("coop-shared-sticky-parent");
+    if std::fs::metadata(&shared).unwrap().uid() == 0 {
+        // Root-owned sticky parents are the explicitly trusted Unix case.
+        return;
+    }
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o1777)).unwrap();
+    let out = shared.join("out");
+    let (code, stdout, stderr) = vh(&["cooperative", "--out", out.to_str().unwrap()]);
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+    std::fs::remove_dir(&shared).unwrap();
+    assert_eq!(code, 2);
+    assert!(
+        stdout.is_empty(),
+        "refusal must precede execution: {stdout}"
+    );
+    assert!(
+        stderr.contains("non-root-owned shared sticky parent"),
+        "{stderr}"
+    );
+    assert!(
+        !out.exists(),
+        "refused parent must not receive an output root"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cooperative_unsafe_ambient_temp_root_is_refused_without_execution_or_residue() {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+
+    let shared = unique_tmp("coop-unsafe-ambient-temp");
+    let (receipt_code, receipt) = run_cooperative_receipt("coop-safe-before-unsafe-temp", None);
+    assert_eq!(receipt_code, 0);
+    let mut modes = vec![0o777];
+    if std::fs::metadata(&shared).unwrap().uid() != 0 {
+        modes.push(0o1777);
+    }
+    for mode in modes {
+        std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(mode)).unwrap();
+        let output = Command::new(env!("CARGO_BIN_EXE_vh"))
+            .arg("cooperative")
+            .env("TMPDIR", &shared)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(2), "mode={mode:o}");
+        assert!(
+            output.stdout.is_empty(),
+            "mode={mode:o}: child output escaped"
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("ambient temp root owner chain is unsafe"),
+            "{stderr}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&shared).unwrap().count(),
+            0,
+            "mode={mode:o}: refusal left temp-path residue"
+        );
+
+        let verification = Command::new(env!("CARGO_BIN_EXE_vh"))
+            .args([
+                "verify-cooperative",
+                "--receipt",
+                receipt.to_str().unwrap(),
+                "--expected-workload",
+                "cooperative-echo",
+                "--expect-default-cassette",
+            ])
+            .env("TMPDIR", &shared)
+            .output()
+            .unwrap();
+        assert_ne!(verification.status.code(), Some(0), "mode={mode:o}");
+        let verify_stdout = String::from_utf8_lossy(&verification.stdout);
+        assert!(
+            verify_stdout.contains("\"verified\":false"),
+            "{verify_stdout}"
+        );
+        assert_eq!(
+            std::fs::read_dir(&shared).unwrap().count(),
+            0,
+            "mode={mode:o}: reverify left temp-path residue"
+        );
+    }
+    std::fs::set_permissions(&shared, std::fs::Permissions::from_mode(0o700)).unwrap();
+}
+
+/// Item 6 ordering: --out is validated BEFORE the cassette is read.
+#[test]
+fn cooperative_out_refusal_precedes_cassette_load() {
+    let tmp = unique_tmp("coop-out-order");
+    let out = tmp.join("out");
+    std::fs::create_dir_all(&out).unwrap();
+    std::fs::write(out.join("keep.txt"), b"keep").unwrap();
+    let missing = tmp.join("missing.vhc");
+    let (code, _, stderr) = vh(&[
+        "cooperative",
+        "--cassette",
+        missing.to_str().unwrap(),
+        "--out",
+        out.to_str().unwrap(),
+    ]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("not empty"),
+        "output refusal must precede cassette load:\n{stderr}"
+    );
+}
+
+/// Item 5: an oversized cassette (published maximum + 1, sparse logical
+/// size) is rejected from its size before any parsing or allocation.
+#[test]
+fn cooperative_oversized_cassette_rejected_before_parsing() {
+    let tmp = unique_tmp("coop-cassette-oversize");
+    let cassette = tmp.join("big.vhc");
+    let f = std::fs::File::create(&cassette).unwrap();
+    f.set_len(1_048_577).unwrap(); // published 1 MiB maximum + 1
+    drop(f);
+    let (code, _, stderr) = vh(&["cooperative", "--cassette", cassette.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(
+        stderr.contains("exceeds"),
+        "oversize must be a typed size refusal, not a parse error:\n{stderr}"
+    );
+}
+
+#[test]
+fn cooperative_noncanonical_cassette_encoding_is_refused() {
+    let tmp = unique_tmp("coop-cassette-noncanonical");
+    let cassette = timeout_cassette_file(&tmp);
+    let canonical = std::fs::read(&cassette).unwrap();
+    let noncanonical = String::from_utf8(canonical).unwrap().replacen(
+        "vh-cassette-v2 1\n",
+        "vh-cassette-v2 01\n",
+        1,
+    );
+    std::fs::write(&cassette, noncanonical).unwrap();
+    let (code, stdout, stderr) = vh(&["cooperative", "--cassette", cassette.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("noncanonical-encoding"), "{stderr}");
+}
+
+#[cfg(unix)]
+#[test]
+fn cooperative_cassette_special_files_are_refused_without_hanging() {
+    let (code, stdout, stderr) = vh(&["cooperative", "--cassette", "/dev/null"]);
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("non-regular-file"), "{stderr}");
+
+    let tmp = unique_tmp("coop-cassette-fifo");
+    let fifo = tmp.join("cassette.fifo");
+    let mkfifo = Command::new("/usr/bin/mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("create FIFO fixture");
+    assert!(mkfifo.success());
+    let timeout = ["/usr/bin/timeout", "/opt/homebrew/bin/gtimeout"]
+        .into_iter()
+        .find(|candidate| std::path::Path::new(candidate).is_file());
+    if let Some(timeout) = timeout {
+        let output = Command::new(timeout)
+            .args([
+                "2",
+                env!("CARGO_BIN_EXE_vh"),
+                "cooperative",
+                "--cassette",
+                fifo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run FIFO refusal under an independent deadline");
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "FIFO must be typed refusal, not timeout 124:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+/// Item 9: a malformed cassette carrying attacker content exposes only a
+/// stable bounded category — never the attacker's bytes.
+#[test]
+fn cooperative_malformed_cassette_redacts_attacker_content() {
+    let tmp = unique_tmp("coop-cassette-redact");
+    let cassette = tmp.join("bad.vhc");
+    let sentinel = "S3CR3T-SENTINEL-PR57";
+    std::fs::write(&cassette, format!("{sentinel} garbage head\n")).unwrap();
+    let (code, stdout, stderr) = vh(&["cooperative", "--cassette", cassette.to_str().unwrap()]);
+    assert_eq!(code, 2);
+    assert!(
+        !stderr.contains(sentinel),
+        "attacker content leaked to stderr:\n{stderr}"
+    );
+    assert!(
+        !stdout.contains(sentinel),
+        "attacker content leaked to stdout:\n{stdout}"
+    );
+    assert!(
+        stderr.len() <= 320,
+        "diagnostic must stay bounded:\n{stderr}"
+    );
+}
+
+// ---- item 2: invocation-isolated cooperative workspaces ----
+
+fn field_value(line: &str, key: &str) -> String {
+    let needle = format!("\"{key}\":\"");
+    let start = line
+        .find(&needle)
+        .unwrap_or_else(|| panic!("missing {key}: {line}"))
+        + needle.len();
+    let rest = &line[start..];
+    let end = rest
+        .find('"')
+        .unwrap_or_else(|| panic!("unterminated {key}: {line}"));
+    rest[..end].to_string()
+}
+
+fn gated_cooperative(
+    ready: &std::path::Path,
+    gate: &std::path::Path,
+    out: &std::path::Path,
+) -> std::process::Child {
+    Command::new("/bin/sh")
+        .args([
+            "-c",
+            "touch \"$1\"; while [ ! -e \"$2\" ]; do sleep 0.01; done; exec \"$3\" cooperative --out \"$4\"",
+            "vh-gate",
+            ready.to_str().unwrap(),
+            gate.to_str().unwrap(),
+            env!("CARGO_BIN_EXE_vh"),
+            out.to_str().unwrap(),
+        ])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn gated cooperative")
+}
+
+fn release_when_both_ready(
+    ready_a: &std::path::Path,
+    ready_b: &std::path::Path,
+    gate: &std::path::Path,
+) {
+    let status = Command::new("/bin/sh")
+        .args([
+            "-c",
+            "i=0; while [ $i -lt 500 ]; do [ -e \"$1\" ] && [ -e \"$2\" ] && exit 0; i=$((i+1)); sleep 0.01; done; exit 1",
+            "vh-ready",
+            ready_a.to_str().unwrap(),
+            ready_b.to_str().unwrap(),
+        ])
+        .status()
+        .expect("wait for both gated children");
+    assert!(
+        status.success(),
+        "both children must reach the admission barrier"
+    );
+    std::fs::write(gate, b"go").unwrap();
+}
+
+/// Two simultaneous invocations with the same (builtin) cassette and
+/// different output roots must BOTH succeed, with identical deterministic
+/// evidence identity — no shared root may bind or race them together.
+#[test]
+fn cooperative_concurrent_invocations_isolated_with_identical_identity() {
+    let tmp = unique_tmp("coop-iso");
+    let out_a = tmp.join("A");
+    let out_b = tmp.join("B");
+    let gate = tmp.join("go");
+    let ready_a = tmp.join("ready-a");
+    let ready_b = tmp.join("ready-b");
+    let p1 = gated_cooperative(&ready_a, &gate, &out_a);
+    let p2 = gated_cooperative(&ready_b, &gate, &out_b);
+    release_when_both_ready(&ready_a, &ready_b, &gate);
+    let o1 = p1.wait_with_output().expect("wait first");
+    let o2 = p2.wait_with_output().expect("wait second");
+    assert_eq!(
+        o1.status.code(),
+        Some(0),
+        "first invocation must succeed:\n{}",
+        String::from_utf8_lossy(&o1.stderr)
+    );
+    assert_eq!(
+        o2.status.code(),
+        Some(0),
+        "second invocation must succeed:\n{}",
+        String::from_utf8_lossy(&o2.stderr)
+    );
+    let line_a = std::fs::read_to_string(out_a.join("outcome.ndjson")).unwrap();
+    let line_b = std::fs::read_to_string(out_b.join("outcome.ndjson")).unwrap();
+    assert_eq!(
+        field_value(&line_a, "evidence_digest"),
+        field_value(&line_b, "evidence_digest"),
+        "evidence identity must not bind the invocation's unique staging path"
+    );
+    assert_eq!(
+        field_value(&line_a, "result_digest"),
+        field_value(&line_b, "result_digest"),
+    );
+}
+
+/// Competing use of the SAME output root admits at most one invocation;
+/// the loser is refused (exit 2) and no caller's data is deleted.
+#[test]
+fn cooperative_competing_output_root_admits_at_most_one() {
+    let tmp = unique_tmp("coop-compete");
+    let out = tmp.join("O");
+    std::fs::create_dir_all(&out).unwrap();
+    let sentinel = tmp.join("sentinel");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    let gate = tmp.join("go");
+    let ready_a = tmp.join("ready-a");
+    let ready_b = tmp.join("ready-b");
+    let p1 = gated_cooperative(&ready_a, &gate, &out);
+    let p2 = gated_cooperative(&ready_b, &gate, &out);
+    release_when_both_ready(&ready_a, &ready_b, &gate);
+    let o1 = p1.wait_with_output().expect("wait first");
+    let o2 = p2.wait_with_output().expect("wait second");
+    let codes = [o1.status.code(), o2.status.code()];
+    let wins = codes.iter().filter(|c| **c == Some(0)).count();
+    assert_eq!(
+        wins, 1,
+        "exactly one invocation may win an output root: {codes:?}"
+    );
+    for o in [&o1, &o2] {
+        if o.status.code() != Some(0) {
+            assert_eq!(
+                o.status.code(),
+                Some(2),
+                "the loser must be a typed refusal:\n{}",
+                String::from_utf8_lossy(&o.stderr)
+            );
+        }
+    }
+    assert!(
+        out.join("outcome.ndjson").exists(),
+        "the winner's receipt must survive the loser's refusal"
+    );
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+}
+
+// ---- item 3: deterministic child-failure semantics (CLI level) ----
+
+fn timeout_cassette_file(dir: &std::path::Path) -> std::path::PathBuf {
+    let mut cassette = vh_sandbox::CassetteV2::default();
+    cassette.push(
+        vh_sandbox::LlmRequestV2 {
+            provider: "fixture".into(),
+            model: "cooperative-echo".into(),
+            messages: vec![("user".into(), "hello".into())],
+            tools: Vec::new(),
+            tool_choice: None,
+            structured_output: None,
+            params: std::collections::BTreeMap::from([("temperature".into(), "0".into())]),
+        },
+        vh_sandbox::TapeEntry::Timeout,
+    );
+    let path = dir.join("timeout.vhc");
+    std::fs::write(&path, cassette.file_bytes()).unwrap();
+    path
+}
+
+/// A fully consumed, untainted, identically reproduced cassette Timeout
+/// is FINDINGS only via the declared oracle: exit 1, verified=true,
+/// findings_count=1, exact stable finding identity.
+#[test]
+fn cooperative_cassette_timeout_is_verified_finding_with_stable_identity() {
+    let tmp = unique_tmp("coop-timeout");
+    let cassette = timeout_cassette_file(&tmp);
+    let (code, stdout, _) = vh(&["cooperative", "--cassette", cassette.to_str().unwrap()]);
+    assert_eq!(code, 1, "timeout oracle finding must exit 1:\n{stdout}");
+    let line = stdout.lines().last().expect("outcome line");
+    assert_eq!(field_value(line, "verdict"), "FINDINGS");
+    assert!(line.contains("\"verified\":true"), "{line}");
+    assert!(line.contains("\"findings_count\":1"), "{line}");
+    assert_eq!(
+        field_value(line, "oracle"),
+        "cooperative-llm-call-completed"
+    );
+    assert_eq!(
+        field_value(line, "finding_identity"),
+        "cooperative-llm-call-completed:timeout"
+    );
+}
+
+// ---- item 4: persisted cooperative receipt + strict reverification ----
+
+fn run_cooperative_receipt(
+    label: &str,
+    cassette: Option<&std::path::Path>,
+) -> (i32, std::path::PathBuf) {
+    let tmp = unique_tmp(label);
+    let out = tmp.join("O");
+    let mut args = vec!["cooperative", "--out", out.to_str().unwrap()];
+    let cassette_str;
+    if let Some(c) = cassette {
+        cassette_str = c.to_str().unwrap().to_string();
+        args.push("--cassette");
+        args.push(&cassette_str);
+    }
+    let (code, stdout, stderr) = vh(&args);
+    let receipt = out.join("cooperative.receipt");
+    if code == 0 || code == 1 {
+        assert!(
+            receipt.exists(),
+            "receipt must be persisted:\n{stdout}\n{stderr}"
+        );
+    }
+    (code, receipt)
+}
+
+fn verify_receipt(path: &std::path::Path) -> (i32, String, String) {
+    vh(&["verify-cooperative", "--receipt", path.to_str().unwrap()])
+}
+
+/// Rewrite the digest line so a tampered body is internally consistent.
+fn redigest(body_with_digest: &[u8]) -> Vec<u8> {
+    let text = body_with_digest;
+    let marker = b"digest sha256:";
+    let pos = text
+        .windows(marker.len())
+        .rposition(|w| w == marker)
+        .expect("digest line");
+    let body = &text[..pos];
+    let mut out = body.to_vec();
+    out.extend_from_slice(marker);
+    out.extend_from_slice(vh_digest::sha256_hex(body).as_bytes());
+    out.push(b'\n');
+    out
+}
+
+fn framed_payload_range(bytes: &[u8], tag: &str) -> std::ops::Range<usize> {
+    let marker = format!("{tag} ");
+    let field = bytes
+        .windows(marker.len())
+        .enumerate()
+        .find(|(index, window)| {
+            *window == marker.as_bytes() && (*index == 0 || bytes[*index - 1] == b'\n')
+        })
+        .map(|(index, _)| index)
+        .unwrap_or_else(|| panic!("missing framed field {tag}"));
+    let length_start = field + marker.len();
+    let colon = bytes[length_start..]
+        .iter()
+        .position(|byte| *byte == b':')
+        .map(|offset| length_start + offset)
+        .expect("framed colon");
+    let length: usize = std::str::from_utf8(&bytes[length_start..colon])
+        .unwrap()
+        .parse()
+        .unwrap();
+    colon + 1..colon + 1 + length
+}
+
+fn replace_framed_payload(bytes: &[u8], tag: &str, replacement: &[u8]) -> Vec<u8> {
+    let range = framed_payload_range(bytes, tag);
+    let marker = format!("{tag} ");
+    let field_start = bytes[..range.start]
+        .windows(marker.len())
+        .rposition(|window| window == marker.as_bytes())
+        .expect("framed field start");
+    let mut out = bytes[..field_start].to_vec();
+    out.extend_from_slice(format!("{tag} {}:", replacement.len()).as_bytes());
+    out.extend_from_slice(replacement);
+    out.extend_from_slice(&bytes[range.end..]);
+    out
+}
+
+fn receipt_line_value<'a>(text: &'a str, tag: &str) -> &'a str {
+    text.lines()
+        .find_map(|line| line.strip_prefix(&format!("{tag} ")))
+        .unwrap_or_else(|| panic!("missing receipt line {tag}"))
+}
+
+fn cooperative_engine_request_digest_for_test(
+    workload: &str,
+    cassette_identity: &str,
+    child_source_digest: &str,
+) -> String {
+    let mut bytes = b"vh-cooperative-engine-request-v1\n".to_vec();
+    for (tag, value) in [
+        ("workload", workload),
+        ("cassette-identity", cassette_identity),
+        ("child-source-digest", child_source_digest),
+    ] {
+        bytes.extend_from_slice(format!("{tag} {}:{value}\n", value.len()).as_bytes());
+    }
+    vh_digest::sha256_hex(&bytes)
+}
+
+/// Replace the first line starting with `tag ` (or a framed field
+/// `tag <len>:`) with `new_line` (without trailing newline), then
+/// redigest so the tamper is internally consistent.
+fn replace_line_and_redigest(original: &[u8], tag: &str, new_line: &str) -> Vec<u8> {
+    let mut lines: Vec<&[u8]> = original.split(|b| *b == b'\n').collect();
+    // split leaves a trailing empty slice after the final newline
+    if lines.last() == Some(&b"".as_slice()) {
+        lines.pop();
+    }
+    let prefix = format!("{tag} ");
+    let mut replaced = false;
+    let mut out: Vec<u8> = Vec::new();
+    for line in &lines {
+        if !replaced && line.starts_with(prefix.as_bytes()) {
+            out.extend_from_slice(new_line.as_bytes());
+            replaced = true;
+        } else {
+            out.extend_from_slice(line);
+        }
+        out.push(b'\n');
+    }
+    assert!(replaced, "tag {tag} not found");
+    redigest(&out)
+}
+
+#[test]
+fn cooperative_receipt_clean_reverifies() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-clean", None);
+    assert_eq!(code, 0);
+    let (vcode, vout, verr) = verify_receipt(&receipt);
+    assert_eq!(vcode, 0, "clean receipt must reverify:\n{vout}\n{verr}");
+    let line = vout.lines().last().expect("verify record");
+    assert_eq!(field_value(line, "record"), "cooperative-verify");
+    assert!(line.contains("\"verified\":true"), "{line}");
+    assert!(line.contains("\"authentic\":true"), "{line}");
+    assert_eq!(field_value(line, "verdict"), "CLEAN");
+    assert!(line.contains("\"outcome_exit_code\":0"), "{line}");
+    assert!(line.contains("\"exit_code\":0"), "{line}");
+    assert_eq!(field_value(line, "workload"), "cooperative-echo");
+    assert_eq!(field_value(line, "engine_request_digest").len(), 64);
+    let file_bytes = std::fs::read(&receipt).unwrap();
+    assert_eq!(
+        field_value(line, "receipt_sha256"),
+        vh_digest::sha256_hex(&file_bytes)
+    );
+    let engine_bytes = std::fs::read(env!("CARGO_BIN_EXE_vh")).unwrap();
+    assert_eq!(
+        field_value(line, "engine_sha256"),
+        vh_digest::sha256_hex(&engine_bytes)
+    );
+}
+
+#[test]
+fn cooperative_receipt_timeout_finding_reverifies() {
+    let tmp = unique_tmp("coop-rcpt-timeout-cassette");
+    let cassette = timeout_cassette_file(&tmp);
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-timeout", Some(&cassette));
+    assert_eq!(code, 1, "timeout finding exits 1");
+    let (vcode, vout, verr) = verify_receipt(&receipt);
+    assert_eq!(vcode, 0, "finding receipt must reverify:\n{vout}\n{verr}");
+    let line = vout.lines().last().unwrap();
+    assert!(line.contains("\"verified\":true"), "{line}");
+    assert_eq!(field_value(line, "verdict"), "FINDINGS");
+    assert!(line.contains("\"findings_count\":1"), "{line}");
+    assert!(line.contains("\"outcome_exit_code\":1"), "{line}");
+    assert!(
+        line.contains("\"exit_code\":0"),
+        "verifier authenticity status stays distinct from outcome status: {line}"
+    );
+    assert_eq!(
+        field_value(line, "finding_identity"),
+        "cooperative-llm-call-completed:timeout"
+    );
+}
+
+#[test]
+fn cooperative_receipt_expected_request_binding_rejects_substitution() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-context", None);
+    assert_eq!(code, 0);
+    let tmp = unique_tmp("coop-rcpt-context-timeout");
+    let timeout = timeout_cassette_file(&tmp);
+    let (vcode, stdout, stderr) = vh(&[
+        "verify-cooperative",
+        "--receipt",
+        receipt.to_str().unwrap(),
+        "--expected-workload",
+        "cooperative-echo",
+        "--expected-cassette",
+        timeout.to_str().unwrap(),
+    ]);
+    assert_eq!(
+        vcode, 1,
+        "substituted context must fail:\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("expected-cassette-mismatch"), "{stdout}");
+
+    let (vcode, stdout, stderr) = vh(&[
+        "verify-cooperative",
+        "--receipt",
+        receipt.to_str().unwrap(),
+        "--expected-workload",
+        "cooperative-echo",
+        "--expect-default-cassette",
+    ]);
+    assert_eq!(vcode, 0, "matching context must pass:\n{stdout}\n{stderr}");
+}
+
+#[test]
+fn cooperative_receipt_deletion_fails_closed() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-delete", None);
+    assert_eq!(code, 0);
+    std::fs::remove_file(&receipt).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "missing receipt is a usage-class failure");
+}
+
+#[test]
+#[cfg(unix)]
+fn cooperative_receipt_symlink_rejected() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-link", None);
+    assert_eq!(code, 0);
+    let link_dir = receipt
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("link-holder");
+    std::fs::create_dir(&link_dir).unwrap();
+    let link = link_dir.join("cooperative.receipt");
+    std::os::unix::fs::symlink(&receipt, &link).unwrap();
+    let (vcode, _, _) = verify_receipt(&link);
+    assert_eq!(vcode, 2, "symlink receipt path must be refused");
+}
+
+#[test]
+#[cfg(unix)]
+fn cooperative_receipt_parent_symlink_and_directory_are_rejected() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-parent-link", None);
+    assert_eq!(code, 0);
+    let real_parent = receipt.parent().unwrap();
+    let linked_parent = real_parent.parent().unwrap().join("linked-receipt-parent");
+    std::os::unix::fs::symlink(real_parent, &linked_parent).unwrap();
+    let linked_receipt = linked_parent.join("cooperative.receipt");
+    let (vcode, _, _) = verify_receipt(&linked_receipt);
+    assert_eq!(vcode, 2, "parent symlink receipt path must be refused");
+
+    let tmp = unique_tmp("coop-rcpt-directory");
+    let directory = tmp.join("cooperative.receipt");
+    std::fs::create_dir(&directory).unwrap();
+    let (vcode, _, stderr) = verify_receipt(&directory);
+    assert_eq!(
+        vcode, 2,
+        "receipt directory is not a regular file: {stderr}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn cooperative_receipt_fifo_is_refused_without_hanging() {
+    let tmp = unique_tmp("coop-rcpt-fifo");
+    let fifo = tmp.join("cooperative.receipt");
+    let mkfifo = Command::new("/usr/bin/mkfifo")
+        .arg(&fifo)
+        .status()
+        .expect("create receipt FIFO");
+    assert!(mkfifo.success());
+    let timeout = ["/usr/bin/timeout", "/opt/homebrew/bin/gtimeout"]
+        .into_iter()
+        .find(|candidate| std::path::Path::new(candidate).is_file());
+    if let Some(timeout) = timeout {
+        let output = Command::new(timeout)
+            .args([
+                "2",
+                env!("CARGO_BIN_EXE_vh"),
+                "verify-cooperative",
+                "--receipt",
+                fifo.to_str().unwrap(),
+            ])
+            .output()
+            .expect("run receipt FIFO refusal under deadline");
+        assert_eq!(output.status.code(), Some(2));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("non-regular-file"));
+    }
+}
+
+#[test]
+fn cooperative_receipt_truncation_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-trunc", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    std::fs::write(&receipt, &bytes[..bytes.len() / 2]).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "truncated receipt must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_trailing_data_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-trail", None);
+    assert_eq!(code, 0);
+    let mut bytes = std::fs::read(&receipt).unwrap();
+    bytes.extend_from_slice(b"extra\n");
+    std::fs::write(&receipt, &bytes).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "trailing data must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_body_digest_mismatch_fails_before_replay() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-body-digest", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8(bytes).unwrap();
+    let digest_line = text
+        .lines()
+        .find(|line| line.starts_with("digest sha256:"))
+        .unwrap();
+    let replacement = format!("digest sha256:{}", "0".repeat(64));
+    let tampered = text.replacen(digest_line, &replacement, 1);
+    std::fs::write(&receipt, tampered).unwrap();
+    let (vcode, stdout, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 1);
+    assert!(stdout.contains("body-digest-mismatch"), "{stdout}");
+}
+
+#[test]
+fn cooperative_receipt_noncanonical_numbers_fail_structurally() {
+    for (label, old, new) in [
+        ("exit", "exit-code 0\n", "exit-code 00\n"),
+        ("frame", "errors 2:[]\n", "errors 02:[]\n"),
+    ] {
+        let (code, receipt) =
+            run_cooperative_receipt(&format!("coop-rcpt-noncanonical-{label}"), None);
+        assert_eq!(code, 0);
+        let bytes = std::fs::read(&receipt).unwrap();
+        let text = String::from_utf8(bytes).unwrap();
+        let mutated = text.replacen(old, new, 1);
+        assert_ne!(mutated, text);
+        std::fs::write(&receipt, redigest(mutated.as_bytes())).unwrap();
+        let (vcode, stdout, _) = verify_receipt(&receipt);
+        assert_eq!(vcode, 2, "alternate number spelling must fail: {stdout}");
+        assert!(stdout.is_empty());
+    }
+}
+
+#[test]
+fn cooperative_receipt_duplicate_field_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-dup", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let dup = text.replacen("verdict CLEAN\n", "verdict CLEAN\nverdict CLEAN\n", 1);
+    std::fs::write(&receipt, redigest(dup.as_bytes())).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "duplicate field must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_reordered_fields_fail() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-reorder", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let swapped = text.replacen(
+        "oracle cooperative-llm-call-completed\noracle-evaluation completed\n",
+        "oracle-evaluation completed\noracle cooperative-llm-call-completed\n",
+        1,
+    );
+    assert_ne!(swapped, text, "fixture must contain the oracle lines");
+    std::fs::write(&receipt, redigest(swapped.as_bytes())).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "reordered fields must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_unknown_field_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-unknown", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let injected = text.replacen("verdict CLEAN\n", "evil 1\nverdict CLEAN\n", 1);
+    std::fs::write(&receipt, redigest(injected.as_bytes())).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "unknown field must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_blank_interior_line_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-blank", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let blanked = text.replacen("verdict CLEAN\n", "\nverdict CLEAN\n", 1);
+    std::fs::write(&receipt, redigest(blanked.as_bytes())).unwrap();
+    let (vcode, _, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 2, "blank interior line must fail closed");
+}
+
+#[test]
+fn cooperative_receipt_cassette_tamper_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-casstam", None);
+    assert_eq!(code, 0);
+    let mut bytes = std::fs::read(&receipt).unwrap();
+    // Flip a byte inside the framed cassette payload (after the header).
+    let marker = b"cassette ";
+    let pos = bytes
+        .windows(marker.len())
+        .position(|w| w == marker)
+        .expect("cassette field");
+    let payload = pos + marker.len() + 40; // past the length prefix
+    bytes[payload] ^= 0x01;
+    std::fs::write(&receipt, redigest(&bytes)).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "cassette tamper must fail as inauthentic:\n{vout}"
+    );
+    assert!(vout.contains("\"authentic\":false"), "{vout}");
+}
+
+#[test]
+fn cooperative_receipt_noncanonical_equivalent_cassette_fails_before_replay() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-cassette-spelling", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let range = framed_payload_range(&bytes, "cassette");
+    let canonical = std::str::from_utf8(&bytes[range]).unwrap();
+    let alternate = canonical.replacen("vh-cassette-v2 1\n", "vh-cassette-v2 01\n", 1);
+    assert_ne!(alternate, canonical);
+    let replaced = replace_framed_payload(&bytes, "cassette", alternate.as_bytes());
+    std::fs::write(&receipt, redigest(&replaced)).unwrap();
+    let (vcode, stdout, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 1);
+    assert!(stdout.contains("cassette-noncanonical"), "{stdout}");
+    assert!(!stdout.contains("cassette-identity-mismatch"), "{stdout}");
+}
+
+#[test]
+fn cooperative_receipt_identity_tamper_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-idtam", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let first_line = text
+        .lines()
+        .find(|l| l.starts_with("first-identity "))
+        .unwrap()
+        .to_string();
+    // Fabricate: force the first hex char to differ.
+    let mut chars: Vec<char> = first_line.chars().collect();
+    let idx = "first-identity ".len();
+    chars[idx] = if chars[idx] == 'a' { 'b' } else { 'a' };
+    let fabricated: String = chars.into_iter().collect();
+    let tampered = text.replacen(&first_line, &fabricated, 1);
+    std::fs::write(&receipt, redigest(tampered.as_bytes())).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "identity tamper must fail as inauthentic:\n{vout}"
+    );
+}
+
+#[test]
+fn cooperative_receipt_artifact_tamper_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-arttam", None);
+    assert_eq!(code, 0);
+    let mut bytes = std::fs::read(&receipt).unwrap();
+    let range = framed_payload_range(&bytes, "first-artifact");
+    bytes[range.start] ^= 0x01;
+    let digest = vh_sandbox::fnv_hex(&bytes[range.clone()]);
+    let text = String::from_utf8(bytes).unwrap();
+    let old_digest = text
+        .lines()
+        .find(|line| line.starts_with("first-artifact-digest "))
+        .unwrap();
+    let updated = text.replacen(old_digest, &format!("first-artifact-digest {digest}"), 1);
+    std::fs::write(&receipt, redigest(updated.as_bytes())).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "artifact tamper must fail as inauthentic:\n{vout}"
+    );
+    assert!(vout.contains("replay-first-artifact-mismatch"), "{vout}");
+    assert!(!vout.contains("first-artifact-digest-mismatch"), "{vout}");
+}
+
+#[test]
+fn cooperative_receipt_engine_mismatch_fails() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-engine", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let engine_line = text
+        .lines()
+        .find(|l| l.starts_with("engine-sha256 "))
+        .unwrap()
+        .to_string();
+    let forged = format!("engine-sha256 {}", "0".repeat(64));
+    let tampered = text.replacen(&engine_line, &forged, 1);
+    std::fs::write(&receipt, redigest(tampered.as_bytes())).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "engine mismatch must fail as inauthentic:\n{vout}"
+    );
+}
+
+#[test]
+fn cooperative_receipt_engine_request_digest_tamper_fails_before_replay() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-request-digest", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let tampered = replace_line_and_redigest(
+        &bytes,
+        "engine-request-digest",
+        &format!("engine-request-digest {}", "0".repeat(64)),
+    );
+    std::fs::write(&receipt, tampered).unwrap();
+    let (vcode, stdout, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 1);
+    assert!(
+        stdout.contains("engine-request-digest-mismatch"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn cooperative_receipt_workload_tamper_fails_before_execution() {
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-wltam", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8(bytes.clone()).unwrap();
+    let request_digest = cooperative_engine_request_digest_for_test(
+        "cooperative-evil",
+        receipt_line_value(&text, "cassette-identity"),
+        receipt_line_value(&text, "child-source-digest"),
+    );
+    let changed_workload =
+        replace_line_and_redigest(&bytes, "workload", "workload cooperative-evil");
+    let tampered = replace_line_and_redigest(
+        &changed_workload,
+        "engine-request-digest",
+        &format!("engine-request-digest {request_digest}"),
+    );
+    std::fs::write(&receipt, tampered).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 1, "unknown workload must fail closed:\n{vout}");
+    assert!(vout.contains("unknown-workload"), "{vout}");
+    assert!(!vout.contains("engine-request-digest-mismatch"), "{vout}");
+}
+
+#[test]
+fn cooperative_receipt_forged_clean_contradiction_fails() {
+    // A forged receipt whose content digest is valid but whose claimed
+    // CLEAN verdict contradicts the fresh replay.
+    let tmp = unique_tmp("coop-rcpt-forge-cassette");
+    let cassette = timeout_cassette_file(&tmp);
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-forge", Some(&cassette));
+    assert_eq!(code, 1);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    let forged = text
+        .replacen("verdict FINDINGS\n", "verdict CLEAN\n", 1)
+        .replacen(
+            "oracle-evaluation not-completed:timeout\n",
+            "oracle-evaluation completed\n",
+            1,
+        )
+        .replacen(
+            "finding-identity cooperative-llm-call-completed:timeout\n",
+            "finding-identity none\n",
+            1,
+        )
+        .replacen("findings-count 1\n", "findings-count 0\n", 1)
+        .replacen("exit-code 1\n", "exit-code 0\n", 1);
+    assert_ne!(forged, text);
+    std::fs::write(&receipt, redigest(forged.as_bytes())).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "a CLEAN claim contradicting fresh replay must fail closed:\n{vout}"
+    );
+    assert!(vout.contains("\"authentic\":false"), "{vout}");
+}
+
+#[test]
+fn cooperative_receipt_fabricated_identities_fail_replay_consistency() {
+    // Internally re-digested, valid-shaped receipt with fabricated run
+    // identities: this proves replay consistency, not provenance/authorship.
+    // The body digest is consistent, but the identities contradict replay.
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-handwritten", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let fabricated_a = format!("first-identity {}", "a".repeat(32));
+    let fabricated_b = format!("second-identity {}", "a".repeat(32));
+    let step1 = replace_line_and_redigest(&bytes, "first-identity", &fabricated_a);
+    let step2 = replace_line_and_redigest(&step1, "second-identity", &fabricated_b);
+    std::fs::write(&receipt, step2).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(
+        vcode, 1,
+        "fabricated identities must fail against fresh replay:\n{vout}"
+    );
+}
+
+#[test]
+fn cooperative_receipt_forged_source_never_executes() {
+    // Forged-source receipt with a recomputed content digest and a
+    // sentinel side effect: rejection must come BEFORE any child launch.
+    let sentinel_root = unique_tmp("coop-rcpt-source-sentinel");
+    let sentinel = sentinel_root.join("must-not-exist");
+    let (code, receipt) = run_cooperative_receipt("coop-rcpt-forgesrc", None);
+    assert_eq!(code, 0);
+    let bytes = std::fs::read(&receipt).unwrap();
+    let forged_source =
+        format!("open({:?},'w').write('x')\n", sentinel.to_string_lossy()).into_bytes();
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    // The child-source field is framed; replace it using its declared
+    // length (the payload itself contains newlines).
+    let marker = "child-source ";
+    let start = text.find(marker).expect("child-source field");
+    let after_tag = start + marker.len();
+    let colon = text[after_tag..].find(':').map(|i| after_tag + i).unwrap();
+    let declared: usize = text[after_tag..colon].parse().unwrap();
+    let field_end = colon + 1 + declared; // index of the field's trailing newline
+    let mut mutated = String::new();
+    mutated.push_str(&text[..start]);
+    mutated.push_str(&format!("child-source {}:", forged_source.len()));
+    mutated.push_str(&String::from_utf8_lossy(&forged_source));
+    mutated.push_str(&text[field_end..]);
+    // Recompute the source digest line for the forged bytes.
+    let digest_line = format!(
+        "child-source-digest sha256:{}",
+        vh_digest::sha256_hex(&forged_source)
+    );
+    let old_digest_line = mutated
+        .lines()
+        .find(|l| l.starts_with("child-source-digest "))
+        .unwrap()
+        .to_string();
+    let mutated = mutated.replacen(&old_digest_line, &digest_line, 1);
+    let source_digest = digest_line.strip_prefix("child-source-digest ").unwrap();
+    let request_digest = cooperative_engine_request_digest_for_test(
+        receipt_line_value(&mutated, "workload"),
+        receipt_line_value(&mutated, "cassette-identity"),
+        source_digest,
+    );
+    let old_request_digest = mutated
+        .lines()
+        .find(|line| line.starts_with("engine-request-digest "))
+        .unwrap()
+        .to_string();
+    let mutated = mutated.replacen(
+        &old_request_digest,
+        &format!("engine-request-digest {request_digest}"),
+        1,
+    );
+    std::fs::write(&receipt, redigest(mutated.as_bytes())).unwrap();
+    let (vcode, vout, _) = verify_receipt(&receipt);
+    assert_eq!(vcode, 1, "forged source must be rejected:\n{vout}");
+    assert!(vout.contains("source-mismatch"), "{vout}");
+    assert!(!vout.contains("engine-request-digest-mismatch"), "{vout}");
+    assert!(
+        !sentinel.exists(),
+        "the forged child source must never have executed"
+    );
 }

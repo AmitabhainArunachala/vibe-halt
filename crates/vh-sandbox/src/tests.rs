@@ -6,7 +6,10 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 fn temp_dir(label: &str) -> PathBuf {
     let id = TEMP_COUNTER.fetch_add(1, Ordering::SeqCst);
-    std::env::temp_dir().join(format!("vh-sandbox-test-{label}-{id}"))
+    std::env::temp_dir().join(format!(
+        "vh-sandbox-test-{}-{label}-{id}",
+        std::process::id()
+    ))
 }
 
 fn sh_spec(script: &str) -> SandboxSpec {
@@ -34,6 +37,10 @@ fn artifact_paths_fail_closed_on_escape() {
     assert!(ArtifactSpec::new("out.txt").is_ok());
     assert!(ArtifactSpec::new("../secret").is_err());
     assert!(ArtifactSpec::new("/tmp/secret").is_err());
+    assert!(ArtifactSpec::new(".vh-sandbox-io/stdout.raw").is_err());
+    assert!(sh_spec("true")
+        .declare_input_bytes(".vh-sandbox-io/llm/req-0", b"x")
+        .is_err());
 }
 
 #[test]
@@ -239,7 +246,7 @@ fn spawn_failure_is_typed_not_a_hard_error_and_skips_declared_artifacts() {
 }
 
 #[test]
-fn no_unbounded_wait_a_hung_child_is_killed_and_reaped_at_the_deadline() {
+fn deadline_kills_and_reaps_an_ordinary_hung_child() {
     let root = temp_dir("timeout");
     let spec = sh_spec("sleep 60").with_budget(
         SandboxBudget::new(
@@ -301,7 +308,26 @@ fn bounded_output_truncates_and_flags_but_never_hides_the_true_length() {
 }
 
 #[test]
-fn executable_identity_is_resolved_for_absolute_paths_and_open_for_bare_names() {
+#[cfg(unix)]
+fn child_cannot_redirect_output_collection_by_replacing_capture_paths() {
+    let root = temp_dir("capture-path-replacement");
+    let spec = sh_spec(
+        "rm -f .vh-sandbox-io/stdout.raw .vh-sandbox-io/stderr.raw; \
+         mkfifo .vh-sandbox-io/stdout.raw; \
+         ln -s /dev/zero .vh-sandbox-io/stderr.raw; \
+         printf safe; printf err >&2",
+    )
+    .with_budget(SandboxBudget::new(Duration::from_secs(2), 1024).expect("valid capture budget"));
+    let record = run_once(&spec, &root).unwrap();
+    assert_eq!(record.termination, TerminationOutcome::Exited(0));
+    assert_eq!(record.stdout.byte_len, 4);
+    assert_eq!(record.stdout.digest, fnv_hex(b"safe"));
+    assert_eq!(record.stderr.byte_len, 3);
+    assert_eq!(record.stderr.digest, fnv_hex(b"err"));
+}
+
+#[test]
+fn executable_identity_resolves_only_absolute_paths() {
     // Direct filesystem access is not part of this test file's
     // determinism-denylist exemption (only environment-variable reads
     // and the process-counter atomic are), so independent verification
@@ -339,6 +365,16 @@ fn executable_identity_is_resolved_for_absolute_paths_and_open_for_bare_names() 
             argv0: "true".into()
         }
     );
+
+    for relative in ["./tool", "dir/tool"] {
+        assert_eq!(
+            resolve_executable_identity(relative),
+            ExecutableIdentity::Unresolved {
+                argv0: relative.into()
+            },
+            "relative argv0 is interpreted under the child workspace/platform and cannot be resolved from the controller cwd"
+        );
+    }
 }
 
 #[test]
@@ -465,4 +501,479 @@ fn cassette_run_requires_identity_binding() {
         .unwrap()
         .with_cassette_identity("vh-cassette-v2:sha256:0000");
     assert!(crate::run_once_with_cassette(&stale, &workspace, &cassette).is_err());
+}
+
+#[test]
+fn programmatic_cassette_size_is_rejected_before_workspace_or_execution() {
+    let mut cassette = CassetteV2::default();
+    cassette.push(
+        LlmRequestV2::default(),
+        TapeEntry::Success {
+            status: 200,
+            body: vec![b'x'; crate::MAX_CASSETTE_BYTES as usize],
+        },
+    );
+    let root = temp_dir("programmatic-cassette-oversize");
+    let spec = sh_spec("printf escaped > escaped").with_cassette_identity(cassette.identity());
+    assert!(matches!(
+        crate::run_once_with_cassette(&spec, &root, &cassette),
+        Err(SandboxError::Oversized { .. })
+    ));
+    assert!(!root.exists());
+}
+
+#[test]
+fn post_exit_drain_classifies_a_burst_extra_request() {
+    let request = LlmRequestV2::default();
+    let mut cassette = CassetteV2::default();
+    cassette.push(request.clone(), TapeEntry::Timeout);
+    let root = temp_dir("post-exit-extra-request");
+    let spec = sh_spec(
+        "cat > request; \
+         cp request .vh-sandbox-io/llm/req-0.tmp; \
+         mv .vh-sandbox-io/llm/req-0.tmp .vh-sandbox-io/llm/req-0; \
+         cp request .vh-sandbox-io/llm/req-1.tmp; \
+         mv .vh-sandbox-io/llm/req-1.tmp .vh-sandbox-io/llm/req-1",
+    )
+    .with_stdin(request.canonical_bytes())
+    .with_cassette_identity(cassette.identity());
+    let record = crate::run_once_with_cassette(&spec, &root, &cassette).unwrap();
+    let transport = record.transport.unwrap();
+    assert_eq!(transport.served, vec![request.digest()]);
+    assert!(
+        transport
+            .taint
+            .as_deref()
+            .is_some_and(|reason| reason.contains("beyond the recorded tape")),
+        "extra request was silently ignored: {transport:?}"
+    );
+}
+
+#[test]
+fn transport_taint_does_not_waive_completed_process_artifact_postconditions() {
+    let cassette = CassetteV2::default();
+    let request = LlmRequestV2::default();
+    let root = temp_dir("tainted-missing-artifact");
+    let spec = sh_spec(
+        "cat > .vh-sandbox-io/llm/req-0.tmp; \
+         mv .vh-sandbox-io/llm/req-0.tmp .vh-sandbox-io/llm/req-0",
+    )
+    .with_stdin(request.canonical_bytes())
+    .with_cassette_identity(cassette.identity())
+    .declare_artifact("out.txt")
+    .unwrap();
+    assert!(matches!(
+        crate::run_once_with_cassette(&spec, &root, &cassette),
+        Err(SandboxError::ArtifactBoundary { .. })
+    ));
+}
+
+/// Item 5/9: the broker's child-request read carries the same published
+/// byte bound as cassette files — an oversized frame is a typed,
+/// bounded taint, never an unbounded read or a raw parse dump.
+#[test]
+fn broker_rejects_oversized_child_request_before_parsing() {
+    let mut cassette = CassetteV2::default();
+    cassette.push(LlmRequestV2::default(), TapeEntry::Timeout);
+    let root = temp_dir("broker-oversize");
+    // 1 MiB + 1: the published maximum plus one byte. The frame is
+    // published with the protocol's atomic temp+rename so the broker
+    // either sees nothing or the complete oversize frame.
+    let spec = sh_spec(
+        "head -c 1048577 /dev/zero > .vh-sandbox-io/llm/req-0.tmp; \
+         mv .vh-sandbox-io/llm/req-0.tmp .vh-sandbox-io/llm/req-0; sleep 0.3",
+    )
+    .with_cassette_identity(cassette.identity());
+    let record = crate::run_once_with_cassette(&spec, &root, &cassette).unwrap();
+    let taint = record
+        .transport
+        .as_ref()
+        .unwrap()
+        .taint
+        .as_ref()
+        .unwrap()
+        .clone();
+    assert!(
+        taint.contains("exceeds"),
+        "oversize must be a typed taint, got: {taint}"
+    );
+    assert!(taint.len() <= 256, "taint must stay bounded: {taint}");
+}
+
+#[test]
+fn broker_rejects_semantically_equivalent_noncanonical_request_bytes() {
+    let request = LlmRequestV2::default();
+    let mut cassette = CassetteV2::default();
+    cassette.push(request.clone(), TapeEntry::Timeout);
+    let root = temp_dir("broker-noncanonical");
+    let noncanonical = String::from_utf8(request.canonical_bytes())
+        .unwrap()
+        .replacen("messages 0\n", "messages 00\n", 1)
+        .into_bytes();
+    let spec = sh_spec(
+        "cat > .vh-sandbox-io/llm/req-0.tmp; \
+         mv .vh-sandbox-io/llm/req-0.tmp .vh-sandbox-io/llm/req-0; sleep 0.2",
+    )
+    .with_stdin(noncanonical)
+    .with_cassette_identity(cassette.identity());
+    let record = crate::run_once_with_cassette(&spec, &root, &cassette).unwrap();
+    let transport = record.transport.unwrap();
+    assert!(transport.served.is_empty());
+    assert_eq!(transport.taint.as_deref(), Some("noncanonical request 0"));
+}
+
+#[test]
+fn broker_services_one_frame_per_deadline_tick_and_stops_after_taint() {
+    let request = LlmRequestV2::default();
+    let mut cassette = CassetteV2::default();
+    cassette.push(request.clone(), TapeEntry::Timeout);
+    let root = temp_dir("broker-flood");
+    std::fs::create_dir_all(&root).unwrap();
+    for n in 0..128 {
+        std::fs::write(root.join(format!("req-{n}")), request.canonical_bytes()).unwrap();
+    }
+    let mut broker = crate::BrokerState::new(root.clone(), &cassette);
+    broker.service();
+    assert_eq!(
+        broker.next_seq, 1,
+        "one service call consumed a request flood"
+    );
+    assert!(broker.taint.is_none());
+    broker.service();
+    assert_eq!(broker.next_seq, 2);
+    assert!(broker.taint.is_some(), "out-of-tape request must taint");
+    broker.service();
+    assert_eq!(
+        broker.next_seq, 2,
+        "tainted broker kept walking attacker paths"
+    );
+}
+
+#[test]
+#[cfg(unix)]
+fn broker_response_publication_refuses_preplanted_temp_and_final_paths() {
+    let request = LlmRequestV2::default();
+    let mut cassette = CassetteV2::default();
+    cassette.push(request.clone(), TapeEntry::Timeout);
+
+    let temp_case = temp_dir("broker-planted-temp");
+    std::fs::create_dir_all(&temp_case).unwrap();
+    std::fs::write(temp_case.join("req-0"), request.canonical_bytes()).unwrap();
+    let sentinel = temp_case.join("sentinel");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    std::os::unix::fs::symlink(&sentinel, temp_case.join("resp-0.tmp")).unwrap();
+    let mut broker = crate::BrokerState::new(temp_case.clone(), &cassette);
+    broker.service();
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+    assert!(broker.served.is_empty());
+    assert!(broker
+        .taint
+        .as_deref()
+        .unwrap()
+        .contains("temp-create-refused"));
+
+    let final_case = temp_dir("broker-planted-final");
+    std::fs::create_dir_all(&final_case).unwrap();
+    std::fs::write(final_case.join("req-0"), request.canonical_bytes()).unwrap();
+    std::fs::write(final_case.join("resp-0"), b"preserve").unwrap();
+    let mut broker = crate::BrokerState::new(final_case.clone(), &cassette);
+    broker.service();
+    assert_eq!(
+        std::fs::read(final_case.join("resp-0")).unwrap(),
+        b"preserve"
+    );
+    assert!(broker.served.is_empty());
+    assert!(broker
+        .taint
+        .as_deref()
+        .unwrap()
+        .contains("final-exists-or-link-failed"));
+}
+
+/// Item 5: the published cassette/request byte bound is enforced before
+/// parsing and before allocation — exact boundary admitted, max + 1
+/// rejected, including a sparse file whose logical size overflows.
+#[test]
+fn bounded_read_enforces_exact_boundary_and_rejects_sparse_oversize() {
+    let root = temp_dir("bounded-read");
+    std::fs::create_dir_all(&root).unwrap();
+
+    let exact = root.join("exact.bin");
+    std::fs::write(&exact, vec![7u8; crate::MAX_CASSETTE_BYTES as usize]).unwrap();
+    let got = crate::read_bounded_file(&exact, crate::MAX_CASSETTE_BYTES).unwrap();
+    assert_eq!(got.len() as u64, crate::MAX_CASSETTE_BYTES);
+
+    let over = root.join("over.bin");
+    std::fs::write(&over, vec![7u8; crate::MAX_CASSETTE_BYTES as usize + 1]).unwrap();
+    assert!(matches!(
+        crate::read_bounded_file(&over, crate::MAX_CASSETTE_BYTES),
+        Err(SandboxError::Oversized { .. })
+    ));
+
+    // Sparse: logical size max + 1 with no backing blocks — rejected
+    // from metadata without any max-sized allocation.
+    let sparse = root.join("sparse.bin");
+    let f = std::fs::File::create(&sparse).unwrap();
+    f.set_len(crate::MAX_CASSETTE_BYTES + 1).unwrap();
+    drop(f);
+    assert!(matches!(
+        crate::read_bounded_file(&sparse, crate::MAX_CASSETTE_BYTES),
+        Err(SandboxError::Oversized { .. })
+    ));
+}
+
+#[cfg(unix)]
+#[test]
+fn bounded_read_refuses_links_parent_links_and_special_files() {
+    let root = temp_dir("bounded-special");
+    std::fs::create_dir_all(&root).unwrap();
+    let regular = root.join("regular");
+    std::fs::write(&regular, b"ok").unwrap();
+
+    let link = root.join("link");
+    std::os::unix::fs::symlink(&regular, &link).unwrap();
+    assert!(matches!(
+        crate::read_bounded_file(&link, 32),
+        Err(SandboxError::BoundaryFile("symlink" | "open-refused"))
+    ));
+
+    let real_parent = root.join("real-parent");
+    std::fs::create_dir(&real_parent).unwrap();
+    std::fs::write(real_parent.join("value"), b"ok").unwrap();
+    let linked_parent = root.join("linked-parent");
+    std::os::unix::fs::symlink(&real_parent, &linked_parent).unwrap();
+    assert!(matches!(
+        crate::read_bounded_file(&linked_parent.join("value"), 32),
+        Err(SandboxError::BoundaryFile("symlink"))
+    ));
+
+    assert!(matches!(
+        crate::read_bounded_file(Path::new("/dev/null"), 32),
+        Err(SandboxError::BoundaryFile("non-regular-file"))
+    ));
+    assert!(matches!(
+        crate::read_bounded_file(&root, 32),
+        Err(SandboxError::BoundaryFile("non-regular-file"))
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn declared_inputs_and_executable_observation_refuse_special_or_oversized_files() {
+    let root = temp_dir("bounded-declared-input");
+    std::fs::create_dir_all(&root).unwrap();
+    let fifo = root.join("input.fifo");
+    let status = std::process::Command::new("mkfifo")
+        .arg(&fifo)
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(matches!(
+        sh_spec("true").declare_input_file(&fifo),
+        Err(SandboxError::BoundaryFile(
+            "non-regular-file" | "open-refused"
+        ))
+    ));
+
+    let sparse = root.join("oversized-input");
+    let file = std::fs::File::create(&sparse).unwrap();
+    file.set_len(crate::MAX_INPUT_FILE_BYTES + 1).unwrap();
+    assert!(matches!(
+        sh_spec("true").declare_input_file(&sparse),
+        Err(SandboxError::Oversized { .. })
+    ));
+
+    let spec = SandboxSpec::new(vec![fifo.display().to_string()]).unwrap();
+    let record = run_once(&spec, &root.join("exec")).unwrap();
+    assert!(matches!(
+        record.executable,
+        ExecutableIdentity::Unresolved { .. }
+    ));
+    assert!(matches!(
+        record.termination,
+        TerminationOutcome::SpawnFailed { .. }
+    ));
+}
+
+#[test]
+#[cfg(unix)]
+fn preplanted_private_io_namespace_is_refused_without_following_links() {
+    let root = temp_dir("preplanted-io");
+    let io = root.join(".vh-sandbox-io");
+    std::fs::create_dir_all(&io).unwrap();
+    let sentinel = root.join("sentinel");
+    std::fs::write(&sentinel, b"preserve").unwrap();
+    std::os::unix::fs::symlink(&sentinel, io.join("stdin.raw")).unwrap();
+    assert!(matches!(
+        run_once(&sh_spec("true"), &root),
+        Err(SandboxError::BoundaryFile("io-directory-not-exclusive"))
+    ));
+    assert_eq!(std::fs::read(&sentinel).unwrap(), b"preserve");
+}
+
+#[test]
+#[cfg(unix)]
+fn workspace_parent_symlink_is_refused_before_any_directory_is_created_through_it() {
+    let root = temp_dir("workspace-parent-link");
+    let outside = root.join("outside");
+    std::fs::create_dir_all(&outside).unwrap();
+    let linked_parent = root.join("linked-parent");
+    std::os::unix::fs::symlink(&outside, &linked_parent).unwrap();
+    assert!(matches!(
+        run_once(&sh_spec("true"), &linked_parent.join("new-workspace")),
+        Err(SandboxError::BoundaryFile("symlink"))
+    ));
+    assert!(
+        !outside.join("new-workspace").exists(),
+        "workspace creation followed a rejected parent symlink"
+    );
+}
+
+#[test]
+fn logical_inputs_reject_duplicates_collisions_and_staged_byte_changes() {
+    let duplicate = sh_spec("true")
+        .declare_input_bytes("script.sh", b"true")
+        .unwrap()
+        .declare_input_bytes("script.sh", b"false");
+    assert!(duplicate.is_err());
+
+    let collision = sh_spec("true")
+        .declare_artifact("script.sh")
+        .unwrap()
+        .declare_input_bytes("script.sh", b"true");
+    assert!(collision.is_err());
+
+    let root = temp_dir("logical-mismatch");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("script.sh"), b"printf sentinel > escaped").unwrap();
+    let spec = SandboxSpec::new(vec!["/bin/sh".into(), "script.sh".into()])
+        .unwrap()
+        .declare_input_bytes("script.sh", b"true")
+        .unwrap();
+    assert!(matches!(
+        run_once(&spec, &root),
+        Err(SandboxError::InputMismatch {
+            category: "digest-mismatch",
+            ..
+        })
+    ));
+    assert!(
+        !root.join("escaped").exists(),
+        "changed source must not execute"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn child_artifact_symlink_is_refused_at_sandbox_collection() {
+    let root = temp_dir("artifact-link");
+    let spec = sh_spec("ln -s /dev/zero out.txt")
+        .declare_artifact("out.txt")
+        .unwrap();
+    assert!(matches!(
+        run_once(&spec, &root),
+        Err(SandboxError::ArtifactBoundary {
+            category: "symlink" | "open-refused",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn run_boundary_revalidates_public_spec_and_budget_fields() {
+    let root = temp_dir("mutated-public-spec");
+
+    let mut empty_argv = sh_spec("true");
+    empty_argv.argv.clear();
+    assert!(matches!(
+        run_once(&empty_argv, &root),
+        Err(SandboxError::InvalidSpec(_))
+    ));
+
+    let mut escaped_artifact = sh_spec("true");
+    escaped_artifact.artifacts.push(ArtifactSpec {
+        path: "../escaped".into(),
+    });
+    assert!(matches!(
+        run_once(&escaped_artifact, &root),
+        Err(SandboxError::InvalidSpec(_))
+    ));
+
+    let mut escaped_logical = sh_spec("true");
+    escaped_logical
+        .input_logical_files
+        .insert("../source".into(), "0".repeat(64));
+    assert!(matches!(
+        run_once(&escaped_logical, &root),
+        Err(SandboxError::InvalidSpec(_))
+    ));
+
+    let mut unbounded = sh_spec("true");
+    unbounded.budget = SandboxBudget {
+        deadline: MAX_SANDBOX_DEADLINE + Duration::from_secs(1),
+        max_output_bytes: MAX_CAPTURE_BYTES + 1,
+    };
+    assert!(matches!(
+        run_once(&unbounded, &root),
+        Err(SandboxError::InvalidSpec(_))
+    ));
+}
+
+#[test]
+fn physical_input_is_reobserved_before_workspace_write_or_spawn() {
+    let host = temp_dir("physical-input-host");
+    std::fs::create_dir_all(&host).unwrap();
+    let input = host.join("controller-input");
+    std::fs::write(&input, b"first").unwrap();
+    let spec = sh_spec("true").declare_input_file(&input).unwrap();
+    std::fs::write(&input, b"changed").unwrap();
+    let workspace = host.join("workspace");
+    assert!(matches!(
+        run_once(&spec, &workspace),
+        Err(SandboxError::InputMismatch {
+            category: "digest-mismatch",
+            ..
+        })
+    ));
+    assert!(
+        !workspace.exists(),
+        "input mismatch must be rejected before workspace publication"
+    );
+}
+
+#[test]
+fn published_budget_and_stdin_hard_bounds_are_enforced() {
+    assert!(SandboxBudget::new(MAX_SANDBOX_DEADLINE, MAX_CAPTURE_BYTES).is_ok());
+    assert!(SandboxBudget::new(
+        MAX_SANDBOX_DEADLINE + Duration::from_nanos(1),
+        MAX_CAPTURE_BYTES,
+    )
+    .is_err());
+    assert!(SandboxBudget::new(MAX_SANDBOX_DEADLINE, MAX_CAPTURE_BYTES + 1).is_err());
+
+    let root = temp_dir("oversized-stdin");
+    let spec = sh_spec("true").with_stdin(vec![0; MAX_STDIN_BYTES + 1]);
+    assert!(matches!(
+        run_once(&spec, &root),
+        Err(SandboxError::InvalidSpec(_))
+    ));
+    assert!(!root.exists());
+}
+
+#[test]
+fn broker_taints_a_future_request_when_the_expected_sequence_is_absent() {
+    let root = temp_dir("future-request");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(root.join("req-1"), b"future").unwrap();
+    let cassette = crate::cassette_v2::CassetteV2::default();
+    let mut broker = BrokerState::new(root, &cassette);
+    broker.service();
+    assert!(
+        broker
+            .taint
+            .as_deref()
+            .is_some_and(|reason| reason.contains("out-of-sequence")),
+        "future request must taint instead of remaining invisible: {:?}",
+        broker.taint
+    );
 }

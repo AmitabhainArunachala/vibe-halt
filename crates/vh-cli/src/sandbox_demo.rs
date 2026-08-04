@@ -26,7 +26,10 @@ pub(crate) fn cmd_sandbox_demo(args: &[String], usage: &str) -> i32 {
                 };
             }
             other => {
-                eprintln!("error: unknown argument: {other}\n\n{usage}");
+                eprintln!(
+                    "error: unknown argument: {}\n\n{usage}",
+                    crate::cooperative::bounded_diagnostic(other)
+                );
                 return 2;
             }
         }
@@ -39,8 +42,9 @@ pub(crate) fn cmd_sandbox_demo(args: &[String], usage: &str) -> i32 {
         "cassette-child-miss" => render_cassette_child_taint("cassette-child-miss"),
         "cassette-child-extra" => render_cassette_child_taint("cassette-child-extra"),
         _ => {
+            let safe_mode = crate::cooperative::bounded_diagnostic(&mode);
             eprintln!(
-                "error: unknown sandbox-demo mode '{mode}' (expected clean, cassette-miss, \
+                "error: unknown sandbox-demo mode '{safe_mode}' (expected clean, cassette-miss, \
                  nondet, cassette-child, cassette-child-miss, or cassette-child-extra)"
             );
             2
@@ -291,6 +295,11 @@ def base(content):
                 messages=[('system', 'be deterministic'), ('user', content)],
                 params=[('temperature', '0')])
 
+# The declared artifact is a child-owned postcondition even on an early
+# transport miss. Create it before the first cassette call; successful runs
+# overwrite it below with the complete collected response.
+with open('out.txt', 'wb') as f:
+    f.write(b'')
 collected = []
 first = llm_call(**base('same prompt'))
 collected.append(first['body'])
@@ -515,5 +524,27 @@ fn render_cassette_child_taint(mode: &str) -> i32 {
                 1
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cassette_child_miss_keeps_child_owned_empty_artifact_and_taints() {
+        let cassette = fixture_cassette_v2(3, false);
+        let root = sandbox_demo_root("test-cassette-child-miss-artifact").unwrap();
+        let source = stage_child_source(&root, "cassette-child-miss").unwrap();
+        let spec = child_spec(&cassette, &source).unwrap();
+        let workspace = root.join("u0");
+        place_child_source(&source, &workspace).unwrap();
+
+        let record = run_once_with_cassette(&spec, &workspace, &cassette).unwrap();
+        assert!(record.transport_tainted());
+        assert_eq!(
+            record.artifacts.get("out.txt"),
+            Some(&vh_sandbox::fnv_hex(b""))
+        );
     }
 }
