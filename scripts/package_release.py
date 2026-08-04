@@ -121,8 +121,14 @@ def main() -> int:
         source_files: dict[str, Path] = {}
         for directory in (".github", "clients", "corpus", "crates", "docs", "scripts"):
             for source in (REPO / directory).rglob("*"):
-                if source.is_file() and "__pycache__" not in source.parts:
-                    source_files[source.relative_to(REPO).as_posix()] = source
+                relative = source.relative_to(REPO)
+                if (
+                    source.is_file()
+                    and "__pycache__" not in relative.parts
+                    and not any(part.endswith(".egg-info") for part in relative.parts)
+                    and source.suffix not in {".pyc", ".pyo"}
+                ):
+                    source_files[relative.as_posix()] = source
         for name in (
             ".gitattributes",
             ".gitignore",

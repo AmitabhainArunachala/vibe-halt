@@ -61,9 +61,8 @@ agreement beyond the recorded tier.
 make review
 ```
 
-This checks committed, staged, unstaged, and untracked content against
-`origin/main`, rejects new deferred-work markers in favor of GitHub issues,
-requires verification
+This checks committed and worktree changes against `origin/main`, rejects new
+deferred-work markers in favor of GitHub issues, requires verification
 language in the latest code-changing commit, and runs the full gate.
 
 Then inspect:
