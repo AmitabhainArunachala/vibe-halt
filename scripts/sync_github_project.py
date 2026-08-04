@@ -94,7 +94,8 @@ def plan() -> list[Action]:
     )
     matches = [p for p in projects["projects"] if p["title"] == PROJECT_TITLE]
     if matches:
-        project_number = str(matches[0]["number"])
+        project = matches[0]
+        project_number = str(project["number"])
     else:
         actions.append(
             Action(
@@ -113,6 +114,7 @@ def plan() -> list[Action]:
         project_number = "<new>"
 
     if project_number != "<new>":
+        project_id = project["id"]
         fields = gh_json(
             "project",
             "field-list",
@@ -141,6 +143,39 @@ def plan() -> list[Action]:
             if options:
                 command.extend(["--single-select-options", options])
             actions.append(Action(f"create project field {name}", command))
+
+        query = (
+            "query($id:ID!){node(id:$id){... on ProjectV2{"
+            "repositories(first:100){nodes{nameWithOwner}}}}}"
+        )
+        links = gh_json(
+            "api",
+            "graphql",
+            "-f",
+            f"query={query}",
+            "-F",
+            f"id={project_id}",
+        )
+        linked_repositories = {
+            node["nameWithOwner"]
+            for node in links["data"]["node"]["repositories"]["nodes"]
+        }
+        if f"{OWNER}/{REPO}" not in linked_repositories:
+            actions.append(
+                Action(
+                    "link repository to project",
+                    [
+                        "gh",
+                        "project",
+                        "link",
+                        project_number,
+                        "--owner",
+                        OWNER,
+                        "--repo",
+                        REPO,
+                    ],
+                )
+            )
 
         items = gh_json(
             "project",
@@ -196,19 +231,27 @@ def main() -> int:
     group.add_argument("--apply", action="store_true")
     args = parser.parse_args()
 
-    actions = plan()
-    if not actions:
-        print("project-sync: no additive changes required")
-        return 0
-    for action in actions:
-        print(f"- {action.description}")
-        if args.apply:
-            run(action.command)
     if args.plan:
+        actions = plan()
+        if not actions:
+            print("project-sync: no additive changes required")
+            return 0
+        for action in actions:
+            print(f"- {action.description}")
         print("project-sync: plan only; no writes performed")
-    else:
-        print(f"project-sync: applied {len(actions)} additive action(s)")
-    return 0
+        return 0
+
+    applied = 0
+    for _ in range(5):
+        actions = plan()
+        if not actions:
+            print(f"project-sync: applied {applied} additive action(s)")
+            return 0
+        for action in actions:
+            print(f"- {action.description}")
+            run(action.command)
+            applied += 1
+    raise SystemExit("project-sync: additive plan did not converge after five passes")
 
 
 if __name__ == "__main__":

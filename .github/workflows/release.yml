@@ -77,7 +77,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 scripts/package_release.py \
+          python_bin=""
+          for candidate in python3 python; do
+            command -v "$candidate" >/dev/null 2>&1 || continue
+            "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' || continue
+            python_bin="$candidate"
+            break
+          done
+          [[ -n "$python_bin" ]]
+          "$python_bin" scripts/package_release.py \
             --version "${{ needs.validate.outputs.version }}" \
             --binary "target/${{ matrix.target }}/release/${{ matrix.binary }}" \
             --target "${{ matrix.target }}" \
