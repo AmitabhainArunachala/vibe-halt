@@ -56,6 +56,10 @@ tracks:
       - docs/audits/**
       - docs/plans/**
       - docs/prompts/**
+      - docs/governance/TRUTH_KERNEL_A1_BOOTSTRAP_AUTHORITY_V0.json
+      - scripts/run_tenancy_bounded.py
+      - scripts/check_tenancy_single_truth.py
+      - tests/fixtures/tenancy/**
       - Makefile
       - .github/workflows/ci.yml
       - .github/workflows/release.yml
@@ -86,6 +90,7 @@ tracks:
       - "SHIPPED 2026-08-05 at merged main 63ccd32: the strict local Python-to-Rust transport, fresh generic/cooperative re-verification, reusable cooperative D2 transport, and R3 holdout/dossier law are gate-protected substrate; all 29 capability channels remain open"
       - "complete versioned operation/feature negotiation and observed-target-revision binding before claiming a production or dharma_swarm adapter receipt"
       - "P0 OPERATOR GATE: issue #60 may authorize one exact VB-008 or VB-010 foreign-target confirmation or its predeclared null; execute neither without separate human approval of repository, revision, license, data boundary, oracle, fixed budget, and disposable environment"
+      - "TRUTH KERNEL 2026-07-29 (repaired 2026-08-05): docs/prompts/TRUTH_KERNEL_LONG_RUNNING_GOAL_2026-07-29.md and PR #58 remain draft and grant no execution, merge, or foreign authority; PR #58 may leave draft only after a human-merged REALITY_BRIDGE_COMPLETE_FORWARD_CONFIRMED or REALITY_BRIDGE_COMPLETE_FORWARD_NULL result, the exact owner/admin #62 clearance, and the populated A1 bootstrap authority record; if later admitted, execute only the serial K1 -> K2R -> K2 -> K3A -> K3B -> K4 dependency DAG in §8"
       - "serialize writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer; verifier-owned surfaces still require an exact interface request"
       - "measure the representative shrink median (issue #59) and named-box Tier-1 throughput (issue #64) before claiming criteria 5 or 6"
     non_goals:
