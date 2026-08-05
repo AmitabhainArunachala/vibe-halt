@@ -243,9 +243,10 @@ EXEMPT: dict[str, set[str]] = {
     # from the command-line path; it does not execute targets, access the
     # network, or read environment/credentials.
     "crates/vh-cli/src/eval.rs": {r"std::fs"},
-    # Release metadata is a CLI boundary: it reads the built executable and
-    # prints its SHA-256 plus package/target labels. No clock, env, network,
-    # process, randomness, or hash-order source is admitted.
+    # Release metadata is a CLI boundary: it reads argv, reads the built
+    # executable, prints its SHA-256 plus package/target labels, and uses
+    # process::exit for a typed failure. It does not spawn a subprocess or
+    # admit clock, network, randomness, or hash-order sources.
     "crates/vh-cli/src/bin/release_metadata.rs": {r"std::fs", r"std::env", r"std::process"},
 }
 

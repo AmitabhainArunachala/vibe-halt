@@ -26,9 +26,9 @@ Demonstrated now:
   (runnable proof: `make gate`);
 - strict evidence bundles, standalone semantic replay, content-digest
   self-consistency checks, and exact-fingerprint shrinking for the currently
-  capture-enabled demo workloads (`scripts/gate.sh:397-479`);
+  capture-enabled demo workloads (`scripts/gate.sh`);
 - a Tier 2/D2 subprocess harness with child-visible cassette replay and a
-  published 100-pair reference campaign (`scripts/gate.sh:104-190`);
+  published 100-pair reference campaign (`scripts/gate.sh`);
 - eleven pinned regression-corpus entries (runnable count:
   `find corpus/entries -maxdepth 1 -type f -name 'VB-*' | wc -l`).
 

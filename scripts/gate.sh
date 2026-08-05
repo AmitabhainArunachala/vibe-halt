@@ -13,8 +13,8 @@
 # matching substring smuggled into other output can never be blessed as
 # "correctly caught". Seeds are pinned. Corpus recall gates hold each
 # entry's K1-frozen contract as an exact-equality assertion on the full
-# summary line plus a fault-free control replay (C2b). The quarantined
-# Python client is held closed by a negative gate of its own.
+# summary line plus a fault-free control replay (C2b). The strict local
+# Python-to-Rust client is held to its fail-closed boundary by its own gate.
 #
 # Cargo runs --locked --offline (the workspace has zero external
 # dependencies by design) and --all-features (no features exist yet; the
@@ -400,7 +400,8 @@ echo "gate: python adapter passes (strict client, cli exit 2)"
 
 echo "== evidence-store gate: receipts deterministic + bundle replays standalone (C4/R4) =="
 bundle_tmp="$(mktemp -d)"
-trap 'rm -rf "$bundle_tmp"' EXIT
+# `bundle_tmp` is beneath the invocation-private TMPDIR, so the single EXIT
+# trap above removes it without replacing cleanup of the enclosing gate root.
 set +e
 cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 100 --out "$bundle_tmp/A" >/dev/null
 a_code=$?

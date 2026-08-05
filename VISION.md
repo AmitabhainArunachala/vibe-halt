@@ -52,15 +52,15 @@ and [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/a
 - strict v2 evidence bundles, standalone semantic replay,
   content-digest self-consistency checks, and exact-fingerprint fault-plan
   shrinking for the currently capture-enabled demo workloads
-  (`crates/vh-cli/src/receipts_v2.rs:26-31`, `scripts/gate.sh:397-479`);
+  (`crates/vh-cli/src/receipts_v2.rs:26-31`, `scripts/gate.sh`);
 - a child-visible ordered cassette transport and a reference Tier-2 campaign
   with 0 divergent pairs in 100, while all 29 capability channels remain open
-  (`scripts/gate.sh:104-190` and
+  (`scripts/gate.sh` and
   `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33`); this is D2, never D1;
 - a strict stdlib-only Python adapter that copies and optionally digest-pins the
   Rust executable, consumes only Rust machine records, and re-verifies the run
   receipt before returning a typed outcome
-  (`clients/python/vibe_halt/core/runner.py:39-57,161-308`);
+  (`clients/python/vibe_halt/core/runner.py`);
 - a versioned holdout/dossier contract plus two calibration fixtures, with
   misses and authority-blocked states retained
   (`docs/specs/HOLDOUT_CONTRACT_V1.md`, `corpus/calibration/`);

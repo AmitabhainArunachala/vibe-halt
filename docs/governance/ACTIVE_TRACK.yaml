@@ -72,8 +72,8 @@ tracks:
       - scripts/sync_github_project.py
     acceptance:
       # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
-      # Criterion 3 is a material measurement-contract amendment; human
-      # merge of the containing PR ratifies it.
+      # Criterion 3 is a material measurement-contract amendment, ratified by
+      # human merge of PR #54 at commit 415b406.
       - "Tier 1: same seed => bit-identical trace hash across 1000 runs and two machines"
       - "Tier 2: divergence rate measured and published, never hidden (<5% target on reference workloads)"
       - "for an independently curated, preregistered holdout of N >=25 provenance-qualified real defects introduced by disclosed AI-generated or coding-agent-authored PRs/commits, aggregate recall >=80% means detections >=ceil(0.8*N); mere later agent maintenance is ineligible; before candidate reveal, human-merge to public main a candidate-secret freeze artifact binding exact engine/adapter commits, executable digest, protocol schemas, evaluation policy, budgets, independent oracles, roles, sampling-frame/cutoff/selection/dedupe/diversity rules, and a curator-authenticated opaque cohort commitment, then bind a separately curator-authenticated reveal to that commit/digest and require its canonical bytes to open the commitment; require >=5 repositories and >=5 root-cause/mechanism clusters with each repository and cluster contributing <=ceil(0.2*N); every non-detection remains in the denominator; only the first complete run under that freeze earns acceptance credit, later implementations may rerun the revealed cohort only as non-credit calibration, and a new acceptance attempt requires a newly curated unseen cohort"

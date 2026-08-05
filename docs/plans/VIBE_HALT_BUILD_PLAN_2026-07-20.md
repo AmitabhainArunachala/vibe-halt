@@ -14,23 +14,23 @@ allocation change.
 ## 2026-08-05 rebaseline — merged `main` at `63ccd32`
 
 This ledger is intentionally narrower than a percent-complete estimate. It
-changes sequencing but not the 12-week budget. It also proposes one material
-measurement-contract amendment for criterion 3: preserve the numeric threshold
+changes sequencing but not the 12-week budget. It also records one material
+measurement-contract amendment for criterion 3, ratified by human merge of
+PR #54 at commit `415b406`: preserve the numeric threshold
 (at least 80% over at least 25 real defects) while replacing its circular
 admitted-corpus denominator with a pre-registered holdout that retains misses.
 The target population remains real defects introduced by a disclosed
 AI-generated or coding-agent-authored PR/commit; mere later agent maintenance
-does not qualify an otherwise conventional defect. Human merge of this change
-ratifies the measurement amendment; until then, it is a proposal rather than
-current law.
+does not qualify an otherwise conventional defect. This amendment is current
+law.
 
 | # | week-12 criterion | current evidence | status |
 |---|---|---|---|
 | 1 | Tier-1 identity across 1,000 runs and two machines | workflow contract at `.github/workflows/verify.yml:394-493`; the exact merged `main` commit `63ccd32` passed [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578156), including the cross-OS aggregate | **MET for the pinned reference workload; recertify every combined head** |
-| 2 | publish Tier-2 divergence below 5% | current-tree command `make gate`; exact C5/C6 assertions at `scripts/gate.sh:104-190`; all-open ledger at `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33` | **MET narrowly at D2; never D1** |
+| 2 | publish Tier-2 divergence below 5% | current-tree command `make gate`; exact C5/C6 assertions in `scripts/gate.sh`; all-open ledger at `docs/specs/SANDBOX_CAPABILITY_ENVELOPE_V1.md:16-33` | **MET narrowly at D2; never D1** |
 | 3 | at least 80% recall on at least 25 real defects | the versioned holdout/dossier law and calibration fixtures are merged (`docs/specs/HOLDOUT_CONTRACT_V1.md`, `corpus/calibration/`), but no independently curated frozen `N >= 25` acceptance cohort exists | **OPEN** |
 | 4 | three previously unknown, human-confirmed bugs | `docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71` records zero | **OPEN — 0/3** |
-| 5 | one-command replay and median shrink at least 90% | bundle replay and capture-enabled demo shrink gates are `scripts/gate.sh:397-479`; representative median is not measured | **PARTIAL** |
+| 5 | one-command replay and median shrink at least 90% | bundle replay and capture-enabled demo shrink gates are in `scripts/gate.sh`; representative median is not measured | **PARTIAL** |
 | 6 | at least 1,000 Tier-1 universes/hour on the build box | no named build-box benchmark receipt certifies this threshold | **OPEN** |
 | 7 | one end-to-end `dharma_swarm` adapter receipt | a strict local Rust-backed client and fresh generic/cooperative reverification exist in `clients/python/vibe_halt/core/runner.py`; operation/feature negotiation, observed-target-revision binding, the `dharma_swarm` adapter, and a real receipt do not | **OPEN — local bridge slice implemented** |
 

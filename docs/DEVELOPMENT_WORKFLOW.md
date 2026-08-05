@@ -139,13 +139,11 @@ offline replay, emits Rust-computed executable metadata plus SHA-256 checksums,
 and creates a GitHub release. A release proves only those builds and checks at
 the tagged SHA; it is not a safety certificate.
 
-## Current critical path (2026-08-04)
+## Current critical path (2026-08-05)
 
 1. Issue #63 / this workflow implementation.
-2. Issue #61 / repair PR #57's unresolved cooperative-transport review debt.
-3. Human merge of corrected PR #57.
-4. Issue #60 / separately operator-authorized foreign-target confirmation or
+2. Issue #60 / separately operator-authorized foreign-target confirmation or
    predeclared null.
-5. Issues #59 and #64 / representative shrink and named-box throughput.
-6. Issue #62 / reconsider Truth Kernel PR #58 only after the Reality Bridge
+3. Issues #59 and #64 / representative shrink and named-box throughput.
+4. Issue #62 / reconsider Truth Kernel PR #58 only after the Reality Bridge
    terminal state.
