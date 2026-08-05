@@ -34,6 +34,16 @@ use crate::receipts::{parse_line, render_line, Val};
 
 pub const FINDING_BUNDLE_SCHEMA_V2: &str = "vh-finding-bundle-v2";
 pub const RUN_RECEIPTS_SCHEMA_V2: &str = "vh-run-receipts-v2";
+/// Independent allocation/work bound for newline-indexed bundle parsing.
+pub const MAX_BUNDLE_RECORDS: usize = 100_000;
+
+pub fn exceeds_bundle_record_bound(text: &str) -> bool {
+    text.bytes()
+        .filter(|byte| *byte == b'\n')
+        .take(MAX_BUNDLE_RECORDS + 1)
+        .count()
+        > MAX_BUNDLE_RECORDS
+}
 /// The trace chain hash is the frozen v0 FNV-1a-128 format — legacy,
 /// internal, never a cryptographic content identity (audit A.3).
 pub const TRACE_HASH_ALGORITHM: &str = "fnv1a-128-legacy";
@@ -246,6 +256,12 @@ impl FindingBundleV2 {
     /// Strict fail-closed parse. See the module doc for everything that
     /// is rejected.
     pub fn parse(text: &str) -> Result<FindingBundleV2, String> {
+        // Bound record-index allocation independently of the outer byte cap.
+        // Without this, a newline-dense 16 MiB file can expand into millions
+        // of `&str` entries before the schema rejects it.
+        if exceeds_bundle_record_bound(text) {
+            return Err("bundle exceeds the canonical record-count bound".into());
+        }
         // The digest is over exact bytes, so the line structure is
         // strict: newline-terminated records, no blank padding anywhere.
         let raw: Vec<&str> = text.split('\n').collect();
@@ -617,6 +633,14 @@ mod tests {
             assert_eq!(parsed, b);
             assert_eq!(parsed.to_ndjson(), text);
         }
+    }
+
+    #[test]
+    fn record_count_bound_is_exact_and_shared_with_the_writer() {
+        let exact = "{}\n".repeat(MAX_BUNDLE_RECORDS);
+        assert!(!exceeds_bundle_record_bound(&exact));
+        let over = format!("{exact}{{}}\n");
+        assert!(exceeds_bundle_record_bound(&over));
     }
 
     #[test]

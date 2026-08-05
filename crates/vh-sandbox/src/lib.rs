@@ -9,10 +9,12 @@
 //! `capability` (see [`capability`]) owns the sealed capability receipt, the
 //! exhaustive channel inventory, the exact termination taxonomy, and the
 //! raw-count divergence report. This file owns the actual subprocess
-//! boundary logic that produces those types: spawning, a bounded
-//! deadline with no unbounded wait, bounded output capture, and world
-//! binding (executable bytes when resolvable, target OS/arch, declared
-//! artifacts and input files).
+//! boundary logic that produces those types: spawning, deadline-polled
+//! execution, bounded retained-output readback, and world binding (executable bytes
+//! when resolvable, target OS/arch, declared artifacts and input files).
+//! Direct-child reap after kill is best effort and can remain inside an OS
+//! wait for an uninterruptible process; D2 makes no hard end-to-end latency
+//! or process-tree containment claim.
 //!
 //! Known, cited scope limits (not silently closed):
 //! - "initial filesystem/fixtures" binding is the freshly created empty
@@ -43,7 +45,7 @@ pub use cassette_v2::{
 };
 
 use std::collections::BTreeMap;
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -52,6 +54,301 @@ use vh_trace::Trace;
 pub const SANDBOX_SPEC_SCHEMA: &str = "vh-sandbox-spec-v2";
 pub const CASSETTE_SCHEMA: &str = "vh-cassette-v1";
 pub const RUN_RECORD_SCHEMA: &str = "vh-sandbox-run-v2";
+
+/// The one published maximum byte size for a cassette file or a
+/// child-visible request frame. Anything larger is rejected from its
+/// size — before parsing and before an attacker-sized allocation.
+pub const MAX_CASSETTE_BYTES: u64 = 1 << 20; // 1 MiB
+/// Maximum host file admitted by `declare_input_file`. Declared inputs are
+/// hashed before the execution deadline, so they must have their own hard
+/// boundary instead of relying on available memory or a blocking pathname.
+pub const MAX_INPUT_FILE_BYTES: u64 = 16 << 20; // 16 MiB
+/// Maximum executable image observed for launch identity. The OS loader
+/// remains an open D2 capability, but controller observation itself must not
+/// block on a FIFO or allocate an attacker-sized file.
+pub const MAX_EXECUTABLE_BYTES: u64 = 128 << 20; // 128 MiB
+/// Cooperative artifacts are derived from a bounded cassette response and
+/// carry the same one-mebibyte ceiling. Applying the limit at sandbox
+/// collection time prevents a child-controlled FIFO/device/symlink or huge
+/// file from reaching a later receipt layer first.
+pub const MAX_ARTIFACT_BYTES: u64 = MAX_CASSETTE_BYTES;
+/// Hard public bounds revalidated at the execution boundary even when callers
+/// mutate the public request structs instead of using their constructors.
+pub const MAX_SANDBOX_DEADLINE: Duration = Duration::from_secs(300);
+pub const MAX_CAPTURE_BYTES: usize = 16 << 20;
+pub const MAX_STDIN_BYTES: usize = 16 << 20;
+const MAX_SPEC_COLLECTION_ITEMS: usize = 1024;
+const MAX_SPEC_TEXT_BYTES: usize = 1 << 20;
+
+fn reject_link_or_traversal_components(path: &Path) -> Result<(), SandboxError> {
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return Err(SandboxError::BoundaryFile("path-traversal"));
+    }
+    let mut current = PathBuf::new();
+    for part in path.components() {
+        current.push(part.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                // macOS publishes `/tmp` and `/var` as system-owned aliases
+                // into `/private`. They are unavoidable roots for the host
+                // temp directory, not caller-planted receipt components.
+                let trusted_macos_alias = cfg!(target_os = "macos")
+                    && (current == Path::new("/tmp") || current == Path::new("/var"));
+                if !trusted_macos_alias {
+                    return Err(SandboxError::BoundaryFile("symlink"));
+                }
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Err(SandboxError::BoundaryFile("missing-component"));
+            }
+            Err(_) => return Err(SandboxError::BoundaryFile("path-inspection")),
+        }
+    }
+    Ok(())
+}
+
+/// Create a workspace one component at a time, refusing every pre-existing
+/// symlink before the first write through it. This avoids `create_dir_all`'s
+/// symlink-following behavior. A hostile same-user replacement between a
+/// check and the next syscall remains represented by the open D2 filesystem
+/// channel; safe Rust has no portable `openat` directory-handle API.
+fn prepare_workspace_directory(path: &Path) -> Result<(), SandboxError> {
+    if path.as_os_str().is_empty()
+        || path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        return Err(SandboxError::BoundaryFile("path-traversal"));
+    }
+    let mut current = PathBuf::new();
+    for part in path.components() {
+        current.push(part.as_os_str());
+        match std::fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                let trusted_macos_alias = cfg!(target_os = "macos")
+                    && (current == Path::new("/tmp") || current == Path::new("/var"));
+                if !trusted_macos_alias {
+                    return Err(SandboxError::BoundaryFile("symlink"));
+                }
+            }
+            Ok(metadata) if metadata.is_dir() => {}
+            Ok(_) => return Err(SandboxError::BoundaryFile("non-directory-component")),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                create_private_directory(&current)
+                    .map_err(|_| SandboxError::BoundaryFile("workspace-create-refused"))?;
+            }
+            Err(_) => return Err(SandboxError::BoundaryFile("path-inspection")),
+        }
+    }
+    reject_link_or_traversal_components(path)
+}
+
+#[cfg(unix)]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700).create(path)
+}
+
+#[cfg(not(unix))]
+fn create_private_directory(path: &Path) -> std::io::Result<()> {
+    std::fs::create_dir(path)
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+const BOUNDARY_OPEN_FLAGS: i32 = 0x20000 | 0x800; // O_NOFOLLOW | O_NONBLOCK
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
+const BOUNDARY_OPEN_FLAGS: i32 = 0x100 | 0x4; // O_NOFOLLOW | O_NONBLOCK
+
+#[cfg(unix)]
+fn open_boundary_file(path: &Path) -> Result<std::fs::File, SandboxError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    #[cfg(not(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    )))]
+    {
+        let _ = path;
+        return Err(SandboxError::BoundaryFile("unsupported-platform"));
+    }
+
+    #[cfg(any(
+        target_os = "linux",
+        target_os = "android",
+        target_os = "macos",
+        target_os = "ios",
+        target_os = "freebsd",
+        target_os = "openbsd",
+        target_os = "netbsd",
+        target_os = "dragonfly"
+    ))]
+    std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(BOUNDARY_OPEN_FLAGS)
+        .open(path)
+        .map_err(|_| SandboxError::BoundaryFile("open-refused"))
+}
+
+/// Open a controller-owned subprocess capture file and retain that exact
+/// regular-file handle through collection. The child can unlink or replace
+/// the pathname in its writable workspace, but it cannot redirect the
+/// controller's already-open handle to a FIFO, device, or symlink target.
+#[cfg(unix)]
+fn create_private_io_file(path: &Path) -> Result<std::fs::File, SandboxError> {
+    use std::os::unix::fs::OpenOptionsExt;
+
+    if let Some(parent) = path.parent() {
+        reject_link_or_traversal_components(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .custom_flags(BOUNDARY_OPEN_FLAGS)
+        .open(path)
+        .map_err(|_| SandboxError::BoundaryFile("capture-open-refused"))?;
+    if !file
+        .metadata()
+        .map_err(|_| SandboxError::BoundaryFile("capture-metadata"))?
+        .is_file()
+    {
+        return Err(SandboxError::BoundaryFile("capture-non-regular-file"));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn create_private_io_file(path: &Path) -> Result<std::fs::File, SandboxError> {
+    if let Some(parent) = path.parent() {
+        reject_link_or_traversal_components(parent)?;
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .open(path)
+        .map_err(|_| SandboxError::BoundaryFile("capture-open-refused"))?;
+    if !file
+        .metadata()
+        .map_err(|_| SandboxError::BoundaryFile("capture-metadata"))?
+        .is_file()
+    {
+        return Err(SandboxError::BoundaryFile("capture-non-regular-file"));
+    }
+    Ok(file)
+}
+
+#[cfg(not(unix))]
+fn open_boundary_file(path: &Path) -> Result<std::fs::File, SandboxError> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|_| SandboxError::BoundaryFile("open-refused"))
+}
+
+/// Read a file that crosses a trust boundary (cassette bytes, child
+/// request frames) with the size enforced BEFORE parsing and before any
+/// unbounded allocation: the opened file's metadata is checked first
+/// (a sparse oversize file is rejected without reading), then the read
+/// goes through a bounded reader of at most `max + 1` bytes so a file
+/// that grows between the metadata check and the read still overflows
+/// into a typed rejection rather than memory.
+pub fn read_bounded_file(path: &Path, max: u64) -> Result<Vec<u8>, SandboxError> {
+    use std::io::Read;
+    reject_link_or_traversal_components(path)?;
+    let file = open_boundary_file(path)?;
+    // Metadata is taken from the opened handle, never from a separately
+    // resolved pathname. O_NONBLOCK makes opening a FIFO non-blocking; the
+    // regular-file check then rejects it before any read.
+    let metadata = file
+        .metadata()
+        .map_err(|_| SandboxError::BoundaryFile("metadata"))?;
+    if !metadata.is_file() {
+        return Err(SandboxError::BoundaryFile("non-regular-file"));
+    }
+    if metadata.len() > max {
+        return Err(SandboxError::Oversized {
+            max,
+            actual: metadata.len(),
+        });
+    }
+    let mut buf = Vec::new();
+    file.take(max.saturating_add(1))
+        .read_to_end(&mut buf)
+        .map_err(SandboxError::Io)?;
+    if buf.len() as u64 > max {
+        return Err(SandboxError::Oversized {
+            max,
+            actual: buf.len() as u64,
+        });
+    }
+    Ok(buf)
+}
+
+/// Observe an executable through the same symlink-following semantics the OS
+/// loader uses, while retaining the opened-handle regular-file and size
+/// bounds. This intentionally differs from receipt/input reads, which reject
+/// links: `/bin/sh` and versioned interpreter links are valid launch paths.
+#[cfg(unix)]
+fn read_bounded_executable(path: &Path, max: u64) -> Result<Vec<u8>, SandboxError> {
+    use std::io::Read;
+    use std::os::unix::fs::OpenOptionsExt;
+
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(BOUNDARY_OPEN_FLAGS & !0x20000 & !0x100)
+        .open(path)
+        .map_err(|_| SandboxError::BoundaryFile("executable-open-refused"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| SandboxError::BoundaryFile("executable-metadata"))?;
+    if !metadata.is_file() {
+        return Err(SandboxError::BoundaryFile("executable-non-regular-file"));
+    }
+    if metadata.len() > max {
+        return Err(SandboxError::Oversized {
+            max,
+            actual: metadata.len(),
+        });
+    }
+    let mut bytes = Vec::new();
+    file.take(max.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(SandboxError::Io)?;
+    if bytes.len() as u64 > max {
+        return Err(SandboxError::Oversized {
+            max,
+            actual: bytes.len() as u64,
+        });
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(unix))]
+fn read_bounded_executable(path: &Path, max: u64) -> Result<Vec<u8>, SandboxError> {
+    read_bounded_file(path, max)
+}
 
 /// Compile-time target triple pieces used as boundary-wide world
 /// identity. This is the *build* target, not a live `uname` probe: this
@@ -99,8 +396,10 @@ impl ArtifactSpec {
 }
 
 /// Explicit controller-configured execution budget. Every safe-runner
-/// execution has one; there is no unbounded wait. `max_output_bytes`
-/// bounds each of stdout/stderr independently.
+/// execution has one. It bounds live execution polling before kill, not the
+/// OS's subsequent direct-child reap latency. `max_output_bytes` bounds the
+/// bytes retained from each of stdout/stderr independently, not temporary
+/// capture-file growth while the child is live.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SandboxBudget {
     pub deadline: Duration,
@@ -114,14 +413,24 @@ impl SandboxBudget {
     pub fn new(deadline: Duration, max_output_bytes: usize) -> Result<Self, SandboxError> {
         if deadline.is_zero() {
             return Err(SandboxError::InvalidSpec(
-                "sandbox budget deadline must be nonzero — an unbounded wait is never permitted"
-                    .into(),
+                "sandbox live-execution deadline must be nonzero".into(),
             ));
         }
         if max_output_bytes == 0 {
             return Err(SandboxError::InvalidSpec(
                 "sandbox budget max_output_bytes must be nonzero".into(),
             ));
+        }
+        if deadline > MAX_SANDBOX_DEADLINE {
+            return Err(SandboxError::InvalidSpec(format!(
+                "sandbox budget deadline exceeds the {}s hard bound",
+                MAX_SANDBOX_DEADLINE.as_secs()
+            )));
+        }
+        if max_output_bytes > MAX_CAPTURE_BYTES {
+            return Err(SandboxError::InvalidSpec(format!(
+                "sandbox budget max_output_bytes exceeds the {MAX_CAPTURE_BYTES}-byte retained-output hard bound"
+            )));
         }
         Ok(Self {
             deadline,
@@ -153,6 +462,11 @@ pub struct SandboxSpec {
     /// Source/script and lockfile/dependency inputs bound into identity at
     /// declare time: path -> content digest.
     pub input_files: BTreeMap<String, String>,
+    /// Inputs bound under a STABLE LOGICAL NAME with content binding, for
+    /// material whose absolute staging path must never enter deterministic
+    /// identity (e.g. a per-invocation unique workspace): logical name ->
+    /// content digest.
+    pub input_logical_files: BTreeMap<String, String>,
     pub budget: SandboxBudget,
     /// Bound when a real child-visible cassette transport (C5) supplies
     /// one; `None` here means "no cassette used", which is itself part of
@@ -180,6 +494,7 @@ impl SandboxSpec {
             env,
             artifacts: Vec::new(),
             input_files: BTreeMap::new(),
+            input_logical_files: BTreeMap::new(),
             budget: SandboxBudget::default(),
             cassette_identity: None,
             supervisor_identity: None,
@@ -222,9 +537,20 @@ impl SandboxSpec {
     }
 
     pub fn declare_artifact(mut self, path: impl Into<String>) -> Result<Self, SandboxError> {
-        self.artifacts.push(ArtifactSpec::new(path)?);
+        let artifact = ArtifactSpec::new(path)?;
+        if self
+            .artifacts
+            .iter()
+            .any(|existing| existing.path == artifact.path)
+            || self.input_logical_files.contains_key(&artifact.path)
+        {
+            return Err(SandboxError::InvalidSpec(format!(
+                "duplicate or colliding declared path {:?}",
+                artifact.path
+            )));
+        }
+        self.artifacts.push(artifact);
         self.artifacts.sort_by(|a, b| a.path.cmp(&b.path));
-        self.artifacts.dedup_by(|a, b| a.path == b.path);
         Ok(self)
     }
 
@@ -233,12 +559,41 @@ impl SandboxSpec {
     /// the controller has available, not an output).
     pub fn declare_input_file(mut self, path: impl AsRef<Path>) -> Result<Self, SandboxError> {
         let path_ref = path.as_ref();
-        let bytes = std::fs::read(path_ref).map_err(|source| SandboxError::ArtifactRead {
-            path: path_ref.display().to_string(),
-            source,
-        })?;
-        self.input_files
-            .insert(path_ref.display().to_string(), fnv_hex(&bytes));
+        let bytes = read_bounded_file(path_ref, MAX_INPUT_FILE_BYTES)?;
+        let key = path_ref.display().to_string();
+        if self.input_files.contains_key(&key) {
+            return Err(SandboxError::InvalidSpec(format!(
+                "duplicate declared input path {key:?}"
+            )));
+        }
+        // Physical input identity is legacy FNV under the frozen v2 schema;
+        // harden how bytes are acquired without silently changing existing
+        // receipt identities.
+        self.input_files.insert(key, fnv_hex(&bytes));
+        Ok(self)
+    }
+
+    /// Bind input CONTENT under a stable logical name. Unlike
+    /// [`SandboxSpec::declare_input_file`], no filesystem path enters
+    /// identity, so an invocation-isolated workspace with a unique
+    /// absolute staging path still yields the same deterministic
+    /// identity for the same logical input bytes.
+    pub fn declare_input_bytes(
+        mut self,
+        logical_name: impl Into<String>,
+        bytes: &[u8],
+    ) -> Result<Self, SandboxError> {
+        let name = logical_name.into();
+        validate_relative_path(&name)?;
+        if self.input_logical_files.contains_key(&name)
+            || self.artifacts.iter().any(|artifact| artifact.path == name)
+        {
+            return Err(SandboxError::InvalidSpec(format!(
+                "duplicate or colliding declared path {name:?}"
+            )));
+        }
+        self.input_logical_files
+            .insert(name, vh_digest::sha256_hex(bytes));
         Ok(self)
     }
 
@@ -259,6 +614,9 @@ impl SandboxSpec {
         }
         for (path, digest) in &self.input_files {
             t.record(0, "input-file", &format!("{path}={digest}"));
+        }
+        for (name, digest) in &self.input_logical_files {
+            t.record(0, "input-logical", &format!("{name}={digest}"));
         }
         t.record(
             0,
@@ -464,6 +822,13 @@ pub fn run_once_with_cassette(
     workspace: &Path,
     cassette: &cassette_v2::CassetteV2,
 ) -> Result<RunRecord, SandboxError> {
+    let cassette_bytes = cassette.file_bytes();
+    if cassette_bytes.len() as u64 > MAX_CASSETTE_BYTES {
+        return Err(SandboxError::Oversized {
+            max: MAX_CASSETTE_BYTES,
+            actual: cassette_bytes.len() as u64,
+        });
+    }
     match spec.cassette_identity.as_deref() {
         Some(bound) if bound == cassette.identity() => {}
         other => {
@@ -478,6 +843,20 @@ pub fn run_once_with_cassette(
     run_once_inner(spec, workspace, Some(cassette))
 }
 
+/// Own the sandbox's reserved transport directory for exactly one run. A
+/// fixed child-visible name is part of the cassette protocol, so exclusivity
+/// plus scoped cleanup prevents stale files from a previous run from becoming
+/// inputs to the next one.
+struct IoDirectoryLease {
+    path: PathBuf,
+}
+
+impl Drop for IoDirectoryLease {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.path);
+    }
+}
+
 /// Relative mailbox directory (under the child's cwd) for the
 /// `vh-cassette-transport-v1` frame files. A protocol constant, not
 /// configuration: the child SDK and broker agree on it by contract.
@@ -488,9 +867,58 @@ fn run_once_inner(
     workspace: &Path,
     cassette: Option<&cassette_v2::CassetteV2>,
 ) -> Result<RunRecord, SandboxError> {
-    std::fs::create_dir_all(workspace).map_err(SandboxError::Io)?;
+    validate_spec_at_run_boundary(spec)?;
+    if cassette.is_none() && spec.cassette_identity.is_some() {
+        return Err(SandboxError::InvalidSpec(
+            "spec binds a cassette identity but no cassette transport was supplied".into(),
+        ));
+    }
+
+    // Physical inputs are a live precondition, not a declare-time claim. A
+    // caller can mutate or replace them after `declare_input_file`; observe the
+    // same no-link regular bytes again immediately before any workspace write
+    // or child spawn and require the frozen legacy digest.
+    for (path, expected_digest) in &spec.input_files {
+        let bytes = read_bounded_file(Path::new(path), MAX_INPUT_FILE_BYTES).map_err(|error| {
+            SandboxError::InputMismatch {
+                path: path.clone(),
+                category: error.category(),
+            }
+        })?;
+        if fnv_hex(&bytes) != *expected_digest {
+            return Err(SandboxError::InputMismatch {
+                path: path.clone(),
+                category: "digest-mismatch",
+            });
+        }
+    }
+
+    // Logical inputs are not merely declarative identity fields: observe the
+    // regular, no-link staged file immediately before preparing/spawning the
+    // child and require its bytes to match the bound digest.
+    for (name, expected_digest) in &spec.input_logical_files {
+        let bytes =
+            read_bounded_file(&workspace.join(name), MAX_CASSETTE_BYTES).map_err(|error| {
+                SandboxError::InputMismatch {
+                    path: name.clone(),
+                    category: error.category(),
+                }
+            })?;
+        if vh_digest::sha256_hex(&bytes) != *expected_digest {
+            return Err(SandboxError::InputMismatch {
+                path: name.clone(),
+                category: "digest-mismatch",
+            });
+        }
+    }
+
+    prepare_workspace_directory(workspace)?;
     let io_dir = workspace.join(".vh-sandbox-io");
-    std::fs::create_dir_all(&io_dir).map_err(SandboxError::Io)?;
+    create_private_directory(&io_dir)
+        .map_err(|_| SandboxError::BoundaryFile("io-directory-not-exclusive"))?;
+    let _io_lease = IoDirectoryLease {
+        path: io_dir.clone(),
+    };
     let stdin_path = io_dir.join("stdin.raw");
     let stdout_path = io_dir.join("stdout.raw");
     let stderr_path = io_dir.join("stderr.raw");
@@ -500,8 +928,15 @@ fn run_once_inner(
     // full pipe, preventing the deadline loop from ever running. A prepared
     // regular file preserves exact input bytes and EOF without any live
     // controller write for the child to backpressure.
-    std::fs::write(&stdin_path, &spec.stdin).map_err(SandboxError::Io)?;
-    let stdin_file = std::fs::File::open(&stdin_path).map_err(SandboxError::Io)?;
+    use std::io::Write;
+    let mut stdin_writer = create_private_io_file(&stdin_path)?;
+    stdin_writer
+        .write_all(&spec.stdin)
+        .map_err(SandboxError::Io)?;
+    stdin_writer.flush().map_err(SandboxError::Io)?;
+    stdin_writer.sync_all().map_err(SandboxError::Io)?;
+    let stdin_file = open_boundary_file(&stdin_path)?;
+    drop(stdin_writer);
     // Redirect to files rather than piping stdout/stderr: reading two
     // live pipes concurrently without deadlocking needs either OS-level
     // threads (denied even on this boundary crate — parallelism stays at
@@ -509,8 +944,10 @@ fn run_once_inner(
     // platform-specific extension module for that is not part of this
     // crate's exemption). Files sidestep the deadlock entirely and let
     // the bounded wait loop below own the deadline.
-    let stdout_file = std::fs::File::create(&stdout_path).map_err(SandboxError::Io)?;
-    let stderr_file = std::fs::File::create(&stderr_path).map_err(SandboxError::Io)?;
+    let stdout_file = create_private_io_file(&stdout_path)?;
+    let stderr_file = create_private_io_file(&stderr_path)?;
+    let stdout_child = stdout_file.try_clone().map_err(SandboxError::Io)?;
+    let stderr_child = stderr_file.try_clone().map_err(SandboxError::Io)?;
 
     // Observe executable bytes before spawn, not after the child has had an
     // opportunity to replace its own path. This binds the run to the
@@ -525,14 +962,15 @@ fn run_once_inner(
         .env_clear()
         .envs(spec.env.iter())
         .stdin(Stdio::from(stdin_file))
-        .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file));
+        .stdout(Stdio::from(stdout_child))
+        .stderr(Stdio::from(stderr_child));
 
     let mut broker = match cassette {
         None => None,
         Some(cassette) => {
             let llm_dir = workspace.join(LLM_MAILBOX_DIR);
-            std::fs::create_dir_all(&llm_dir).map_err(SandboxError::Io)?;
+            create_private_directory(&llm_dir)
+                .map_err(|_| SandboxError::BoundaryFile("mailbox-directory-not-exclusive"))?;
             Some(BrokerState::new(llm_dir, cassette))
         }
     };
@@ -541,7 +979,14 @@ fn run_once_inner(
     // Final drain: a request frame written just before child exit still
     // gets classified (served or tainted), never silently dropped.
     if let Some(broker) = broker.as_mut() {
-        broker.service();
+        // The child is reaped, so drain only the finite declared tape plus
+        // one extra slot that proves an out-of-tape request is tainted.
+        for _ in 0..=broker.cassette.len() {
+            broker.service();
+            if broker.taint.is_some() {
+                break;
+            }
+        }
     }
     let transport = broker.map(BrokerState::into_receipt);
     let wall_time = started.elapsed();
@@ -554,29 +999,27 @@ fn run_once_inner(
         (empty_stream(), empty_stream())
     } else {
         (
-            read_bounded_stream(&stdout_path, spec.budget.max_output_bytes)?,
-            read_bounded_stream(&stderr_path, spec.budget.max_output_bytes)?,
+            read_bounded_stream(stdout_file, spec.budget.max_output_bytes)?,
+            read_bounded_stream(stderr_file, spec.budget.max_output_bytes)?,
         )
     };
 
     // Declared artifacts are a postcondition of the target actually
     // running to completion or a signal; a killed-by-deadline or
-    // never-spawned run cannot be expected to have produced them, so we
-    // do not manufacture an artifact-read error that would mask the real
-    // termination finding. The same masking law applies to a TAINTED
-    // transport (C5): a child that aborted on a cassette miss cannot be
-    // expected to have written its outputs — the taint is the finding,
-    // and the run is already UNCHECKED.
-    let transport_tainted = transport
-        .as_ref()
-        .is_some_and(cassette_v2::TransportReceipt::tainted);
-    let artifacts = if ran_to_completion_or_signal && !transport_tainted {
+    // never-spawned run cannot be expected to have produced them. A
+    // completed process, however, must satisfy every declaration even on
+    // nonzero exit. Cooperative workloads that intentionally inspect a
+    // failure therefore precreate their deterministic artifact rather than
+    // weakening this global sandbox law.
+    let artifacts = if ran_to_completion_or_signal {
         let mut artifacts = BTreeMap::new();
         for artifact in &spec.artifacts {
             let path = workspace.join(&artifact.path);
-            let bytes = std::fs::read(&path).map_err(|source| SandboxError::ArtifactRead {
-                path: artifact.path.clone(),
-                source,
+            let bytes = read_bounded_file(&path, MAX_ARTIFACT_BYTES).map_err(|error| {
+                SandboxError::ArtifactBoundary {
+                    path: artifact.path.clone(),
+                    category: error.category(),
+                }
             })?;
             artifacts.insert(artifact.path.clone(), fnv_hex(&bytes));
         }
@@ -599,6 +1042,108 @@ fn run_once_inner(
         transport,
         wall_time,
     })
+}
+
+fn validate_spec_at_run_boundary(spec: &SandboxSpec) -> Result<(), SandboxError> {
+    if spec.argv.is_empty() || spec.argv.iter().any(|value| value.is_empty()) {
+        return Err(SandboxError::InvalidSpec(
+            "argv must contain at least one non-empty element".into(),
+        ));
+    }
+    SandboxBudget::new(spec.budget.deadline, spec.budget.max_output_bytes)?;
+    if spec.stdin.len() > MAX_STDIN_BYTES {
+        return Err(SandboxError::InvalidSpec(format!(
+            "stdin exceeds the {MAX_STDIN_BYTES}-byte hard bound"
+        )));
+    }
+    if spec.argv.len() > MAX_SPEC_COLLECTION_ITEMS
+        || spec.env.len() > MAX_SPEC_COLLECTION_ITEMS
+        || spec.artifacts.len() > MAX_SPEC_COLLECTION_ITEMS
+        || spec.input_files.len() > MAX_SPEC_COLLECTION_ITEMS
+        || spec.input_logical_files.len() > MAX_SPEC_COLLECTION_ITEMS
+    {
+        return Err(SandboxError::InvalidSpec(
+            "sandbox spec exceeds the collection-item hard bound".into(),
+        ));
+    }
+    let mut text_bytes = 0usize;
+    for argument in &spec.argv {
+        if argument.contains('\0') {
+            return Err(SandboxError::InvalidSpec("argv contains a nul byte".into()));
+        }
+        text_bytes = text_bytes.saturating_add(argument.len());
+    }
+    for (key, value) in &spec.env {
+        if key.is_empty() || key.contains('=') || key.contains('\0') || value.contains('\0') {
+            return Err(SandboxError::InvalidSpec(
+                "environment contains an invalid key or nul byte".into(),
+            ));
+        }
+        text_bytes = text_bytes
+            .saturating_add(key.len())
+            .saturating_add(value.len());
+    }
+    let mut declared_paths = std::collections::BTreeSet::new();
+    for artifact in &spec.artifacts {
+        validate_relative_path(&artifact.path)?;
+        if !declared_paths.insert(artifact.path.as_str()) {
+            return Err(SandboxError::InvalidSpec(
+                "duplicate declared artifact path".into(),
+            ));
+        }
+        text_bytes = text_bytes.saturating_add(artifact.path.len());
+    }
+    for (name, digest) in &spec.input_logical_files {
+        validate_relative_path(name)?;
+        if !declared_paths.insert(name.as_str()) {
+            return Err(SandboxError::InvalidSpec(
+                "colliding logical input/artifact path".into(),
+            ));
+        }
+        if digest.len() != 64
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || digest.bytes().any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(SandboxError::InvalidSpec(
+                "logical input digest must be lowercase SHA-256".into(),
+            ));
+        }
+        text_bytes = text_bytes
+            .saturating_add(name.len())
+            .saturating_add(digest.len());
+    }
+    for (path, digest) in &spec.input_files {
+        if path.is_empty()
+            || path.contains('\0')
+            || digest.len() != 32
+            || !digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+            || digest.bytes().any(|byte| byte.is_ascii_uppercase())
+        {
+            return Err(SandboxError::InvalidSpec(
+                "physical input path/digest is malformed".into(),
+            ));
+        }
+        text_bytes = text_bytes
+            .saturating_add(path.len())
+            .saturating_add(digest.len());
+    }
+    for identity in [&spec.cassette_identity, &spec.supervisor_identity]
+        .into_iter()
+        .flatten()
+    {
+        if identity.is_empty() || identity.contains('\0') {
+            return Err(SandboxError::InvalidSpec(
+                "bound identity must be non-empty and nul-free".into(),
+            ));
+        }
+        text_bytes = text_bytes.saturating_add(identity.len());
+    }
+    if text_bytes > MAX_SPEC_TEXT_BYTES {
+        return Err(SandboxError::InvalidSpec(format!(
+            "sandbox spec text exceeds the {MAX_SPEC_TEXT_BYTES}-byte hard bound"
+        )));
+    }
+    Ok(())
 }
 
 /// Single-threaded cassette broker: serviced from inside the bounded
@@ -635,63 +1180,160 @@ impl<'a> BrokerState<'a> {
         }
     }
 
-    /// Service every currently visible request frame in sequence order.
-    /// Best-effort I/O: a broker-side I/O failure is itself a taint —
-    /// the transcript can no longer claim completeness.
+    /// Service at most one currently visible request frame. Returning after
+    /// one frame guarantees the owning wait loop re-checks its execution
+    /// deadline between requests; after any taint, no further attacker-made
+    /// path is inspected. A broker-side I/O failure is itself a taint.
     fn service(&mut self) {
-        loop {
-            let req_path = self.dir.join(format!("req-{}", self.next_seq));
-            if !req_path.exists() {
-                break;
+        if self.taint.is_some() {
+            return;
+        }
+        let req_path = self.dir.join(format!("req-{}", self.next_seq));
+        match std::fs::symlink_metadata(&req_path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                self.taint_future_or_malformed_request();
+                return;
             }
-            let bytes = match std::fs::read(&req_path) {
-                Ok(bytes) => bytes,
-                Err(e) => {
-                    self.set_taint(format!("unreadable request {}: {e}", self.next_seq));
-                    break;
-                }
-            };
-            let reply: Vec<u8> = match cassette_v2::LlmRequestV2::parse(&bytes) {
-                Err(e) => {
-                    self.set_taint(format!("malformed request {}: {e}", self.next_seq));
-                    b"transport-error malformed\n".to_vec()
-                }
-                Ok(request) => {
-                    let digest = request.digest();
-                    match self.cassette.entry(self.next_seq) {
-                        None => {
+            Err(_) => {
+                self.set_taint(format!("unreadable request {}: metadata", self.next_seq));
+                return;
+            }
+            Ok(_) => {}
+        }
+        let bytes = match read_bounded_file(&req_path, MAX_CASSETTE_BYTES) {
+            Ok(bytes) => bytes,
+            Err(SandboxError::Oversized { max, .. }) => {
+                self.set_taint(format!(
+                    "request {} exceeds the {}-byte bound",
+                    self.next_seq, max
+                ));
+                return;
+            }
+            Err(e) => {
+                self.set_taint(format!(
+                    "unreadable request {}: {}",
+                    self.next_seq,
+                    e.category()
+                ));
+                return;
+            }
+        };
+        let mut served_digest: Option<String> = None;
+        let reply: Vec<u8> = match cassette_v2::LlmRequestV2::parse_detailed(&bytes) {
+            Err(e) => {
+                // Redacted category only: the frame crosses a trust
+                // boundary and may carry attacker-controlled bytes.
+                self.set_taint(format!(
+                    "malformed request {}: {}",
+                    self.next_seq,
+                    e.category()
+                ));
+                b"transport-error malformed\n".to_vec()
+            }
+            Ok(request) if request.canonical_bytes() != bytes => {
+                self.set_taint(format!("noncanonical request {}", self.next_seq));
+                b"transport-error noncanonical\n".to_vec()
+            }
+            Ok(request) => {
+                let digest = request.digest();
+                match self.cassette.entry(self.next_seq) {
+                    None => {
+                        self.set_taint(format!(
+                            "request {} beyond the recorded tape (digest {digest})",
+                            self.next_seq
+                        ));
+                        format!("transport-error miss {digest}\n").into_bytes()
+                    }
+                    Some((recorded, entry)) => {
+                        if recorded.digest() == digest {
+                            served_digest = Some(digest);
+                            entry.response_frame()
+                        } else {
                             self.set_taint(format!(
-                                "request {} beyond the recorded tape (digest {digest})",
-                                self.next_seq
+                                "request {} digest {digest} does not match recorded {}",
+                                self.next_seq,
+                                recorded.digest()
                             ));
                             format!("transport-error miss {digest}\n").into_bytes()
                         }
-                        Some((recorded, entry)) => {
-                            if recorded.digest() == digest {
-                                self.served.push(digest);
-                                entry.response_frame()
-                            } else {
-                                self.set_taint(format!(
-                                    "request {} digest {digest} does not match recorded {}",
-                                    self.next_seq,
-                                    recorded.digest()
-                                ));
-                                format!("transport-error miss {digest}\n").into_bytes()
-                            }
-                        }
                     }
                 }
-            };
-            let tmp = self.dir.join(format!("resp-{}.tmp", self.next_seq));
-            let final_path = self.dir.join(format!("resp-{}", self.next_seq));
-            let wrote =
-                std::fs::write(&tmp, &reply).and_then(|()| std::fs::rename(&tmp, &final_path));
-            if let Err(e) = wrote {
-                self.set_taint(format!("cannot answer request {}: {e}", self.next_seq));
-                break;
             }
-            self.next_seq += 1;
+        };
+        if let Err(category) = self.publish_response(&reply) {
+            self.set_taint(format!(
+                "cannot answer request {}: {category}",
+                self.next_seq
+            ));
+            return;
         }
+        if let Some(digest) = served_digest {
+            self.served.push(digest);
+        }
+        self.next_seq += 1;
+    }
+
+    fn taint_future_or_malformed_request(&mut self) {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(_) => {
+                self.set_taint("cannot enumerate request mailbox".into());
+                return;
+            }
+        };
+        let entry_bound = self.cassette.len().saturating_mul(2).saturating_add(4);
+        for (index, entry) in entries.enumerate() {
+            if index >= entry_bound {
+                self.set_taint("request mailbox exceeds the entry-count bound".into());
+                return;
+            }
+            let Ok(entry) = entry else {
+                self.set_taint("cannot enumerate request mailbox entry".into());
+                return;
+            };
+            let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+                self.set_taint("request mailbox contains a non-UTF-8 entry".into());
+                return;
+            };
+            let Some(suffix) = name.strip_prefix("req-") else {
+                continue;
+            };
+            if suffix.ends_with(".tmp") {
+                continue;
+            }
+            match suffix.parse::<usize>() {
+                Ok(sequence) if sequence <= self.next_seq => {}
+                Ok(_) => {
+                    self.set_taint(format!(
+                        "out-of-sequence request visible before {}",
+                        self.next_seq
+                    ));
+                    return;
+                }
+                Err(_) => {
+                    self.set_taint("malformed request filename".into());
+                    return;
+                }
+            }
+        }
+    }
+
+    fn publish_response(&self, reply: &[u8]) -> Result<(), &'static str> {
+        use std::io::Write;
+
+        let tmp = self.dir.join(format!("resp-{}.tmp", self.next_seq));
+        let final_path = self.dir.join(format!("resp-{}", self.next_seq));
+        let mut file = create_private_io_file(&tmp).map_err(|_| "temp-create-refused")?;
+        file.write_all(reply).map_err(|_| "temp-write")?;
+        file.flush().map_err(|_| "temp-flush")?;
+        std::fs::hard_link(&tmp, &final_path).map_err(|_| "final-exists-or-link-failed")?;
+        let observed = read_bounded_file(&final_path, MAX_CASSETTE_BYTES)
+            .map_err(|_| "published-read-refused")?;
+        if observed != reply {
+            return Err("published-byte-mismatch");
+        }
+        std::fs::remove_file(&tmp).map_err(|_| "temp-cleanup")?;
+        Ok(())
     }
 
     fn into_receipt(self) -> cassette_v2::TransportReceipt {
@@ -738,7 +1380,18 @@ fn execute_bounded(
     };
 
     loop {
-        match child.try_wait().map_err(SandboxError::Io)? {
+        let status = match child.try_wait() {
+            Ok(status) => status,
+            Err(error) => {
+                // Once spawn succeeds every return path makes a best-effort
+                // kill and reap. Do not let a transient observation error drop
+                // a live Child handle without cleanup.
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(SandboxError::Io(error));
+            }
+        };
+        match status {
             Some(status) => {
                 return Ok((
                     classify_exit_status(&status),
@@ -747,13 +1400,21 @@ fn execute_bounded(
             }
             None => {
                 if started.elapsed() >= budget.deadline {
-                    child.kill().map_err(SandboxError::Io)?;
+                    let kill_error = child.kill().err();
                     let process_tree = match child.wait() {
                         Ok(_) => ProcessTreeState::DirectChildReaped,
                         Err(e) => ProcessTreeState::DirectChildReapFailed {
                             message: e.to_string(),
                         },
                     };
+                    if let Some(error) = kill_error {
+                        // `wait` above still reaps an already-exited child. If
+                        // kill genuinely failed while it remained live, the
+                        // wait owns that direct child rather than abandoning it.
+                        if !matches!(process_tree, ProcessTreeState::DirectChildReaped) {
+                            return Err(SandboxError::Io(error));
+                        }
+                    }
                     return Ok((TerminationOutcome::TimedOut, process_tree));
                 }
                 // The cassette broker (C5) is serviced from THIS loop:
@@ -825,14 +1486,28 @@ fn classify_exit_status(status: &std::process::ExitStatus) -> TerminationOutcome
 /// Read a subprocess output stream bounded to `cap` bytes. `byte_len` in
 /// the result is the true on-disk length even when more than `cap` bytes
 /// were written; only the retained prefix is ever read into memory.
-fn read_bounded_stream(path: &Path, cap: usize) -> Result<StreamObservation, SandboxError> {
-    use std::io::Read;
-    let byte_len = std::fs::metadata(path).map_err(SandboxError::Io)?.len();
-    let file = std::fs::File::open(path).map_err(SandboxError::Io)?;
+fn read_bounded_stream(
+    mut file: std::fs::File,
+    cap: usize,
+) -> Result<StreamObservation, SandboxError> {
+    use std::io::{Read, Seek, SeekFrom};
+    let metadata = file.metadata().map_err(SandboxError::Io)?;
+    if !metadata.is_file() {
+        return Err(SandboxError::BoundaryFile("capture-non-regular-file"));
+    }
+    let initial_len = metadata.len();
+    file.seek(SeekFrom::Start(0)).map_err(SandboxError::Io)?;
     let mut buf = Vec::new();
-    file.take(cap as u64)
+    (&mut file)
+        .take((cap as u64).saturating_add(1))
         .read_to_end(&mut buf)
         .map_err(SandboxError::Io)?;
+    let observed_len = buf.len() as u64;
+    let final_len = file.metadata().map_err(SandboxError::Io)?.len();
+    let byte_len = initial_len.max(final_len).max(observed_len);
+    if buf.len() > cap {
+        buf.truncate(cap);
+    }
     Ok(StreamObservation {
         digest: fnv_hex(&buf),
         byte_len,
@@ -840,21 +1515,16 @@ fn read_bounded_stream(path: &Path, cap: usize) -> Result<StreamObservation, San
     })
 }
 
-/// Resolve `argv[0]` to a concrete file and hash its bytes immediately
-/// before spawn when the controller can do so without reimplementing
-/// platform `PATH` search (i.e. the caller already gave a path containing
-/// a separator). A bare command name relying on `PATH` search stays
-/// honestly `Unresolved` rather than guessing which file the OS will
-/// execute. Filesystem and loader capability channels remain Open: this
-/// safe observation is not a hostile-race-proof `fexecve` equivalent.
+/// Resolve an absolute `argv[0]` to a concrete file and hash its bytes
+/// immediately before spawn. Every non-absolute spelling stays honestly
+/// `Unresolved`: `Command::current_dir(workspace)` can change how a relative
+/// program path is resolved, and bare names use platform `PATH` search.
+/// Filesystem and loader capability channels remain Open: this observation is
+/// not a hostile-race-proof `fexecve` equivalent.
 fn resolve_executable_identity(argv0: &str) -> ExecutableIdentity {
     let path = Path::new(argv0);
-    // `components().count() > 1` covers explicit relative paths (`./tool`,
-    // `dir/tool`) as well as platform-native absolute paths. A literal `/`
-    // check would incorrectly treat `C:\...\tool.exe` as a bare name on
-    // Windows.
-    if path.is_absolute() || path.components().count() > 1 {
-        match std::fs::read(path) {
+    if path.is_absolute() {
+        match read_bounded_executable(path, MAX_EXECUTABLE_BYTES) {
             Ok(bytes) => ExecutableIdentity::Resolved {
                 path: argv0.to_string(),
                 digest: fnv_hex(&bytes),
@@ -878,6 +1548,24 @@ pub enum SandboxError {
         path: String,
         source: std::io::Error,
     },
+    ArtifactBoundary {
+        path: String,
+        category: &'static str,
+    },
+    InputMismatch {
+        path: String,
+        category: &'static str,
+    },
+    /// Stable category for a refused trust-boundary path. It deliberately
+    /// carries no caller-selected pathname or OS diagnostic text.
+    BoundaryFile(&'static str),
+    /// A trust-boundary input exceeded the published byte bound. The
+    /// message carries sizes and the controller-supplied path only —
+    /// never attacker-controlled content.
+    Oversized {
+        max: u64,
+        actual: u64,
+    },
     Io(std::io::Error),
 }
 
@@ -889,12 +1577,42 @@ impl std::fmt::Display for SandboxError {
             Self::ArtifactRead { path, source } => {
                 write!(f, "failed to read artifact {path}: {source}")
             }
+            Self::ArtifactBoundary { path, category } => {
+                write!(f, "artifact {path} refused: {category}")
+            }
+            Self::InputMismatch { path, category } => {
+                write!(f, "logical input {path} refused: {category}")
+            }
+            Self::BoundaryFile(category) => write!(f, "boundary file refused: {category}"),
+            Self::Oversized { max, actual } => {
+                write!(
+                    f,
+                    "input exceeds the {max}-byte bound (actual size {actual} bytes)"
+                )
+            }
             Self::Io(e) => write!(f, "sandbox io error: {e}"),
         }
     }
 }
 
 impl std::error::Error for SandboxError {}
+
+impl SandboxError {
+    /// Stable attacker-content-free category suitable for a bounded boundary
+    /// diagnostic or taint record.
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::InvalidSpec(_) => "invalid-spec",
+            Self::Execution(_) => "execution",
+            Self::ArtifactRead { .. } => "artifact-read",
+            Self::ArtifactBoundary { category, .. }
+            | Self::InputMismatch { category, .. }
+            | Self::BoundaryFile(category) => category,
+            Self::Oversized { .. } => "oversized",
+            Self::Io(_) => "io",
+        }
+    }
+}
 
 impl From<std::io::Error> for SandboxError {
     fn from(value: std::io::Error) -> Self {
@@ -918,6 +1636,13 @@ fn validate_relative_path(path: &str) -> Result<(), SandboxError> {
                 )))
             }
         }
+    }
+    if p.components().next().is_some_and(
+        |component| matches!(component, Component::Normal(name) if name == ".vh-sandbox-io"),
+    ) {
+        return Err(SandboxError::InvalidSpec(
+            "declared paths may not overlap the reserved .vh-sandbox-io namespace".into(),
+        ));
     }
     Ok(())
 }

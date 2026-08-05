@@ -32,7 +32,7 @@ current law.
 | 4 | three previously unknown, human-confirmed bugs | `docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71` records zero | **OPEN — 0/3** |
 | 5 | one-command replay and median shrink at least 90% | bundle replay and capture-enabled demo shrink gates are `scripts/gate.sh:397-479`; representative median is not measured | **PARTIAL** |
 | 6 | at least 1,000 Tier-1 universes/hour on the build box | no named build-box benchmark receipt certifies this threshold | **OPEN** |
-| 7 | one end-to-end `dharma_swarm` adapter receipt | execution refuses in `clients/python/vibe_halt/core/runner.py:10-30`, while `clients/python/vibe_halt/__init__.py:5-9` still exports caller-constructible evidence | **OPEN** |
+| 7 | one end-to-end `dharma_swarm` adapter receipt | a strict local Rust-backed client and fresh generic/cooperative reverification exist in `clients/python/vibe_halt/core/runner.py`; operation/feature negotiation, observed-target-revision binding, the `dharma_swarm` adapter, and a real receipt do not | **OPEN — local bridge slice implemented** |
 
 The load-bearing next move is therefore an external-utility bridge, not more
 internal simulation machinery. The current execution scope is
@@ -145,10 +145,12 @@ current critical path.
   `~/.dharma/` per dharma_swarm's rules; tier named in every receipt.
 - Live-fire demo on real vibe-coded repos.
 
-**2026-07-29 disposition:** this is the current frontier. The first slice is a
-strict Python-to-Rust evidence transport, followed by one exactly authorized,
-version-pinned foreign-target confirmation attempt. No live target, provider,
-credential, or sibling-repository write is implied by this plan.
+**2026-08-04 disposition:** this is the current frontier. The strict local
+Python-to-Rust evidence transport is implemented; versioned feature negotiation,
+observed-target-revision binding, the real `dharma_swarm` adapter receipt, and
+one exactly authorized version-pinned foreign-target confirmation attempt remain.
+No live target, provider, credential, or sibling-repository write is implied by
+this plan.
 
 ## Budget
 

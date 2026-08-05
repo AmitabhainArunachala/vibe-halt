@@ -62,21 +62,22 @@ merge run, not a retained exact-`ab259c07` push run.
 
 The project has **not** yet demonstrated:
 
-- a strict Python or `dharma_swarm` adapter backed by verified Rust evidence
-  (`clients/python/vibe_halt/core/runner.py:10-30`);
+- a version-negotiated production or `dharma_swarm` adapter receipt binding an
+  observed target revision (the strict local Rust-backed client is only the
+  first bridge slice; see `clients/python/vibe_halt/core/runner.py`);
 - a real foreign target executed through that adapter;
 - a pre-registered holdout whose misses remain in the recall denominator;
 - any previously unknown, independently human-confirmed bug
   (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`);
 - D1 subprocess containment or Tier 3 hypervisor determinism.
 
-The Python execution entry points are quarantined, but the package still
-exports legacy Python-side simulator and caller-constructible evidence
-surfaces. None is trusted. The Reality Bridge must remove or package-exclude
-them before the client can return only engine-verified outcomes
-(`clients/python/vibe_halt/core/runner.py:10-30`,
-`clients/python/vibe_halt/__init__.py:5-9`,
-`clients/python/vibe_halt/core/evidence.py:24-62`).
+The Python package now exposes only a strict local request/result/runner client.
+It snapshots an explicitly configured Rust engine, validates closed machine
+records after fresh Rust replay, and trust-qualifies public checked outcomes
+(`clients/python/vibe_halt/core/runner.py`, `clients/python/tests/`). It does not
+yet implement the `dharma_swarm` sandbox ABC, operation/feature negotiation,
+observed-target-revision binding, or a real foreign-target receipt. Criterion 7
+therefore remains OPEN.
 
 ## Current frontier — the reality bridge
 
@@ -88,9 +89,9 @@ The next proof milestone is:
 
 The implementation campaign is scoped in
 [`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md).
-It first replaces the Python quarantine with a fail-closed transport to the
-existing Rust evidence authority. It then prepares exact target-admission
-packets and runs foreign code only after the operator approves the named
+The local fail-closed transport to the existing Rust evidence authority is now
+implemented. The remaining bridge prepares exact target-admission packets and
+runs foreign code only after the operator approves the named
 repository, revision, license, data boundary, and disposable environment.
 
 Known published defects may validate transfer from a reduced model to a real
@@ -108,9 +109,10 @@ Never weaken these to accelerate reach.
 
 ### 2. Reality bridge — current
 
-Ship the strict Python-to-Rust evidence protocol, preserve typed
-`CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes, and validate one
-operator-authorized foreign target or publish the predeclared null.
+Complete versioned operation/feature and observed-target-revision binding for
+the strict Python-to-Rust evidence protocol, then validate one
+operator-authorized foreign target or publish the predeclared null. Preserve
+typed `CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes throughout.
 
 ### 3. Honest external evaluation
 

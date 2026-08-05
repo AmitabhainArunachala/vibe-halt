@@ -91,17 +91,21 @@ process-group cleanup cannot be proven this way in safe Rust; that stays
 represented by `CapabilityChannel::ThreadsForksExecDescendants` remaining
 `Open`, never by a false-positive field here.
 
-## No unbounded wait, bounded output
+## Deadline-polled execution, best-effort reap, bounded retained output
 
 Every `run_once` execution carries an explicit `SandboxBudget` (deadline +
-per-stream output cap, `crates/vh-sandbox/src/lib.rs`). `run_once`
+per-stream retained-output cap, `crates/vh-sandbox/src/lib.rs`). `run_once`
 materializes the exact stdin bytes into a controller-prepared regular file
 before the execution deadline starts and gives the child a read-only
 descriptor for that file. There is no live controller-side pipe write for a
 child that never reads stdin to backpressure, so input delivery cannot block
 entry into the deadline loop. `execute_bounded` polls `Child::try_wait`
-against the deadline; on expiry it kills and waits on the direct child (no
-unbounded wait) and returns `TerminationOutcome::TimedOut`. Because
+against the deadline; on expiry it issues a direct-child kill, then waits to
+reap and returns `TerminationOutcome::TimedOut`. That cleanup `Child::wait` has
+no separately enforceable safe-Rust deadline and can remain in an OS wait for
+an uninterruptible process. The budget therefore bounds live execution before
+kill, not end-to-end return latency or descendants; the relevant process and
+OS channels remain Open. Because
 `std::thread` (needed for
 `thread::sleep`, and for the read side of Rust's own two-pipe
 `wait_with_output` pattern) is denied even on this boundary crate, and the
@@ -111,7 +115,12 @@ spin — a documented MVP cost, not a hidden default. Stdout/stderr are
 redirected to files (not pipes) specifically to avoid needing either of
 those mechanisms for concurrent draining, and are read back bounded to
 `max_output_bytes`; `StreamObservation.truncated` and the true on-disk
-`byte_len` are always reported, never silently hidden.
+`byte_len` are always reported, never silently hidden. The temporary capture
+files may grow until child exit or the configured deadline; a surviving
+descendant that inherited a stream descriptor may keep the now-unlinked inode
+growing beyond direct-child exit and controller return. Capture-file growth is
+therefore an open process-tree/resource channel rather than a hard output
+bound.
 
 Declared artifacts are only attempted after the child ran to completion or
 was terminated by a signal — never after a spawn failure or a timeout kill

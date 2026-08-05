@@ -168,6 +168,36 @@ impl fmt::Display for CassetteParseError {
     }
 }
 
+impl CassetteParseError {
+    /// Stable, bounded, attacker-content-free category for boundary
+    /// diagnostics. Frames cross a child-process trust boundary, so the
+    /// full `Display` rendering (which quotes attacker-controlled lines,
+    /// heads, keys, and values) must never reach stdout, stderr, taint
+    /// strings, or receipts — this category is what crosses instead.
+    pub fn category(&self) -> &'static str {
+        match self {
+            Self::UnterminatedLine => "unterminated-line",
+            Self::InvalidUtf8 { .. } => "invalid-utf8",
+            Self::UnexpectedLine { .. } => "unexpected-line",
+            Self::UnexpectedField { .. } => "unexpected-field",
+            Self::MissingFieldSpace { .. } => "missing-field-space",
+            Self::MalformedLength { .. } => "malformed-length",
+            Self::LengthOverflow { .. } => "length-overflow",
+            Self::LengthArithmeticOverflow { .. } => "length-arithmetic-overflow",
+            Self::TruncatedField { .. } => "truncated-field",
+            Self::FieldNotNewlineTerminated { .. } => "field-not-newline-terminated",
+            Self::ExpectedCount { .. } => "expected-count",
+            Self::CountOverflow { .. } => "count-overflow",
+            Self::CountExceedsFrame { .. } => "count-exceeds-frame",
+            Self::InvalidNumber { .. } => "invalid-number",
+            Self::DuplicateParam { .. } => "duplicate-param",
+            Self::UnknownTapeEntry { .. } => "unknown-tape-entry",
+            Self::UnsupportedCassette { .. } => "unsupported-cassette",
+            Self::TrailingBytes { .. } => "trailing-bytes",
+        }
+    }
+}
+
 impl std::error::Error for CassetteParseError {}
 
 const fn empty_field_bytes(tag: &str) -> usize {
