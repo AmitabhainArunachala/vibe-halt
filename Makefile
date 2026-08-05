@@ -14,7 +14,7 @@ endif
 
 export VH_PYTHON := $(PYTHON)
 
-.PHONY: onboard build test gate fmt fmt-check review release-dry-run project-plan project-sync demo ci
+.PHONY: onboard build test gate fmt fmt-check review release-dry-run project-plan project-sync project-accept demo ci
 
 onboard:
 	$(PYTHON) scripts/onboard.py
@@ -49,6 +49,9 @@ project-plan:
 
 project-sync:
 	$(PYTHON) scripts/sync_github_project.py --apply
+
+project-accept:
+	$(PYTHON) scripts/check_project_acceptance.py --live
 
 demo:
 	cargo run -q -p vh-cli -- run --workload demo-buggy --universes 100

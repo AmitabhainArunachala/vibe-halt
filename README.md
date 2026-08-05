@@ -42,7 +42,11 @@ Not yet demonstrated:
 - D1 subprocess containment or Tier 3 hypervisor determinism
   (`docs/specs/DETERMINISM_TIERS.md:45-71`);
 - any previously unknown, independently human-confirmed bug
-  (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`).
+  (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`);
+- an independently curated, pre-registered acceptance holdout of at least 25
+  provenance-qualified real defects — the criterion-3 denominator
+  (`VISION.md`, "Honest external evaluation";
+  `docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md:31`).
 
 The D2 harness records all 29 capability channels as open. Its clean reference
 campaign is useful evidence inside that stated boundary, not a D1 certificate
