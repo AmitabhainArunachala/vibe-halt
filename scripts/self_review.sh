@@ -41,8 +41,13 @@ changed="$(
   } | sed '/^$/d' | LC_ALL=C sort -u
 )"
 if printf '%s\n' "$changed" | grep -Eq '^(crates/|clients/|scripts/|Cargo|Makefile|\.github/workflows/)'; then
+  # Read the message into a variable first: with pipefail, `grep -q` exiting
+  # at the first match SIGPIPEs `git log` on long messages (observed exit 141
+  # on 1d74b7e) and the negation misreads the match as a missing-evidence
+  # failure.
+  head_message="$(git log -1 --format=%B)"
   if [[ "$merge_base" != "$(git rev-parse HEAD)" ]] \
-    && ! git log -1 --format=%B | grep -Eiq '(test|gate|verif|evidence|receipt)'; then
+    && ! grep -Eiq '(test|gate|verif|evidence|receipt)' <<<"$head_message"; then
     echo "review: latest commit message does not name test/gate/verification evidence" >&2
     exit 1
   fi
