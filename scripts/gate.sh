@@ -49,6 +49,12 @@ echo "== gate G: governance admission (strict schema, ownership, WIP) =="
 "$python_bin" scripts/check_governance.py --self-test
 "$python_bin" scripts/check_governance.py
 
+echo "== gate P: project-sync planner (offline fixtures) =="
+"$python_bin" scripts/sync_github_project.py --self-test
+
+echo "== gate A: project acceptance semantics (offline fixtures) =="
+"$python_bin" scripts/check_project_acceptance.py --self-test
+
 echo "== format =="
 cargo fmt --all --check
 
