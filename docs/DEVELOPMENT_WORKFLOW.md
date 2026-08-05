@@ -18,11 +18,20 @@ Every change begins with one issue containing:
 
 Use the bug form for a demonstrated defect and the work-packet form for
 features, audits, measurements, or governance. Add the item to the project and
-set Priority, Phase, Evidence, Authority, and Owner lane.
+set Priority, Phase, Type, Outcome, Claim boundary, Evidence, Authority, Gate
+state, Risk, Horizon, Blocked by, Target date, and Owner lane. `Blocked by` is
+plain text: use stable issue or PR references rather than an implied dependency.
 
 `make project-plan` reports additive project drift without writing.
-`make project-sync` creates only missing managed structure and adds current
-open issues/PRs; it never deletes, closes, merges, or resolves anything.
+`make project-sync` creates missing managed structure, converges named managed
+views while preserving extra visible columns, and adds current open issues/PRs;
+it never deletes, closes, merges, or resolves anything. The managed views are
+All Work, Delivery Board, Critical Path, Evidence & Authority, 12-Week Roadmap,
+Human Gates, and Parked / Research. Table and board views expose the managed
+evidence/authority columns; the roadmap carries only its layout and declared
+filter because GitHub rejects visible-field configuration for roadmap views.
+Existing single-select options are never replaced: missing managed options are
+reported as drift for a human to resolve.
 
 ## 2. Start one bounded branch
 
