@@ -12,6 +12,10 @@ Vision: [`VISION.md`](VISION.md) · 12-week contract:
 [`docs/specs/DETERMINISM_TIERS.md`](docs/specs/DETERMINISM_TIERS.md)
 · Current long-running goal:
 [`docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md`](docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md)
+· Delivery workflow:
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md)
+· GitHub project:
+[`vibe-halt — Evidence to Reality`](https://github.com/users/AmitabhainArunachala/projects/1)
 
 ## Current boundary
 
@@ -22,16 +26,17 @@ Demonstrated now:
   (runnable proof: `make gate`);
 - strict evidence bundles, standalone semantic replay, content-digest
   self-consistency checks, and exact-fingerprint shrinking for the currently
-  capture-enabled demo workloads (`scripts/gate.sh:397-479`);
+  capture-enabled demo workloads (`scripts/gate.sh`);
 - a Tier 2/D2 subprocess harness with child-visible cassette replay and a
-  published 100-pair reference campaign (`scripts/gate.sh:104-190`);
+  published 100-pair reference campaign (`scripts/gate.sh`);
 - eleven pinned regression-corpus entries (runnable count:
   `find corpus/entries -maxdepth 1 -type f -name 'VB-*' | wc -l`).
 
 Not yet demonstrated:
 
-- a production deployment or a real `dharma_swarm` adapter (the local Python
-  client now exercises only the compiled demo/cooperative fixture registry);
+- a production deployment, a real `dharma_swarm` adapter, or one independently
+  confirmed foreign-target result (the local Python client exercises only the
+  compiled demo/cooperative fixture registry; runnable state: `gh issue view 60`);
 - arbitrary foreign repositories as deterministic targets
   (`docs/specs/DETERMINISM_TIERS.md:39-63`);
 - D1 subprocess containment or Tier 3 hypervisor determinism
@@ -59,6 +64,7 @@ The workspace uses the Rust toolchain pinned in
 make onboard
 make test
 make gate
+make review
 make demo
 
 cargo run -p vh-cli -- doctor
@@ -95,7 +101,7 @@ and do not authenticate source provenance
 | `crates/vh-shrink` | resource-bounded exact-fingerprint fault-plan shrinking |
 | `crates/vh-verify` | independent vectors, models, replay soak, and cross-platform verification |
 | `crates/vh-cli` | `vh` commands, workloads, receipts, bundles, and sandbox campaigns |
-| `clients/python` | strict local Rust-backed adapter; no production or `dharma_swarm` integration claim |
+| `clients/python` | strict, stdlib-only local Rust-backed adapter; no Python-side verdict authority or production/`dharma_swarm` claim |
 | `corpus` | regression entries, provenance, schemas, and harvesting playbook |
 | `docs/governance` | WIP-limited, surface-owned active-track portfolio |
 | `scripts` | onboarding, governance, deny-list, and the single gate battery |
@@ -131,6 +137,12 @@ infer a clean verdict, or claim a stronger tier than the receipt supports.
 The project uses surface ownership, a three-track WIP limit,
 citation-or-silence, one shared gate implementation, draft PRs, and human-only
 merges. Green checks are evidence, not approval.
+
+GitHub issues and the linked project board are the canonical delivery queue.
+Every implementation starts from an accepted issue, publishes a draft PR,
+runs `make review` and `make gate`, addresses review threads with replies, and
+stops at human merge. See
+[`docs/DEVELOPMENT_WORKFLOW.md`](docs/DEVELOPMENT_WORKFLOW.md).
 
 Full name: **Mega Hyper Vibration Multiverse Halting Machine**. Short name:
 `vibe-halt`. Binary: `vh`.

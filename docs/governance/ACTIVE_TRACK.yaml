@@ -40,6 +40,7 @@ tracks:
     # globs that swallow sibling tracks' crates and workflows.
     owned_surfaces:
       - rust-toolchain.toml
+      - .gitattributes
       - crates/vh-core/**
       - crates/vh-trace/**
       - crates/vh-gremlin/**
@@ -57,14 +58,22 @@ tracks:
       - docs/prompts/**
       - Makefile
       - .github/workflows/ci.yml
+      - .github/workflows/release.yml
+      - .github/ISSUE_TEMPLATE/**
+      - .github/PULL_REQUEST_TEMPLATE.md
+      - .github/CODEOWNERS
       - VISION.md
       - DESIGN.md
       - CLAUDE.md
       - README.md
+      - docs/DEVELOPMENT_WORKFLOW.md
+      - scripts/package_release.py
+      - scripts/self_review.sh
+      - scripts/sync_github_project.py
     acceptance:
       # Mirrors docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md § Success.
-      # Criterion 3 is a material measurement-contract amendment; human
-      # merge of the containing PR ratifies it.
+      # Criterion 3 is a material measurement-contract amendment, ratified by
+      # human merge of PR #54 at commit 415b406.
       - "Tier 1: same seed => bit-identical trace hash across 1000 runs and two machines"
       - "Tier 2: divergence rate measured and published, never hidden (<5% target on reference workloads)"
       - "for an independently curated, preregistered holdout of N >=25 provenance-qualified real defects introduced by disclosed AI-generated or coding-agent-authored PRs/commits, aggregate recall >=80% means detections >=ceil(0.8*N); mere later agent maintenance is ineligible; before candidate reveal, human-merge to public main a candidate-secret freeze artifact binding exact engine/adapter commits, executable digest, protocol schemas, evaluation policy, budgets, independent oracles, roles, sampling-frame/cutoff/selection/dedupe/diversity rules, and a curator-authenticated opaque cohort commitment, then bind a separately curator-authenticated reveal to that commit/digest and require its canonical bytes to open the commitment; require >=5 repositories and >=5 root-cause/mechanism clusters with each repository and cluster contributing <=ceil(0.2*N); every non-detection remains in the denominator; only the first complete run under that freeze earns acceptance credit, later implementations may rerun the revealed cohort only as non-credit calibration, and a new acceptance attempt requires a newly curated unseen cohort"
@@ -74,10 +83,11 @@ tracks:
       - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
     next:
       - "REALITY BRIDGE 2026-07-29: execute docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md only after its admission PR is human-merged"
-      - "replace the Python quarantine with a strict transport to the Rust CLI: machine-readable verified evidence only, typed CLEAN/FINDINGS/UNCHECKED/error outcomes, no stdout inference and no manufactured success"
-      - "extract the cooperative cassette protocol into a reusable D2 transport without closing or hiding any of the 29 capability channels"
-      - "prepare exact admission dossiers for the VB-008 and VB-010 foreign-target confirmation probes; execute neither target without separate human approval of repository, revision, license, data boundary, and disposable environment"
+      - "SHIPPED 2026-08-05 at merged main 63ccd32: the strict local Python-to-Rust transport, fresh generic/cooperative re-verification, reusable cooperative D2 transport, and R3 holdout/dossier law are gate-protected substrate; all 29 capability channels remain open"
+      - "complete versioned operation/feature negotiation and observed-target-revision binding before claiming a production or dharma_swarm adapter receipt"
+      - "P0 OPERATOR GATE: issue #60 may authorize one exact VB-008 or VB-010 foreign-target confirmation or its predeclared null; execute neither without separate human approval of repository, revision, license, data boundary, oracle, fixed budget, and disposable environment"
       - "serialize writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer; verifier-owned surfaces still require an exact interface request"
+      - "measure the representative shrink median (issue #59) and named-box Tier-1 throughput (issue #64) before claiming criteria 5 or 6"
     non_goals:
       - "a general Tier 3 hypervisor or arbitrary multithreaded-binary determinism promise; the only supervisor work permitted here is a docs-only proposal for a separately human-ratified Linux x86-64 one-process/one-thread spike"
       - "the Reality Bridge grants no unsafe code or external dependency absent an explicit same-PR determinism review and named operator-ratified exception; it grants no helper implementation, sibling repository creation, unratified foreign-target execution, credential use, spending, paid-provider call, merge, approval, or self-approval authority"

@@ -13,8 +13,8 @@
 # matching substring smuggled into other output can never be blessed as
 # "correctly caught". Seeds are pinned. Corpus recall gates hold each
 # entry's K1-frozen contract as an exact-equality assertion on the full
-# summary line plus a fault-free control replay (C2b). The quarantined
-# Python client is held closed by a negative gate of its own.
+# summary line plus a fault-free control replay (C2b). The strict local
+# Python-to-Rust client is held to its fail-closed boundary by its own gate.
 #
 # Cargo runs --locked --offline (the workspace has zero external
 # dependencies by design) and --all-features (no features exist yet; the
@@ -22,6 +22,12 @@
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
+
+python_bin="${VH_PYTHON:-python3}"
+if ! "$python_bin" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)' >/dev/null 2>&1; then
+  echo "GATE FAIL: Python >= 3.11 required (VH_PYTHON=${python_bin})" >&2
+  exit 2
+fi
 
 # Every gate invocation gets a private temp namespace. The C6 reference
 # and replay harnesses intentionally use fixed paths beneath `temp_dir()` so
@@ -36,12 +42,12 @@ trap cleanup_gate_tmp EXIT
 export TMPDIR="$gate_tmp_root"
 
 echo "== gate 0: determinism deny-list =="
-python3 scripts/check_determinism_denylist.py --self-test
-python3 scripts/check_determinism_denylist.py
+"$python_bin" scripts/check_determinism_denylist.py --self-test
+"$python_bin" scripts/check_determinism_denylist.py
 
 echo "== gate G: governance admission (strict schema, ownership, WIP) =="
-python3 scripts/check_governance.py --self-test
-python3 scripts/check_governance.py
+"$python_bin" scripts/check_governance.py --self-test
+"$python_bin" scripts/check_governance.py
 
 echo "== format =="
 cargo fmt --all --check
@@ -381,9 +387,9 @@ echo "gate: single-universe replay correctly UNCHECKED (exit 3)"
 echo "== Python adapter gate: strict Python-to-Rust client (no manufactured success) =="
 set +e
 VH_ENGINE="$(pwd)/target/debug/vh"
-PYTHONPATH=clients/python VIBE_HALT_ENGINE="$VH_ENGINE" python3 -m unittest discover -s clients/python/tests -v
+PYTHONPATH=clients/python VIBE_HALT_ENGINE="$VH_ENGINE" "$python_bin" -m unittest discover -s clients/python/tests -v
 py_code=$?
-PYTHONPATH=clients/python python3 -m vibe_halt.cli >/dev/null 2>&1
+PYTHONPATH=clients/python "$python_bin" -m vibe_halt.cli >/dev/null 2>&1
 cli_code=$?
 set -e
 if [ "$py_code" -ne 0 ] || [ "$cli_code" -ne 2 ]; then
@@ -394,7 +400,8 @@ echo "gate: python adapter passes (strict client, cli exit 2)"
 
 echo "== evidence-store gate: receipts deterministic + bundle replays standalone (C4/R4) =="
 bundle_tmp="$(mktemp -d)"
-trap 'rm -rf "$bundle_tmp"' EXIT
+# `bundle_tmp` is beneath the invocation-private TMPDIR, so the single EXIT
+# trap above removes it without replacing cleanup of the enclosing gate root.
 set +e
 cargo run -q --locked --offline --all-features -p vh-cli -- run --workload demo-buggy --seed 0xD1CE --universes 100 --out "$bundle_tmp/A" >/dev/null
 a_code=$?
