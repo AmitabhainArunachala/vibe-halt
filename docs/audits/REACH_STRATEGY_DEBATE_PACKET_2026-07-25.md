@@ -282,6 +282,13 @@ switches; the packet funds the switches, not a compromise thesis.
 
 ## 6. The Antithesis answer
 
+> **PRODUCT-SCOPE SUPERSESSION (2026-08-09):** this section remains the
+> historical execution recommendation produced by the debate. Its claim that
+> Vibe Halt is permanently not a hypervisor is superseded by Product Lock v1,
+> which makes a hypervisor a conditional long-term north star while retaining
+> it as outside v0.1 and the current execution grant
+> (`docs/specs/PRODUCT_LOCK_V1.md`, "Product thesis").
+
 Our version of Antithesis is a deterministic multiverse bench for
 agent-shaped state machines: target logic runs on an engine-owned substrate
 (today the Tier-1 sim; after the evidence block, whichever reach lane

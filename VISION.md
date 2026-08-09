@@ -1,10 +1,18 @@
 # Mega Hyper Vibration Multiverse Halting Machine — Vision
 
-`vibe-halt` is a deterministic multiverse bench for agent-shaped state
-machines: engine-owned execution, semantic fault injection, executable
-properties, content-addressed fail-closed replay evidence, and
-capture-enabled fault-plan minimization whose receipt states every
-uncontrolled channel.
+`vibe-halt` is an AI-native adversarial verification environment for vibe
+coders and serious builders who cannot safely trust AI-generated or AI-modified
+software. A target may be a whole repository, application, feature, agentic
+system, trading system, or high-level fintech workflow. The canonical product
+boundary and decision contract live in
+[`docs/specs/PRODUCT_LOCK_V1.md`](docs/specs/PRODUCT_LOCK_V1.md).
+
+Its strongest demonstrated engine today is a deterministic multiverse bench
+for agent-shaped state machines: engine-owned execution, semantic fault
+injection, executable properties, content-addressed fail-closed replay
+evidence, and capture-enabled fault-plan minimization whose receipt states
+every uncontrolled channel. That engine is the first deep attack engine and
+evidence spine, not the product boundary.
 
 The physical metaphor is an electrodynamic shaker table plus HALT rig. The
 software is stressed across many reproducible worlds so that weak assumptions
@@ -17,6 +25,11 @@ retries, acknowledgements, persistence, checkpoints, cancellation, tool calls,
 and cross-file state. Ordinary happy-path tests often miss those defects.
 `vibe-halt` should make the relevant orderings and failures cheap to explore
 without pretending that an opaque process is deterministic.
+
+The product front door is intentionally broader than current engine reach. A
+whole target may enter, but every run must bind the exact revision and report
+tested, unsupported, unreachable, uncontrolled, and unknown surfaces. A broad
+input envelope never permits a broad safety claim.
 
 ## Enduring laws
 
@@ -87,9 +100,9 @@ yet implement the `dharma_swarm` sandbox ABC, operation/feature negotiation,
 observed-target-revision binding, or a real foreign-target receipt. Criterion 7
 therefore remains OPEN.
 
-## Current frontier — the reality bridge
+## Current technical frontier — the reality bridge
 
-The next proof milestone is:
+The next technical proof milestone is:
 
 > Run one operator-authorized, version-pinned foreign target through a strict
 > Rust-backed adapter and either produce one independently forward-confirmed
@@ -109,6 +122,15 @@ there only after an independent human confirms it was previously unknown and
 real.
 
 ## Rebased 12-week path
+
+### 0. Whole-target product envelope — ratified, not yet implemented
+
+Implement a bounded target manifest, target map, coverage plan, coverage
+ledger, and target-level `HALT`/`PROCEED`/`UNKNOWN` receipt without weakening
+the engine-layer truth states. The product benchmark is confirmed,
+severity-weighted, unique fault yield under equal time and monetary budgets
+against at least three decorrelated frontier-AI reviewers
+(`docs/specs/PRODUCT_LOCK_V1.md`).
 
 ### 1. Truth substrate — proven, keep ratcheting
 

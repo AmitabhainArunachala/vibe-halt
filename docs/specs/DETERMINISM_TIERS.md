@@ -62,13 +62,15 @@ The separately proposed C7 supervisor is deferred at 2/14 admission
 decisions (`docs/audits/C7_ADMISSION_LEDGER_2026-07-25.md:9-14`). Neither the
 cassette result nor a low D2 divergence rate implies D1 coverage.
 
-## Tier 3 — Hypervisor determinism (explicit non-goal)
+## Tier 3 — Hypervisor determinism (conditional north star; not v0.1)
 
 Antithesis-class whole-VM determinism. Out of scope for the 12-week
-build: it is a multi-year effort at any quality level. The trace/oracle/
-property layers are substrate-agnostic so a hypervisor (or rr-based
-record-replay) backend can slot underneath later without touching the
-property system.
+build and the present execution grant: it is a multi-year effort at any quality
+level. Product Lock v1 retains a Vibe Halt hypervisor as a conditional
+long-term direction only if external fault-yield evidence, resources, and
+economics justify it. The trace/oracle/property layers are substrate-agnostic
+so a hypervisor (or rr-based record-replay) backend can slot underneath later
+without touching the property system.
 
 ## Crosswalk to the D-grade vocabulary (DESIGN.md)
 
@@ -82,7 +84,7 @@ not replace the other; this crosswalk is the canonical mapping:
 | D0 Closed Simulation | Tier 1 | engine-owned actors on the simulated runtime; bit-identical replay |
 | D1 Cooperative/Hermetic | Tier 2 (strong) | instrumented target, controlled effects replayed exactly, unmanaged entropy tainted |
 | D2 Opaque Process | Tier 2 (weak) | repeatable workload + fault plan only; chaos testing, never certified deterministic |
-| — (no D-grade) | Tier 3 | hypervisor substrate; explicit non-goal, see above |
+| — (no D-grade) | Tier 3 | hypervisor substrate; outside v0.1/current execution, see above |
 
 Evidence bundles cite the D-grade; engine code and receipts cite the
 tier; either alone is incomplete for a cross-boundary claim.

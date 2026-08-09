@@ -1,12 +1,16 @@
 # vibe-halt
 
-**Mega Hyper Vibration Multiverse Halting Machine** — a deterministic
-simulation-testing rig for agent-shaped state machines. It runs modeled
-workloads across reproducible universes, injects semantic faults, evaluates
-executable properties, and emits content-addressed, fail-closed replay
-evidence with resource-bounded shrinking (runnable proof: `make gate`).
+**Mega Hyper Vibration Multiverse Halting Machine** — an AI-native adversarial
+verification environment for whole repositories, applications, features, and
+high-consequence workflows. Its strongest demonstrated engine today runs
+modeled agent-shaped state machines across reproducible universes, injects
+semantic faults, evaluates executable properties, and emits content-addressed,
+fail-closed replay evidence with resource-bounded shrinking (runnable proof:
+`make gate`). The broad product contract does not turn untested surfaces into
+proof.
 
-Vision: [`VISION.md`](VISION.md) · 12-week contract:
+Product lock: [`docs/specs/PRODUCT_LOCK_V1.md`](docs/specs/PRODUCT_LOCK_V1.md)
+· Vision: [`VISION.md`](VISION.md) · 12-week contract:
 [`docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md`](docs/plans/VIBE_HALT_BUILD_PLAN_2026-07-20.md)
 · Determinism doctrine:
 [`docs/specs/DETERMINISM_TIERS.md`](docs/specs/DETERMINISM_TIERS.md)
@@ -18,6 +22,12 @@ Vision: [`VISION.md`](VISION.md) · 12-week contract:
 [`vibe-halt — Evidence to Reality`](https://github.com/users/AmitabhainArunachala/projects/1)
 
 ## Current boundary
+
+The product accepts a broad target envelope; the implementation currently
+supports only the capabilities listed below. The planned target-level
+`HALT`/`PROCEED`/`UNKNOWN` decision is separate from the existing engine-layer
+`CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes and has not yet shipped
+(`docs/specs/PRODUCT_LOCK_V1.md`, "Decision contract").
 
 Demonstrated now:
 
