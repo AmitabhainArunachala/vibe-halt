@@ -35,11 +35,30 @@ law.
 | 7 | one end-to-end `dharma_swarm` adapter receipt | a strict local Rust-backed client and fresh generic/cooperative reverification exist in `clients/python/vibe_halt/core/runner.py`; operation/feature negotiation, observed-target-revision binding, the `dharma_swarm` adapter, and a real receipt do not | **OPEN — local bridge slice implemented** |
 
 The load-bearing next move is still external utility, not more internal
-simulation machinery. With issue #61 closed and PR #57 merged, next obtain the
-exact operator authority in issue #60 and run one frozen foreign-target
-confirmation probe or publish its predeclared null. PR #66's delivery workflow
-is orthogonal to that authority gate. The separately proposed C7 supervisor
+simulation machinery. Complete issue #90's versioned negotiation and observed
+revision binding, repair the evaluator and D2 trust-boundary defects, then
+admit one bounded whole-target path before any foreign-target or tournament
+claim. Issue #60 retains its exact operator gate. PR #66's delivery workflow is
+orthogonal to that authority gate. The separately proposed C7 supervisor
 remains deferred.
+
+### 2026-08-09 product reorientation — Product Lock v1
+
+The operator selected issue #81 option 2 and ratified a bounded whole-target
+`vh preflight` product envelope
+([decision record](https://github.com/AmitabhainArunachala/vibe-halt/issues/81#issuecomment-5230157890)).
+The primary users are vibe coders and serious builders who cannot safely trust
+AI-generated or AI-modified software. A whole repository, application,
+feature, agentic system, trading system, or high-level fintech workflow may
+enter; every run must publish exact target identity and an honest coverage
+ledger.
+
+This reorientation supplements rather than replaces the seven criteria above.
+The next six-week product proof is one exact Dharma target traversing the whole
+intake-to-receipt path and at least one important, independently confirmed,
+reproducible fault missed by every equal-budget decorrelated-AI baseline. The
+canonical contract, decision mapping, benchmark, mutation boundary, and kill
+rules live in `docs/specs/PRODUCT_LOCK_V1.md`.
 
 ### Criterion 3 measurement-contract amendment
 
@@ -79,9 +98,10 @@ Three determinism tiers (`docs/specs/DETERMINISM_TIERS.md`): ship Tier 1
 (full determinism for code on the simulated runtime) and a Tier-2 D2
 subprocess harness that measures and publishes divergence without claiming a
 deterministic environment. Hermetic D1 remains a future target. Tier 3
-(Antithesis-class hypervisor) is an explicit non-goal — multi-year at any
-quality. The trace/oracle/property layer stays substrate-agnostic so a
-hypervisor or rr-based backend can slot in later.
+(Antithesis-class hypervisor) is outside v0.1 and the present execution grant;
+it is a conditional, multi-year product north star only if evidence, resources,
+and economics justify it. The trace/oracle/property layer stays
+substrate-agnostic so a hypervisor or rr-based backend can slot in later.
 
 ## Phases
 
@@ -169,7 +189,8 @@ write is implied by this plan.
 1. **Determinism holes** — mitigated by gate #0 (deny-list) and gate #1
    (divergence, run-twice) live in CI from day 0, plus frozen PRNG/trace
    reference vectors.
-2. **Tier-3 scope creep** — contractually out of scope; tiers doc is law.
+2. **Tier-3 scope creep** — contractually outside v0.1 and the current build;
+   the tiers doc is the implementation law.
 3. **The tool is itself vibe-coded** — vibe-halt tests itself (the gate
    battery runs the rig against seeded bugs and a seeded nondeterminism
    leak on every commit); expert budget goes to the kernel.

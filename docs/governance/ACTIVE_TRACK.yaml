@@ -86,6 +86,7 @@ tracks:
       - ">=1000 Tier-1 universes/hour/reference-workload on the build box"
       - "one end-to-end dharma_swarm receipt via a VibeHaltSandbox adapter"
     next:
+      - "PRODUCT LOCK V1 2026-08-09: issue #81 ratifies a bounded whole-target front door, honest coverage ledger, target-level HALT/PROCEED/UNKNOWN policy, Dharma first proving ground, and an equal-budget decorrelated-AI benchmark; implementation remains issue-owned and human-merged"
       - "REALITY BRIDGE 2026-07-29: execute docs/prompts/VIBE_HALT_REALITY_BRIDGE_LONG_RUNNING_GOAL_2026-07-29.md only after its admission PR is human-merged"
       - "SHIPPED 2026-08-05 at merged main 63ccd32: the strict local Python-to-Rust transport, fresh generic/cooperative re-verification, reusable cooperative D2 transport, and R3 holdout/dossier law are gate-protected substrate; all 29 capability channels remain open"
       - "complete versioned operation/feature negotiation and observed-target-revision binding before claiming a production or dharma_swarm adapter receipt"
@@ -94,7 +95,7 @@ tracks:
       - "serialize writes to shared scripts/gate.sh, Cargo.toml, Cargo.lock, and ACTIVE_TRACK.yaml under one named writer; verifier-owned surfaces still require an exact interface request"
       - "measure the representative shrink median (issue #59) and named-box Tier-1 throughput (issue #64) before claiming criteria 5 or 6"
     non_goals:
-      - "a general Tier 3 hypervisor or arbitrary multithreaded-binary determinism promise; the only supervisor work permitted here is a docs-only proposal for a separately human-ratified Linux x86-64 one-process/one-thread spike"
+      - "a Tier 3 hypervisor or arbitrary multithreaded-binary determinism promise in v0.1 or the present execution grant; Product Lock v1 retains hypervisor capacity only as a conditional long-term north star, and the only supervisor work permitted now is a docs-only proposal for a separately human-ratified Linux x86-64 one-process/one-thread spike"
       - "the Reality Bridge grants no unsafe code or external dependency absent an explicit same-PR determinism review and named operator-ratified exception; it grants no helper implementation, sibling repository creation, unratified foreign-target execution, credential use, spending, paid-provider call, merge, approval, or self-approval authority"
       - "replacing dharma_swarm governance — this repo imports the lean subset only"
 
