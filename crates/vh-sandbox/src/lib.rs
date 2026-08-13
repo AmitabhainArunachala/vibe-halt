@@ -1155,12 +1155,17 @@ fn validate_spec_at_run_boundary(spec: &SandboxSpec) -> Result<(), SandboxError>
 /// entries). Every violation taints; a taint response frame
 /// (`transport-error …`) tells the child to fail fast instead of
 /// hanging.
+#[cfg(test)]
+type AfterExpectedAbsenceHook = Box<dyn FnOnce(&Path)>;
+
 struct BrokerState<'a> {
     dir: std::path::PathBuf,
     cassette: &'a cassette_v2::CassetteV2,
     next_seq: usize,
     served: Vec<String>,
     taint: Option<String>,
+    #[cfg(test)]
+    after_expected_absence: Option<AfterExpectedAbsenceHook>,
 }
 
 impl<'a> BrokerState<'a> {
@@ -1171,6 +1176,8 @@ impl<'a> BrokerState<'a> {
             next_seq: 0,
             served: Vec::new(),
             taint: None,
+            #[cfg(test)]
+            after_expected_absence: None,
         }
     }
 
@@ -1191,8 +1198,27 @@ impl<'a> BrokerState<'a> {
         let req_path = self.dir.join(format!("req-{}", self.next_seq));
         match std::fs::symlink_metadata(&req_path) {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                self.taint_future_or_malformed_request();
-                return;
+                #[cfg(test)]
+                if let Some(hook) = self.after_expected_absence.take() {
+                    hook(&self.dir);
+                }
+                let future_taint = self.scan_future_or_malformed_request();
+                if self.taint.is_some() {
+                    return;
+                }
+                match std::fs::symlink_metadata(&req_path) {
+                    Ok(_) => {}
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        if let Some(reason) = future_taint {
+                            self.set_taint(reason);
+                        }
+                        return;
+                    }
+                    Err(_) => {
+                        self.set_taint(format!("unreadable request {}: metadata", self.next_seq));
+                        return;
+                    }
+                }
             }
             Err(_) => {
                 self.set_taint(format!("unreadable request {}: metadata", self.next_seq));
@@ -1273,27 +1299,32 @@ impl<'a> BrokerState<'a> {
         self.next_seq += 1;
     }
 
-    fn taint_future_or_malformed_request(&mut self) {
+    /// Scan the bounded mailbox after the expected frame was absent. Structural
+    /// failures taint immediately. A future frame is deferred until the caller
+    /// re-probes the expected path once, so a concurrently published expected
+    /// frame is served before the future frame is classified on the next tick.
+    fn scan_future_or_malformed_request(&mut self) -> Option<String> {
         let entries = match std::fs::read_dir(&self.dir) {
             Ok(entries) => entries,
             Err(_) => {
                 self.set_taint("cannot enumerate request mailbox".into());
-                return;
+                return None;
             }
         };
         let entry_bound = self.cassette.len().saturating_mul(2).saturating_add(4);
+        let mut future_visible = false;
         for (index, entry) in entries.enumerate() {
             if index >= entry_bound {
                 self.set_taint("request mailbox exceeds the entry-count bound".into());
-                return;
+                return None;
             }
             let Ok(entry) = entry else {
                 self.set_taint("cannot enumerate request mailbox entry".into());
-                return;
+                return None;
             };
             let Some(name) = entry.file_name().to_str().map(str::to_string) else {
                 self.set_taint("request mailbox contains a non-UTF-8 entry".into());
-                return;
+                return None;
             };
             let Some(suffix) = name.strip_prefix("req-") else {
                 continue;
@@ -1304,18 +1335,15 @@ impl<'a> BrokerState<'a> {
             match suffix.parse::<usize>() {
                 Ok(sequence) if sequence <= self.next_seq => {}
                 Ok(_) => {
-                    self.set_taint(format!(
-                        "out-of-sequence request visible before {}",
-                        self.next_seq
-                    ));
-                    return;
+                    future_visible = true;
                 }
                 Err(_) => {
                     self.set_taint("malformed request filename".into());
-                    return;
+                    return None;
                 }
             }
         }
+        future_visible.then(|| format!("out-of-sequence request visible before {}", self.next_seq))
     }
 
     fn publish_response(&self, reply: &[u8]) -> Result<(), &'static str> {
