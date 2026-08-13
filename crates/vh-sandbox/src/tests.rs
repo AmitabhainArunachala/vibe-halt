@@ -650,6 +650,42 @@ fn broker_services_one_frame_per_deadline_tick_and_stops_after_taint() {
 }
 
 #[test]
+fn broker_expected_frame_published_after_absence_check_precedes_future_taint() {
+    let request = LlmRequestV2::default();
+    let request_bytes = request.canonical_bytes();
+    let mut cassette = CassetteV2::default();
+    cassette.push(request.clone(), TapeEntry::Timeout);
+    let root = temp_dir("broker-expected-before-future");
+    std::fs::create_dir_all(&root).unwrap();
+    let mut broker = crate::BrokerState::new(root, &cassette);
+    broker.after_expected_absence = Some(Box::new(move |dir| {
+        for sequence in [0, 1] {
+            let temp = dir.join(format!("req-{sequence}.tmp"));
+            let published = dir.join(format!("req-{sequence}"));
+            std::fs::write(&temp, &request_bytes).unwrap();
+            std::fs::rename(temp, published).unwrap();
+        }
+    }));
+
+    broker.service();
+    assert_eq!(broker.served, vec![request.digest()]);
+    assert_eq!(broker.next_seq, 1);
+    assert_eq!(broker.taint, None);
+
+    broker.service();
+    assert_eq!(broker.served, vec![request.digest()]);
+    assert_eq!(broker.next_seq, 2);
+    assert!(
+        broker
+            .taint
+            .as_deref()
+            .is_some_and(|reason| reason.contains("beyond the recorded tape")),
+        "future request must remain a typed extra-frame taint: {:?}",
+        broker.taint
+    );
+}
+
+#[test]
 #[cfg(unix)]
 fn broker_response_publication_refuses_preplanted_temp_and_final_paths() {
     let request = LlmRequestV2::default();
