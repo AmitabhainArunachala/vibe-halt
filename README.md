@@ -137,12 +137,24 @@ offline and toolchain-pinned (runnable proof: `make gate`).
 
 ## Integration direction
 
-The narrow local Python transport now invokes an explicitly configured Rust
-engine, binds the admitted request and observed engine image, and accepts only
-closed Rust machine records after fresh replay. The next integration is
-versioned operation/feature negotiation plus a real `dharma_swarm` receipt
-consumer. Any future `VibeHaltSandbox` must not parse human-oriented stdout,
-infer a clean verdict, or claim a stronger tier than the receipt supports.
+The narrow local Python transport invokes an explicitly configured Rust engine,
+binds the admitted request and observed engine image, and accepts only closed
+Rust machine records after fresh replay. Its additive cooperative-v2 path also
+queries a same-copy, digest-bound operation manifest, revalidates the complete
+mandatory feature closure at execution, and binds a fresh Rust observation of
+the staged fixture source into a versioned receipt. Its `BoundRequired`
+operation succeeds only for an exact caller-supplied SHA-256 coordinate;
+explicit `unknown` is a zero-execution typed refusal
+(`crates/vh-cli/src/protocol.rs`; runnable check:
+`cargo test -p vh-cli negotiated --locked --offline`). This remains local
+Tier-2/D2 with an open observation-to-execution channel; legacy cooperative v1
+remains explicitly unbound. The v2 `executions` field counts sandbox-run
+attempts admitted immediately before the sandbox boundary: zero proves that
+boundary was not invoked, while a positive value is only an upper bound and is
+not spawn, loader, or child-start attestation. No `dharma_swarm` adapter or
+foreign-target receipt is implemented. Any future `VibeHaltSandbox` must not
+parse human-oriented stdout, infer a clean verdict, or claim a stronger tier
+than the receipt supports.
 
 ## Governance
 

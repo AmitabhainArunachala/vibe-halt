@@ -172,6 +172,21 @@ fn child_spec(cassette: &CassetteV2) -> Result<SandboxSpec, SandboxError> {
     .declare_input_bytes(CHILD_LOGICAL_NAME, COOPERATIVE_ECHO_CHILD.as_bytes())
 }
 
+/// Cross the sandbox boundary while retaining a conservative admission count.
+///
+/// The counter is deliberately one-sided: zero proves this boundary was not
+/// invoked. A positive value records an admitted attempt only; it does not
+/// attest that process spawn, loading, or child execution occurred.
+fn run_admitted_sandbox_attempt(
+    spec: &SandboxSpec,
+    workspace: &Path,
+    cassette: &CassetteV2,
+    attempts: &mut u64,
+) -> Result<vh_sandbox::RunRecord, SandboxError> {
+    *attempts += 1;
+    run_once_with_cassette(spec, workspace, cassette)
+}
+
 /// Atomically reserve a fresh, invocation-exclusive workspace. With an
 /// output root, the single `create_dir` of `workspace/` inside the
 /// already-validated-empty root IS the reservation: `AlreadyExists`
@@ -321,13 +336,85 @@ fn run_cooperative_campaign(
     write_child_source(&a).map_err(|e| format!("cannot place child in workspace a: {e}"))?;
     write_child_source(&b).map_err(|e| format!("cannot place child in workspace b: {e}"))?;
 
-    let first = run_once_with_cassette(&spec, &a, cassette)
+    let first = run_admitted_sandbox_attempt(&spec, &a, cassette, executions)
         .map_err(|e| format!("cooperative run a failed: {e}"))?;
-    *executions += 1;
-    let second = run_once_with_cassette(&spec, &b, cassette)
+    let second = run_admitted_sandbox_attempt(&spec, &b, cassette, executions)
         .map_err(|e| format!("cooperative run b failed: {e}"))?;
-    *executions += 1;
     Ok((SandboxCampaign { first, second }, root))
+}
+
+enum CooperativeV2RunError {
+    Refusal(crate::protocol::RefusalReason),
+    Boundary(String),
+}
+
+#[cfg(test)]
+type BeforeObservationHook<'a> = Option<&'a mut dyn FnMut(&Path, &Path) -> Result<(), String>>;
+
+/// Stage the Rust-owned target, take a bounded owned observation of both
+/// copies, enforce any exact caller constraint, and only then cross the child
+/// execution boundary. The sandbox independently rechecks each logical input
+/// immediately before spawn. Its final observation-to-loader race remains an
+/// explicitly Open D2 channel.
+fn run_cooperative_campaign_v2_inner(
+    cassette: &CassetteV2,
+    out_dir: Option<&Path>,
+    requested_revision: &crate::protocol::RequestedTargetRevision,
+    executions: &mut u64,
+    #[cfg(test)] before_observation: BeforeObservationHook<'_>,
+) -> Result<
+    (
+        SandboxCampaign,
+        WorkspaceLease,
+        crate::protocol::FreshObservedRevision,
+    ),
+    CooperativeV2RunError,
+> {
+    let root = reserve_workspace(out_dir, "cooperative-v2", cassette)
+        .map_err(CooperativeV2RunError::Boundary)?;
+    let spec = child_spec(cassette)
+        .map_err(|error| CooperativeV2RunError::Boundary(format!("invalid spec: {error}")))?;
+    let a = root.path().join("a");
+    let b = root.path().join("b");
+    write_child_source(&a).map_err(|error| {
+        CooperativeV2RunError::Boundary(format!("cannot stage target a: {error}"))
+    })?;
+    write_child_source(&b).map_err(|error| {
+        CooperativeV2RunError::Boundary(format!("cannot stage target b: {error}"))
+    })?;
+    #[cfg(test)]
+    if let Some(hook) = before_observation {
+        hook(&a, &b).map_err(CooperativeV2RunError::Boundary)?;
+    }
+    let observe = |path: &Path| {
+        crate::protocol::resolve_fresh_target_path(
+            &path.join(CHILD_LOGICAL_NAME),
+            vh_sandbox::MAX_CASSETTE_BYTES,
+        )
+        .map_err(|_| {
+            CooperativeV2RunError::Refusal(crate::protocol::RefusalReason::MissingObservation)
+        })
+    };
+    let fresh_a = observe(&a)?;
+    let fresh_b = observe(&b)?;
+    if fresh_a.bytes() != COOPERATIVE_ECHO_CHILD.as_bytes()
+        || fresh_b.bytes() != COOPERATIVE_ECHO_CHILD.as_bytes()
+        || fresh_a.digest() != fresh_b.digest()
+    {
+        return Err(CooperativeV2RunError::Refusal(
+            crate::protocol::RefusalReason::RequestedRevisionMismatch,
+        ));
+    }
+    if requested_revision.exact_digest() != Some(fresh_a.digest()) {
+        return Err(CooperativeV2RunError::Refusal(
+            crate::protocol::RefusalReason::RequestedRevisionMismatch,
+        ));
+    }
+    let first = run_admitted_sandbox_attempt(&spec, &a, cassette, executions)
+        .map_err(|error| CooperativeV2RunError::Boundary(format!("run a failed: {error}")))?;
+    let second = run_admitted_sandbox_attempt(&spec, &b, cassette, executions)
+        .map_err(|error| CooperativeV2RunError::Boundary(format!("run b failed: {error}")))?;
+    Ok((SandboxCampaign { first, second }, root, fresh_a))
 }
 
 /// The declared cooperative workload oracle. A cassette `Timeout` may be
@@ -1191,6 +1278,18 @@ fn write_cooperative_receipt(
     fields: &[(&str, Val)],
     out_dir: &Path,
 ) -> Result<Vec<u8>, String> {
+    let body = build_cooperative_receipt(workload, cassette, campaign, workspace, fields)?;
+    publish_cooperative_receipt(out_dir, &body)?;
+    Ok(body)
+}
+
+fn build_cooperative_receipt(
+    workload: &str,
+    cassette: &CassetteV2,
+    campaign: &SandboxCampaign,
+    workspace: &Path,
+    fields: &[(&str, Val)],
+) -> Result<Vec<u8>, String> {
     let cassette_bytes = cassette.file_bytes();
     let cassette_identity = cassette.identity();
     let source_digest = format!(
@@ -1295,9 +1394,13 @@ fn write_cooperative_receipt(
         return Err("receipt exceeds the published maximum receipt size".into());
     }
 
+    Ok(body)
+}
+
+fn publish_cooperative_receipt(out_dir: &Path, body: &[u8]) -> Result<(), String> {
     let tmp = out_dir.join("cooperative.receipt.tmp");
     let final_path = out_dir.join(COOPERATIVE_RECEIPT_NAME);
-    write_new_file(&tmp, &body).map_err(|_| "cannot create receipt temporary file".to_string())?;
+    write_new_file(&tmp, body).map_err(|_| "cannot create receipt temporary file".to_string())?;
     match std::fs::hard_link(&tmp, &final_path) {
         Ok(()) => {
             std::fs::remove_file(&tmp)
@@ -1307,7 +1410,7 @@ fn write_cooperative_receipt(
             if published != body {
                 return Err("published receipt bytes changed during publication".into());
             }
-            Ok(body)
+            Ok(())
         }
         Err(_) => {
             // Delete only the controller-created temporary inode. A
@@ -2138,6 +2241,1092 @@ pub(crate) fn cmd_verify_cooperative(args: &[String], usage: &str) -> i32 {
     code
 }
 
+// ---- issue #90: negotiated, revision-bound cooperative v2 ----
+
+#[derive(Clone)]
+struct CooperativeV2Request {
+    protocol_schema: String,
+    manifest_id: String,
+    operation: String,
+    features: Vec<String>,
+    requested_revision: crate::protocol::RequestedTargetRevision,
+    cassette_path: Option<String>,
+    out_path: Option<String>,
+}
+
+fn parse_cooperative_v2_args(args: &[String]) -> Result<CooperativeV2Request, String> {
+    let mut protocol_schema = None;
+    let mut manifest_id = None;
+    let mut operation = None;
+    let mut features = Vec::new();
+    let mut requested_revision = None;
+    let mut cassette_path = None;
+    let mut out_path = None;
+    let mut it = args.iter();
+    while let Some(argument) = it.next() {
+        let mut value = |flag: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        match argument.as_str() {
+            "--protocol-schema" if protocol_schema.is_none() => {
+                protocol_schema = Some(value(argument)?)
+            }
+            "--manifest-id" if manifest_id.is_none() => manifest_id = Some(value(argument)?),
+            "--operation" if operation.is_none() => operation = Some(value(argument)?),
+            "--require-feature" => features.push(value(argument)?),
+            "--requested-target-revision" if requested_revision.is_none() => {
+                requested_revision = Some(
+                    crate::protocol::RequestedTargetRevision::parse(&value(argument)?)
+                        .map_err(|_| "invalid requested target revision".to_string())?,
+                )
+            }
+            "--cassette" if cassette_path.is_none() => cassette_path = Some(value(argument)?),
+            "--out" if out_path.is_none() => out_path = Some(value(argument)?),
+            other => return Err(format!("duplicate or unknown argument: {other}")),
+        }
+    }
+    Ok(CooperativeV2Request {
+        protocol_schema: protocol_schema.ok_or("missing --protocol-schema")?,
+        manifest_id: manifest_id.ok_or("missing --manifest-id")?,
+        operation: operation.ok_or("missing --operation")?,
+        features,
+        requested_revision: requested_revision.ok_or("missing --requested-target-revision")?,
+        cassette_path,
+        out_path,
+    })
+}
+
+fn load_cooperative_cassette(path: Option<&str>) -> Result<CassetteV2, String> {
+    match path {
+        None => Ok(fixture_cassette()),
+        Some(path) => {
+            let bytes =
+                vh_sandbox::read_bounded_file(Path::new(path), vh_sandbox::MAX_CASSETTE_BYTES)
+                    .map_err(|error| {
+                        format!("cannot read cassette: category={}", error.category())
+                    })?;
+            let cassette = CassetteV2::parse_detailed(&bytes)
+                .map_err(|error| format!("malformed cassette: category={}", error.category()))?;
+            if cassette.file_bytes() != bytes {
+                return Err("malformed cassette: category=noncanonical-encoding".into());
+            }
+            Ok(cassette)
+        }
+    }
+}
+
+fn emit_v2_refusal(
+    reason: crate::protocol::RefusalReason,
+    manifest: &crate::protocol::ProtocolManifest,
+) -> i32 {
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    emit_v2_refusal_to(reason, manifest, &mut output)
+}
+
+fn emit_v2_refusal_to<W: Write>(
+    reason: crate::protocol::RefusalReason,
+    manifest: &crate::protocol::ProtocolManifest,
+    output: &mut W,
+) -> i32 {
+    let bytes =
+        crate::protocol::encode_refusal(reason, &manifest.engine_sha256, &manifest.manifest_id);
+    match output.write_all(&bytes) {
+        Ok(()) => 4,
+        Err(_) => 2,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum V2VerifyFailureReason {
+    MalformedReceipt,
+    ExpectedRequestMismatch,
+    RevisionMismatch,
+    IdentityMismatch,
+    FreshReplayFailed,
+}
+
+impl V2VerifyFailureReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MalformedReceipt => "malformed-receipt",
+            Self::ExpectedRequestMismatch => "expected-request-mismatch",
+            Self::RevisionMismatch => "revision-mismatch",
+            Self::IdentityMismatch => "identity-mismatch",
+            Self::FreshReplayFailed => "fresh-replay-failed",
+        }
+    }
+}
+
+fn classify_v2_verify_failure(error: &str, executions: u64) -> V2VerifyFailureReason {
+    if executions > 0 {
+        return V2VerifyFailureReason::FreshReplayFailed;
+    }
+    if error.contains("malformed") || error.contains("unparseable") {
+        V2VerifyFailureReason::MalformedReceipt
+    } else if error.contains("expected-request") || error.contains("expected-cassette") {
+        V2VerifyFailureReason::ExpectedRequestMismatch
+    } else if error.contains("revision") || error.contains("observation") {
+        V2VerifyFailureReason::RevisionMismatch
+    } else {
+        V2VerifyFailureReason::IdentityMismatch
+    }
+}
+
+fn encode_v2_verify_failure(
+    reason: V2VerifyFailureReason,
+    manifest: &crate::protocol::ProtocolManifest,
+    receipt_sha256: &str,
+    executions: u64,
+) -> Vec<u8> {
+    let mut record = Vec::new();
+    plain_line(&mut record, crate::protocol::VERIFY_FAILURE_SCHEMA);
+    frame_field(&mut record, "reason", reason.as_str().as_bytes());
+    frame_field(
+        &mut record,
+        "engine-sha256",
+        manifest.engine_sha256.as_bytes(),
+    );
+    frame_field(&mut record, "manifest-id", manifest.manifest_id.as_bytes());
+    frame_field(&mut record, "receipt-sha256", receipt_sha256.as_bytes());
+    plain_line(&mut record, &format!("executions {executions}"));
+    plain_line(&mut record, "authentic false");
+    plain_line(&mut record, "verified false");
+    plain_line(&mut record, "exit-code 1");
+    record
+}
+
+#[derive(Clone)]
+struct ParsedV2Receipt {
+    protocol_schema: String,
+    manifest_id: String,
+    engine_sha256: String,
+    operation: String,
+    request_schema: String,
+    outcome_schema: String,
+    receipt_schema: String,
+    verifier_schema: String,
+    features: Vec<String>,
+    observation_subject: String,
+    revision_algorithm: String,
+    revision_policy: String,
+    execution_binding: String,
+    observation_to_exec_channel: String,
+    requested_revision: String,
+    claimed_revision: crate::protocol::ClaimedObservedRevision,
+    cassette_identity: String,
+    engine_request_id: String,
+    first_identity: String,
+    second_identity: String,
+    evidence_id: String,
+    legacy_receipt: Vec<u8>,
+    body_digest: String,
+    body_bytes: Vec<u8>,
+}
+
+fn build_v2_receipt(
+    manifest: &crate::protocol::ProtocolManifest,
+    matched: &crate::protocol::RevisionMatched<'_>,
+    cassette: &CassetteV2,
+    campaign: &SandboxCampaign,
+    legacy_receipt: &[u8],
+) -> Result<Vec<u8>, String> {
+    let request = matched.request();
+    let fresh = matched.fresh();
+    let claimed = fresh.digest();
+    let engine_request_id = crate::protocol::engine_request_id(request, &cassette.identity());
+    let evidence_id = crate::protocol::evidence_id(
+        &engine_request_id,
+        claimed,
+        &campaign.first.identity(),
+        &campaign.second.identity(),
+    );
+    let mut body = Vec::new();
+    plain_line(&mut body, crate::protocol::RECEIPT_SCHEMA);
+    frame_field(
+        &mut body,
+        "protocol-schema",
+        crate::protocol::MANIFEST_SCHEMA.as_bytes(),
+    );
+    frame_field(&mut body, "manifest-id", manifest.manifest_id.as_bytes());
+    frame_field(
+        &mut body,
+        "engine-sha256",
+        manifest.engine_sha256.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "operation",
+        crate::protocol::OPERATION.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "request-schema",
+        crate::protocol::REQUEST_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "outcome-schema",
+        crate::protocol::OUTCOME_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "receipt-schema",
+        crate::protocol::RECEIPT_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "verifier-schema",
+        crate::protocol::VERIFY_SCHEMA.as_bytes(),
+    );
+    plain_line(&mut body, &format!("features {}", request.features().len()));
+    for feature in request.features() {
+        frame_field(&mut body, "feature", feature.as_bytes());
+    }
+    frame_field(
+        &mut body,
+        "observation-subject",
+        crate::protocol::OBSERVATION_SUBJECT.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "revision-algorithm",
+        crate::protocol::REVISION_ALGORITHM.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "revision-policy",
+        crate::protocol::REVISION_POLICY.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "execution-binding",
+        crate::protocol::EXECUTION_BINDING.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "observation-to-exec-channel",
+        crate::protocol::OBSERVATION_TO_EXEC_CHANNEL.as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "requested-target-revision",
+        request.requested_revision().wire_value().as_bytes(),
+    );
+    frame_field(&mut body, "claimed-observed-revision", claimed.as_bytes());
+    frame_field(
+        &mut body,
+        "cassette-identity",
+        cassette.identity().as_bytes(),
+    );
+    frame_field(&mut body, "engine-request-id", engine_request_id.as_bytes());
+    frame_field(
+        &mut body,
+        "first-identity",
+        campaign.first.identity().as_bytes(),
+    );
+    frame_field(
+        &mut body,
+        "second-identity",
+        campaign.second.identity().as_bytes(),
+    );
+    frame_field(&mut body, "evidence-id", evidence_id.as_bytes());
+    frame_field(&mut body, "legacy-receipt", legacy_receipt);
+    let digest = vh_digest::sha256_hex(&body);
+    plain_line(&mut body, &format!("digest sha256:{digest}"));
+    if body.len() as u64 > MAX_RECEIPT_BYTES {
+        return Err("v2 receipt exceeds the published maximum receipt size".into());
+    }
+    Ok(body)
+}
+
+fn parse_v2_receipt(bytes: &[u8]) -> Result<ParsedV2Receipt, &'static str> {
+    if bytes.len() as u64 > MAX_RECEIPT_BYTES {
+        return Err("oversized");
+    }
+    let mut reader = ReceiptReader { bytes, pos: 0 };
+    reader.expect_exact(crate::protocol::RECEIPT_SCHEMA)?;
+    let framed_string = |reader: &mut ReceiptReader<'_>, tag: &str| {
+        String::from_utf8(reader.expect_framed(tag)?).map_err(|_| "invalid-utf8")
+    };
+    let protocol_schema = framed_string(&mut reader, "protocol-schema")?;
+    let manifest_id = framed_string(&mut reader, "manifest-id")?;
+    let engine_sha256 = framed_string(&mut reader, "engine-sha256")?;
+    let operation = framed_string(&mut reader, "operation")?;
+    let request_schema = framed_string(&mut reader, "request-schema")?;
+    let outcome_schema = framed_string(&mut reader, "outcome-schema")?;
+    let receipt_schema = framed_string(&mut reader, "receipt-schema")?;
+    let verifier_schema = framed_string(&mut reader, "verifier-schema")?;
+    let count = reader.expect_u64("features")?;
+    if count > crate::protocol::MAX_FEATURES as u64 {
+        return Err("field-bound");
+    }
+    let count = usize::try_from(count).map_err(|_| "field-bound")?;
+    let mut features = Vec::with_capacity(count);
+    for _ in 0..count {
+        features.push(framed_string(&mut reader, "feature")?);
+    }
+    let observation_subject = framed_string(&mut reader, "observation-subject")?;
+    let revision_algorithm = framed_string(&mut reader, "revision-algorithm")?;
+    let revision_policy = framed_string(&mut reader, "revision-policy")?;
+    let execution_binding = framed_string(&mut reader, "execution-binding")?;
+    let observation_to_exec_channel = framed_string(&mut reader, "observation-to-exec-channel")?;
+    let requested_revision = framed_string(&mut reader, "requested-target-revision")?;
+    let claimed_revision_text = framed_string(&mut reader, "claimed-observed-revision")?;
+    let claimed_revision = crate::protocol::ClaimedObservedRevision::parse(&claimed_revision_text)
+        .map_err(|_| "field-type")?;
+    let cassette_identity = framed_string(&mut reader, "cassette-identity")?;
+    let engine_request_id = framed_string(&mut reader, "engine-request-id")?;
+    let first_identity = framed_string(&mut reader, "first-identity")?;
+    let second_identity = framed_string(&mut reader, "second-identity")?;
+    let evidence_id = framed_string(&mut reader, "evidence-id")?;
+    let legacy_receipt = reader.expect_framed("legacy-receipt")?;
+    let body_end = reader.pos;
+    let digest_line = reader.take_line()?;
+    let body_digest = digest_line
+        .strip_prefix("digest sha256:")
+        .ok_or("field-order")?
+        .to_string();
+    if reader.pos != bytes.len() || body_digest.len() != 64 {
+        return Err("trailing-data");
+    }
+    Ok(ParsedV2Receipt {
+        protocol_schema,
+        manifest_id,
+        engine_sha256,
+        operation,
+        request_schema,
+        outcome_schema,
+        receipt_schema,
+        verifier_schema,
+        features,
+        observation_subject,
+        revision_algorithm,
+        revision_policy,
+        execution_binding,
+        observation_to_exec_channel,
+        requested_revision,
+        claimed_revision,
+        cassette_identity,
+        engine_request_id,
+        first_identity,
+        second_identity,
+        evidence_id,
+        legacy_receipt,
+        body_digest,
+        body_bytes: bytes[..body_end].to_vec(),
+    })
+}
+
+#[derive(Clone)]
+struct ExpectedV2Request {
+    negotiated: crate::protocol::NegotiatedRequest,
+    cassette_bytes: Vec<u8>,
+}
+
+fn verify_v2_receipt(
+    bytes: &[u8],
+    expected: &ExpectedV2Request,
+    executions: &mut u64,
+    output_schema: &str,
+) -> Result<(i32, Vec<u8>), String> {
+    let parsed =
+        parse_v2_receipt(bytes).map_err(|category| format!("malformed v2 receipt: {category}"))?;
+    let manifest = crate::protocol::ProtocolManifest::current()?;
+    let mut errors = Vec::new();
+    if vh_digest::sha256_hex(&parsed.body_bytes) != parsed.body_digest {
+        errors.push("body-digest-mismatch");
+    }
+    if parsed.protocol_schema != crate::protocol::MANIFEST_SCHEMA
+        || parsed.manifest_id != manifest.manifest_id
+        || parsed.engine_sha256 != manifest.engine_sha256
+        || parsed.operation != crate::protocol::OPERATION
+        || parsed.request_schema != crate::protocol::REQUEST_SCHEMA
+        || parsed.outcome_schema != crate::protocol::OUTCOME_SCHEMA
+        || parsed.receipt_schema != crate::protocol::RECEIPT_SCHEMA
+        || parsed.verifier_schema != crate::protocol::VERIFY_SCHEMA
+        || parsed.observation_subject != crate::protocol::OBSERVATION_SUBJECT
+        || parsed.revision_algorithm != crate::protocol::REVISION_ALGORITHM
+        || parsed.revision_policy != crate::protocol::REVISION_POLICY
+        || parsed.execution_binding != crate::protocol::EXECUTION_BINDING
+        || parsed.observation_to_exec_channel != crate::protocol::OBSERVATION_TO_EXEC_CHANNEL
+    {
+        errors.push("descriptor-mismatch");
+    }
+    if parsed.manifest_id != expected.negotiated.manifest_id()
+        || parsed.features != expected.negotiated.features()
+        || parsed.requested_revision != expected.negotiated.requested_revision().wire_value()
+    {
+        errors.push("expected-request-mismatch");
+    }
+    let cassette = CassetteV2::parse_detailed(&expected.cassette_bytes)
+        .map_err(|_| "expected cassette is malformed".to_string())?;
+    if cassette.file_bytes() != expected.cassette_bytes
+        || parsed.cassette_identity != cassette.identity()
+    {
+        errors.push("expected-cassette-mismatch");
+    }
+    let legacy = parse_receipt(&parsed.legacy_receipt)
+        .map_err(|category| format!("embedded legacy receipt malformed: {category}"))?;
+    if legacy.cassette_bytes != expected.cassette_bytes
+        || legacy.cassette_identity != parsed.cassette_identity
+        || legacy.first_identity != parsed.first_identity
+        || legacy.second_identity != parsed.second_identity
+        || legacy.engine_sha256 != parsed.engine_sha256
+    {
+        errors.push("embedded-receipt-mismatch");
+    }
+    // Do not construct a fresh or verified authority type for evidence whose
+    // framing, descriptor, expected-request binding, cassette, or embedded
+    // legacy receipt has already failed. Authority promotion is downstream of
+    // all non-executing integrity and policy checks.
+    if !errors.is_empty() {
+        return Err(errors.join(","));
+    }
+    let receipt_requested =
+        crate::protocol::RequestedTargetRevision::parse(&parsed.requested_revision)
+            .map_err(|_| "receipt requested revision malformed".to_string())?;
+    let negotiated = crate::protocol::negotiate(
+        &manifest,
+        &parsed.protocol_schema,
+        &parsed.manifest_id,
+        &parsed.operation,
+        &parsed.features,
+        receipt_requested.clone(),
+    )
+    .map_err(|reason| format!("receipt negotiation failed: {}", reason.as_str()))?;
+    let engine_request_id = crate::protocol::engine_request_id(&negotiated, &cassette.identity());
+    if engine_request_id != parsed.engine_request_id
+        || engine_request_id
+            != crate::protocol::engine_request_id(&expected.negotiated, &cassette.identity())
+    {
+        errors.push("engine-request-id-mismatch");
+    }
+    if !errors.is_empty() {
+        return Err(errors.join(","));
+    }
+
+    let fresh = crate::protocol::resolve_fresh_compiled_target();
+    if fresh.bytes() != COOPERATIVE_ECHO_CHILD.as_bytes() {
+        errors.push("fresh-observation-bytes-mismatch");
+    }
+    if expected.negotiated.requested_revision().exact_digest() != Some(fresh.digest()) {
+        errors.push("requested-revision-mismatch");
+    }
+    if !errors.is_empty() {
+        return Err(errors.join(","));
+    }
+    let matched = crate::protocol::match_requested_revision(&negotiated, &fresh)
+        .map_err(|_| "requested-revision-mismatch".to_string())?;
+    let claimed = &parsed.claimed_revision;
+    let verified = crate::protocol::VerifiedObservedRevision::promote(claimed, &matched)
+        .map_err(|_| "claimed/fresh observation mismatch".to_string())?;
+    let evidence_id = crate::protocol::evidence_id(
+        &engine_request_id,
+        claimed.digest(),
+        &parsed.first_identity,
+        &parsed.second_identity,
+    );
+    if evidence_id != parsed.evidence_id {
+        errors.push("evidence-id-mismatch");
+    }
+    if !errors.is_empty() {
+        return Err(errors.join(","));
+    }
+
+    let legacy_expected = ExpectedCooperativeRequest {
+        workload: "cooperative-echo".into(),
+        cassette_bytes: expected.cassette_bytes.clone(),
+    };
+    let (legacy_code, legacy_fields) =
+        verify_cooperative_receipt(&parsed.legacy_receipt, Some(&legacy_expected), executions);
+    if legacy_code != 0 || legacy_fields.is_empty() || !field_bool(&legacy_fields, "authentic") {
+        return Err("embedded legacy receipt failed fresh replay".into());
+    }
+    let receipt_sha256 = vh_digest::sha256_hex(bytes);
+    let outcome_verified = field_bool(&legacy_fields, "verified");
+    let verification_result_id = crate::protocol::verification_result_id(
+        &receipt_sha256,
+        fresh.digest(),
+        verified.digest(),
+        true,
+        outcome_verified,
+    );
+    let outcome_exit_code = field_u64(&legacy_fields, "outcome_exit_code") as i32;
+    let mut record = Vec::new();
+    plain_line(&mut record, output_schema);
+    frame_field(
+        &mut record,
+        "verdict",
+        field_string(&legacy_fields, "verdict").as_bytes(),
+    );
+    frame_field(&mut record, "tier", b"TIER2");
+    frame_field(&mut record, "grade", b"D2");
+    frame_field(&mut record, "scope", SCOPE.as_bytes());
+    frame_field(
+        &mut record,
+        "protocol-schema",
+        crate::protocol::MANIFEST_SCHEMA.as_bytes(),
+    );
+    frame_field(&mut record, "manifest-id", manifest.manifest_id.as_bytes());
+    frame_field(
+        &mut record,
+        "engine-sha256",
+        manifest.engine_sha256.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "operation",
+        crate::protocol::OPERATION.as_bytes(),
+    );
+    plain_line(&mut record, &format!("features {}", parsed.features.len()));
+    for feature in &parsed.features {
+        frame_field(&mut record, "feature", feature.as_bytes());
+    }
+    frame_field(
+        &mut record,
+        "request-schema",
+        crate::protocol::REQUEST_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "outcome-schema",
+        crate::protocol::OUTCOME_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "receipt-schema",
+        crate::protocol::RECEIPT_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "verifier-schema",
+        crate::protocol::VERIFY_SCHEMA.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "observation-subject",
+        crate::protocol::OBSERVATION_SUBJECT.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "revision-algorithm",
+        crate::protocol::REVISION_ALGORITHM.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "revision-policy",
+        crate::protocol::REVISION_POLICY.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "requested-target-revision",
+        parsed.requested_revision.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "claimed-observed-revision",
+        claimed.digest().as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "fresh-observed-revision",
+        fresh.digest().as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "verified-observed-revision",
+        verified.digest().as_bytes(),
+    );
+    frame_field(&mut record, "revision-binding", b"bound");
+    frame_field(
+        &mut record,
+        "execution-binding",
+        crate::protocol::EXECUTION_BINDING.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "observation-to-exec-channel",
+        crate::protocol::OBSERVATION_TO_EXEC_CHANNEL.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "cassette-identity",
+        parsed.cassette_identity.as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "engine-request-id",
+        engine_request_id.as_bytes(),
+    );
+    frame_field(&mut record, "evidence-id", evidence_id.as_bytes());
+    frame_field(
+        &mut record,
+        "result-digest",
+        field_string(&legacy_fields, "result_digest").as_bytes(),
+    );
+    frame_field(&mut record, "receipt-sha256", receipt_sha256.as_bytes());
+    frame_field(
+        &mut record,
+        "verification-result-id",
+        verification_result_id.as_bytes(),
+    );
+    frame_field(&mut record, "oracle", COOPERATIVE_ORACLE.as_bytes());
+    frame_field(
+        &mut record,
+        "oracle-evaluation",
+        field_string(&legacy_fields, "oracle_evaluation").as_bytes(),
+    );
+    frame_field(
+        &mut record,
+        "finding-identity",
+        field_string(&legacy_fields, "finding_identity").as_bytes(),
+    );
+    plain_line(
+        &mut record,
+        &format!(
+            "findings-count {}",
+            field_u64(&legacy_fields, "findings_count")
+        ),
+    );
+    plain_line(&mut record, "authentic true");
+    plain_line(&mut record, &format!("verified {outcome_verified}"));
+    plain_line(
+        &mut record,
+        &format!("outcome-exit-code {outcome_exit_code}"),
+    );
+    plain_line(&mut record, "exit-code 0");
+    plain_line(&mut record, &format!("executions {}", *executions));
+    frame_field(
+        &mut record,
+        "errors",
+        field_string(&legacy_fields, "errors").as_bytes(),
+    );
+    Ok((outcome_exit_code, record))
+}
+
+pub(crate) fn cmd_cooperative_v2(args: &[String], usage: &str) -> i32 {
+    let stdout = std::io::stdout();
+    let mut output = stdout.lock();
+    cmd_cooperative_v2_inner(
+        args,
+        usage,
+        &mut output,
+        #[cfg(test)]
+        None,
+    )
+}
+
+fn cmd_cooperative_v2_inner<W: Write>(
+    args: &[String],
+    usage: &str,
+    output: &mut W,
+    #[cfg(test)] before_observation: BeforeObservationHook<'_>,
+) -> i32 {
+    let request = match parse_cooperative_v2_args(args) {
+        Ok(request) => request,
+        Err(error) => {
+            eprintln!("error: {}\n\n{usage}", bounded_diagnostic(&error));
+            return 2;
+        }
+    };
+    let manifest = match crate::protocol::ProtocolManifest::current() {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            eprintln!("error: {}", bounded_diagnostic(&error));
+            return 2;
+        }
+    };
+    let negotiated = match crate::protocol::negotiate(
+        &manifest,
+        &request.protocol_schema,
+        &request.manifest_id,
+        &request.operation,
+        &request.features,
+        request.requested_revision.clone(),
+    ) {
+        Ok(negotiated) => negotiated,
+        Err(reason) => return emit_v2_refusal_to(reason, &manifest, output),
+    };
+    let out_dir = match request.out_path.as_deref() {
+        Some(path) => match prepare_output_root(Path::new(path)) {
+            Ok(path) => Some(path),
+            Err(error) => {
+                eprintln!("error: {error}");
+                return 2;
+            }
+        },
+        None => None,
+    };
+    let cassette = match load_cooperative_cassette(request.cassette_path.as_deref()) {
+        Ok(cassette) => cassette,
+        Err(error) => {
+            eprintln!("error: {}", bounded_diagnostic(&error));
+            return 2;
+        }
+    };
+    let mut executions = 0;
+    let (campaign, workspace, fresh) = match run_cooperative_campaign_v2_inner(
+        &cassette,
+        out_dir.as_deref(),
+        negotiated.requested_revision(),
+        &mut executions,
+        #[cfg(test)]
+        before_observation,
+    ) {
+        Ok(value) => value,
+        Err(CooperativeV2RunError::Refusal(reason)) => {
+            return emit_v2_refusal_to(reason, &manifest, output)
+        }
+        Err(CooperativeV2RunError::Boundary(error)) => {
+            eprintln!(
+                "error: cooperative v2 run failed: {}",
+                bounded_diagnostic(&error)
+            );
+            return 2;
+        }
+    };
+    let (_, provisional_fields) = outcome_fields(&campaign, &cassette);
+    let matched = match crate::protocol::match_requested_revision(&negotiated, &fresh) {
+        Ok(matched) => matched,
+        Err(reason) => return emit_v2_refusal_to(reason, &manifest, output),
+    };
+    let legacy_receipt = match build_cooperative_receipt(
+        "cooperative-echo",
+        &cassette,
+        &campaign,
+        workspace.path(),
+        &provisional_fields,
+    ) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            eprintln!("error: {}", bounded_diagnostic(&error));
+            return 2;
+        }
+    };
+    let v2_receipt =
+        match build_v2_receipt(&manifest, &matched, &cassette, &campaign, &legacy_receipt) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("error: {}", bounded_diagnostic(&error));
+                return 2;
+            }
+        };
+    let ephemeral = if out_dir.is_none() {
+        match reserve_workspace(None, "v2-receipt", &cassette) {
+            Ok(lease) => Some(lease),
+            Err(error) => {
+                eprintln!("error: {}", bounded_diagnostic(&error));
+                return 2;
+            }
+        }
+    } else {
+        None
+    };
+    let receipt_dir = out_dir
+        .as_deref()
+        .or_else(|| ephemeral.as_ref().map(WorkspaceLease::path))
+        .expect("receipt directory");
+    if let Err(error) = publish_cooperative_receipt(receipt_dir, &v2_receipt) {
+        eprintln!("error: {}", bounded_diagnostic(&error));
+        return 2;
+    }
+    let receipt_path = receipt_dir.join(COOPERATIVE_RECEIPT_NAME);
+    let observed_receipt = match vh_sandbox::read_bounded_file(&receipt_path, MAX_RECEIPT_BYTES) {
+        Ok(bytes) if bytes == v2_receipt => bytes,
+        Ok(_) => {
+            eprintln!("error: persisted cooperative v2 receipt changed before reverification");
+            return 2;
+        }
+        Err(error) => {
+            eprintln!(
+                "error: cannot read persisted cooperative v2 receipt: category={}",
+                error.category()
+            );
+            return 2;
+        }
+    };
+    let expected = ExpectedV2Request {
+        negotiated,
+        cassette_bytes: cassette.file_bytes(),
+    };
+    match verify_v2_receipt(
+        &observed_receipt,
+        &expected,
+        &mut executions,
+        crate::protocol::OUTCOME_SCHEMA,
+    ) {
+        Ok((outcome_code, record)) => match output.write_all(&record) {
+            Ok(()) => outcome_code,
+            Err(_) => 2,
+        },
+        Err(error) => {
+            eprintln!(
+                "error: v2 reverification failed: {}",
+                bounded_diagnostic(&error)
+            );
+            2
+        }
+    }
+}
+
+pub(crate) fn cmd_verify_cooperative_v2(args: &[String], usage: &str) -> i32 {
+    let mut receipt_path = None;
+    let mut operation = None;
+    let mut features = Vec::new();
+    let mut requested_revision = None;
+    let mut protocol_schema = None;
+    let mut manifest_id = None;
+    let mut request_schema = None;
+    let mut outcome_schema = None;
+    let mut receipt_schema = None;
+    let mut verifier_schema = None;
+    let mut observation_subject = None;
+    let mut revision_algorithm = None;
+    let mut revision_policy = None;
+    let mut execution_binding = None;
+    let mut observation_to_exec_channel = None;
+    let mut expected_cassette_path = None;
+    let mut expect_default_cassette = false;
+    let mut it = args.iter();
+    while let Some(argument) = it.next() {
+        let mut value = |flag: &str| {
+            it.next()
+                .cloned()
+                .ok_or_else(|| format!("{flag} requires a value"))
+        };
+        let parsed: Result<(), String> = match argument.as_str() {
+            "--receipt" if receipt_path.is_none() => {
+                value(argument).map(|v| receipt_path = Some(v))
+            }
+            "--expected-operation" if operation.is_none() => {
+                value(argument).map(|v| operation = Some(v))
+            }
+            "--expected-feature" => value(argument).map(|v| features.push(v)),
+            "--expected-requested-target-revision" if requested_revision.is_none() => {
+                value(argument).map(|v| requested_revision = Some(v))
+            }
+            "--expected-protocol-schema" if protocol_schema.is_none() => {
+                value(argument).map(|v| protocol_schema = Some(v))
+            }
+            "--expected-manifest-id" if manifest_id.is_none() => {
+                value(argument).map(|v| manifest_id = Some(v))
+            }
+            "--expected-cassette"
+                if expected_cassette_path.is_none() && !expect_default_cassette =>
+            {
+                value(argument).map(|v| expected_cassette_path = Some(v))
+            }
+            "--expect-default-cassette"
+                if expected_cassette_path.is_none() && !expect_default_cassette =>
+            {
+                expect_default_cassette = true;
+                Ok(())
+            }
+            "--expected-request-schema" if request_schema.is_none() => {
+                value(argument).map(|v| request_schema = Some(v))
+            }
+            "--expected-outcome-schema" if outcome_schema.is_none() => {
+                value(argument).map(|v| outcome_schema = Some(v))
+            }
+            "--expected-receipt-schema" if receipt_schema.is_none() => {
+                value(argument).map(|v| receipt_schema = Some(v))
+            }
+            "--expected-verifier-schema" if verifier_schema.is_none() => {
+                value(argument).map(|v| verifier_schema = Some(v))
+            }
+            "--expected-observation-subject" if observation_subject.is_none() => {
+                value(argument).map(|v| observation_subject = Some(v))
+            }
+            "--expected-revision-algorithm" if revision_algorithm.is_none() => {
+                value(argument).map(|v| revision_algorithm = Some(v))
+            }
+            "--expected-revision-policy" if revision_policy.is_none() => {
+                value(argument).map(|v| revision_policy = Some(v))
+            }
+            "--expected-execution-binding" if execution_binding.is_none() => {
+                value(argument).map(|v| execution_binding = Some(v))
+            }
+            "--expected-observation-to-exec-channel" if observation_to_exec_channel.is_none() => {
+                value(argument).map(|v| observation_to_exec_channel = Some(v))
+            }
+            other => Err(format!("duplicate or unknown argument: {other}")),
+        };
+        if let Err(error) = parsed {
+            eprintln!("error: {}\n\n{usage}", bounded_diagnostic(&error));
+            return 2;
+        }
+    }
+    let receipt_path = match receipt_path {
+        Some(value) => PathBuf::from(value),
+        None => {
+            eprintln!("error: verify-cooperative-v2 requires --receipt PATH\n\n{usage}");
+            return 2;
+        }
+    };
+    if !receipt_path.is_absolute()
+        || receipt_path.file_name().and_then(|name| name.to_str()) != Some(COOPERATIVE_RECEIPT_NAME)
+        || receipt_path
+            .components()
+            .any(|part| matches!(part, Component::ParentDir | Component::CurDir))
+    {
+        eprintln!("error: receipt must be an absolute canonical cooperative.receipt path");
+        return 2;
+    }
+    let manifest = match crate::protocol::ProtocolManifest::current() {
+        Ok(manifest) => manifest,
+        Err(error) => {
+            eprintln!("error: {}", bounded_diagnostic(&error));
+            return 2;
+        }
+    };
+    let bytes = match vh_sandbox::read_bounded_file(&receipt_path, MAX_RECEIPT_BYTES) {
+        Ok(bytes) => bytes,
+        Err(SandboxError::Oversized { .. }) => {
+            let failure = encode_v2_verify_failure(
+                V2VerifyFailureReason::MalformedReceipt,
+                &manifest,
+                "unavailable",
+                0,
+            );
+            print!("{}", String::from_utf8_lossy(&failure));
+            return 1;
+        }
+        Err(error) => {
+            eprintln!("error: cannot read receipt: category={}", error.category());
+            return 2;
+        }
+    };
+    if !bytes.starts_with(format!("{}\n", crate::protocol::RECEIPT_SCHEMA).as_bytes()) {
+        return emit_v2_refusal(
+            crate::protocol::RefusalReason::UnsupportedReceiptSchema,
+            &manifest,
+        );
+    }
+    for (flag, actual, required) in [
+        (
+            "--expected-request-schema",
+            request_schema.as_deref(),
+            crate::protocol::REQUEST_SCHEMA,
+        ),
+        (
+            "--expected-outcome-schema",
+            outcome_schema.as_deref(),
+            crate::protocol::OUTCOME_SCHEMA,
+        ),
+        (
+            "--expected-receipt-schema",
+            receipt_schema.as_deref(),
+            crate::protocol::RECEIPT_SCHEMA,
+        ),
+        (
+            "--expected-verifier-schema",
+            verifier_schema.as_deref(),
+            crate::protocol::VERIFY_SCHEMA,
+        ),
+        (
+            "--expected-observation-subject",
+            observation_subject.as_deref(),
+            crate::protocol::OBSERVATION_SUBJECT,
+        ),
+        (
+            "--expected-revision-algorithm",
+            revision_algorithm.as_deref(),
+            crate::protocol::REVISION_ALGORITHM,
+        ),
+        (
+            "--expected-revision-policy",
+            revision_policy.as_deref(),
+            crate::protocol::REVISION_POLICY,
+        ),
+        (
+            "--expected-execution-binding",
+            execution_binding.as_deref(),
+            crate::protocol::EXECUTION_BINDING,
+        ),
+        (
+            "--expected-observation-to-exec-channel",
+            observation_to_exec_channel.as_deref(),
+            crate::protocol::OBSERVATION_TO_EXEC_CHANNEL,
+        ),
+    ] {
+        match actual {
+            Some(value) if value == required => {}
+            Some(_) => {
+                eprintln!("error: {flag} does not match the Rust-owned descriptor");
+                return 2;
+            }
+            None => {
+                eprintln!("error: v2 expected request is missing {flag}");
+                return 2;
+            }
+        }
+    }
+    let requested_revision = match requested_revision
+        .as_deref()
+        .and_then(|value| crate::protocol::RequestedTargetRevision::parse(value).ok())
+    {
+        Some(value) => value,
+        None => {
+            eprintln!("error: v2 expected request is incomplete");
+            return 2;
+        }
+    };
+    let negotiated = match crate::protocol::negotiate(
+        &manifest,
+        protocol_schema.as_deref().unwrap_or(""),
+        manifest_id.as_deref().unwrap_or(""),
+        operation.as_deref().unwrap_or(""),
+        &features,
+        requested_revision,
+    ) {
+        Ok(value) => value,
+        Err(reason) => return emit_v2_refusal(reason, &manifest),
+    };
+    let cassette_bytes = if expect_default_cassette {
+        fixture_cassette().file_bytes()
+    } else if let Some(path) = expected_cassette_path.as_deref() {
+        match load_cooperative_cassette(Some(path)) {
+            Ok(cassette) => cassette.file_bytes(),
+            Err(error) => {
+                eprintln!("error: {}", bounded_diagnostic(&error));
+                return 2;
+            }
+        }
+    } else {
+        eprintln!("error: v2 expected cassette mode is required");
+        return 2;
+    };
+    let expected = ExpectedV2Request {
+        negotiated,
+        cassette_bytes,
+    };
+    let mut executions = 0;
+    match verify_v2_receipt(
+        &bytes,
+        &expected,
+        &mut executions,
+        crate::protocol::VERIFY_SCHEMA,
+    ) {
+        Ok((_outcome_code, record)) => {
+            print!("{}", String::from_utf8_lossy(&record));
+            0
+        }
+        Err(error) => {
+            let failure = encode_v2_verify_failure(
+                classify_v2_verify_failure(&error, executions),
+                &manifest,
+                &vh_digest::sha256_hex(&bytes),
+                executions,
+            );
+            print!("{}", String::from_utf8_lossy(&failure));
+            1
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2222,6 +3411,63 @@ mod tests {
         let record = run_one("unconsumed", &cassette);
         assert!(record.transport_tainted());
         assert_eq!(record.transport.as_ref().unwrap().unconsumed, 1);
+    }
+
+    #[test]
+    fn admitted_attempt_cannot_become_false_zero_after_child_start() {
+        let cassette = CassetteV2::default();
+        let root = cooperative_root("attempt-post-spawn-artifact", &cassette);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let source = root.join("attempt.py");
+        std::fs::write(
+            &source,
+            "from pathlib import Path\nPath('started.txt').write_text('started')\nout = Path('out.txt')\nif out.exists(): out.unlink()\nout.mkdir()\n",
+        )
+        .unwrap();
+        let spec = SandboxSpec::new(vec![
+            "/usr/bin/python3".into(),
+            "-S".into(),
+            "-s".into(),
+            "attempt.py".into(),
+        ])
+        .unwrap()
+        .with_cassette_identity(cassette.identity())
+        .declare_artifact("out.txt")
+        .unwrap()
+        .declare_input_file(&source)
+        .unwrap();
+        let workspace = root.join("u0");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::copy(&source, workspace.join("attempt.py")).unwrap();
+        let mut attempts = 0;
+
+        let error = run_admitted_sandbox_attempt(&spec, &workspace, &cassette, &mut attempts)
+            .expect_err("a directory cannot satisfy the declared file artifact");
+
+        assert_eq!(
+            std::fs::read(workspace.join("started.txt")).unwrap(),
+            b"started"
+        );
+        assert!(matches!(error, SandboxError::ArtifactBoundary { .. }));
+        assert_eq!(attempts, 1, "post-spawn failure must not report zero");
+        assert_eq!(
+            classify_v2_verify_failure("post-spawn artifact boundary", attempts),
+            V2VerifyFailureReason::FreshReplayFailed
+        );
+        let manifest = crate::protocol::ProtocolManifest::current().unwrap();
+        let failure = String::from_utf8(encode_v2_verify_failure(
+            V2VerifyFailureReason::FreshReplayFailed,
+            &manifest,
+            &"0".repeat(64),
+            attempts,
+        ))
+        .unwrap();
+        assert!(failure.contains("reason 19:fresh-replay-failed\n"));
+        assert!(failure.contains("executions 1\n"));
+        assert!(failure.contains("authentic false\n"));
+        assert!(failure.contains("verified false\n"));
+        assert!(!failure.contains("CLEAN"));
     }
 
     #[test]
@@ -2713,5 +3959,429 @@ read_frame(os.path.join(MAILBOX, 'resp-1'))
             Val::B(false)
         ));
         assert!(field_string(&verify_fields, "errors").contains("expected-cassette-mismatch"));
+    }
+
+    fn negotiated_v2_fixture(
+        label: &str,
+    ) -> (
+        Vec<u8>,
+        ExpectedV2Request,
+        crate::protocol::ProtocolManifest,
+    ) {
+        let (_root, cassette, campaign, workspace, fields) = receipt_fixture(label);
+        let manifest = crate::protocol::ProtocolManifest::current().unwrap();
+        let features = crate::protocol::MANDATORY_FEATURES
+            .iter()
+            .map(|feature| feature.to_string())
+            .collect::<Vec<_>>();
+        let negotiated = crate::protocol::negotiate(
+            &manifest,
+            crate::protocol::MANIFEST_SCHEMA,
+            &manifest.manifest_id,
+            crate::protocol::OPERATION,
+            &features,
+            crate::protocol::RequestedTargetRevision::parse(&format!(
+                "sha256:{}",
+                vh_digest::sha256_hex(COOPERATIVE_ECHO_CHILD.as_bytes())
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let legacy_receipt = build_cooperative_receipt(
+            "cooperative-echo",
+            &cassette,
+            &campaign,
+            workspace.path(),
+            &fields,
+        )
+        .unwrap();
+        let fresh = crate::protocol::resolve_fresh_compiled_target();
+        let matched = crate::protocol::match_requested_revision(&negotiated, &fresh).unwrap();
+        let receipt =
+            build_v2_receipt(&manifest, &matched, &cassette, &campaign, &legacy_receipt).unwrap();
+        let expected = ExpectedV2Request {
+            negotiated,
+            cassette_bytes: cassette.file_bytes(),
+        };
+        (receipt, expected, manifest)
+    }
+
+    fn find_bytes(haystack: &[u8], needle: &[u8]) -> usize {
+        haystack
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .unwrap_or_else(|| panic!("missing byte fixture {:?}", String::from_utf8_lossy(needle)))
+    }
+
+    fn refresh_outer_receipt_digest(receipt: &mut [u8]) {
+        let marker = b"digest sha256:";
+        let marker_start = receipt
+            .windows(marker.len())
+            .rposition(|window| window == marker)
+            .expect("outer digest line");
+        let digest_start = marker_start + marker.len();
+        let digest_end = digest_start + 64;
+        assert_eq!(receipt.get(digest_end), Some(&b'\n'));
+        let digest = vh_digest::sha256_hex(&receipt[..marker_start]);
+        receipt[digest_start..digest_end].copy_from_slice(digest.as_bytes());
+    }
+
+    #[test]
+    fn negotiated_v2_rejects_missing_claim_before_replay() {
+        let (mut receipt, expected, _) = negotiated_v2_fixture("v2-missing-claim");
+        let prefix = b"claimed-observed-revision ";
+        let start = find_bytes(&receipt, prefix);
+        let end = start
+            + receipt[start..]
+                .iter()
+                .position(|byte| *byte == b'\n')
+                .expect("claim line")
+            + 1;
+        receipt.drain(start..end);
+        refresh_outer_receipt_digest(&mut receipt);
+        let mut executions = 0;
+        let error = verify_v2_receipt(
+            &receipt,
+            &expected,
+            &mut executions,
+            crate::protocol::VERIFY_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(error.contains("malformed v2 receipt"), "{error}");
+        assert_eq!(executions, 0, "missing claim must refuse before replay");
+    }
+
+    #[test]
+    fn negotiated_v2_rejects_mutated_claim_before_replay() {
+        let (mut receipt, expected, _) = negotiated_v2_fixture("v2-mutated-claim");
+        let prefix = b"claimed-observed-revision 64:";
+        let value_start = find_bytes(&receipt, prefix) + prefix.len();
+        receipt[value_start..value_start + 64].fill(b'0');
+        refresh_outer_receipt_digest(&mut receipt);
+        let mut executions = 0;
+        let error = verify_v2_receipt(
+            &receipt,
+            &expected,
+            &mut executions,
+            crate::protocol::VERIFY_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(
+            error.contains("claimed/fresh observation mismatch"),
+            "{error}"
+        );
+        assert_eq!(executions, 0, "mutated claim must refuse before replay");
+    }
+
+    #[test]
+    fn negotiated_v2_rejects_alternate_expected_request_before_replay() {
+        let (receipt, expected, manifest) = negotiated_v2_fixture("v2-request-substitution");
+        let alternate = crate::protocol::negotiate(
+            &manifest,
+            crate::protocol::MANIFEST_SCHEMA,
+            &manifest.manifest_id,
+            crate::protocol::OPERATION,
+            expected.negotiated.features(),
+            crate::protocol::RequestedTargetRevision::parse(&format!("sha256:{}", "0".repeat(64)))
+                .unwrap(),
+        )
+        .unwrap();
+        let substituted = ExpectedV2Request {
+            negotiated: alternate,
+            cassette_bytes: expected.cassette_bytes,
+        };
+        let mut executions = 0;
+        let error = verify_v2_receipt(
+            &receipt,
+            &substituted,
+            &mut executions,
+            crate::protocol::VERIFY_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(error.contains("expected-request-mismatch"), "{error}");
+        assert_eq!(executions, 0, "request substitution must precede replay");
+    }
+
+    #[test]
+    fn negotiated_v2_rejects_alternate_expected_cassette_before_replay() {
+        let (receipt, mut expected, _) = negotiated_v2_fixture("v2-cassette-substitution");
+        expected.cassette_bytes = timeout_cassette().file_bytes();
+        let mut executions = 0;
+        let error = verify_v2_receipt(
+            &receipt,
+            &expected,
+            &mut executions,
+            crate::protocol::VERIFY_SCHEMA,
+        )
+        .unwrap_err();
+        assert!(error.contains("expected-cassette-mismatch"), "{error}");
+        assert_eq!(executions, 0, "cassette substitution must precede replay");
+    }
+
+    #[test]
+    fn negotiated_v2_rejects_operation_and_feature_mutations_before_replay() {
+        let (receipt, expected, _) = negotiated_v2_fixture("v2-bound-field-substitution");
+        let mutations: [(&[u8], &[u8]); 2] = [
+            (b"cooperative-target-v1", b"cooperative-target-v2"),
+            (b"cooperative-cassette-v2", b"cooperative-cassette-v3"),
+        ];
+        for (original, replacement) in mutations {
+            let mut changed = receipt.clone();
+            let start = find_bytes(&changed, original);
+            changed[start..start + original.len()].copy_from_slice(replacement);
+            refresh_outer_receipt_digest(&mut changed);
+            let mut executions = 0;
+            let error = verify_v2_receipt(
+                &changed,
+                &expected,
+                &mut executions,
+                crate::protocol::VERIFY_SCHEMA,
+            )
+            .unwrap_err();
+            assert!(
+                error.contains("descriptor-mismatch")
+                    || error.contains("expected-request-mismatch"),
+                "{error}"
+            );
+            assert_eq!(
+                executions, 0,
+                "bound operation/feature mutation must precede replay"
+            );
+        }
+    }
+
+    #[test]
+    fn negotiated_identity_dag_propagates_revision_without_minting_invalid_receipts() {
+        let (_root, cassette, campaign, workspace, fields) = receipt_fixture("v2-identity-dag");
+        let manifest = crate::protocol::ProtocolManifest::current().unwrap();
+        let features = crate::protocol::MANDATORY_FEATURES
+            .iter()
+            .map(|feature| feature.to_string())
+            .collect::<Vec<_>>();
+        let fresh = crate::protocol::resolve_fresh_compiled_target();
+        let exact =
+            crate::protocol::RequestedTargetRevision::parse(&format!("sha256:{}", fresh.digest()))
+                .unwrap();
+        let different =
+            crate::protocol::RequestedTargetRevision::parse(&format!("sha256:{}", "0".repeat(64)))
+                .unwrap();
+        let exact_request = crate::protocol::negotiate(
+            &manifest,
+            crate::protocol::MANIFEST_SCHEMA,
+            &manifest.manifest_id,
+            crate::protocol::OPERATION,
+            &features,
+            exact,
+        )
+        .unwrap();
+        let different_request = crate::protocol::negotiate(
+            &manifest,
+            crate::protocol::MANIFEST_SCHEMA,
+            &manifest.manifest_id,
+            crate::protocol::OPERATION,
+            &features,
+            different,
+        )
+        .unwrap();
+        let legacy = build_cooperative_receipt(
+            "cooperative-echo",
+            &cassette,
+            &campaign,
+            workspace.path(),
+            &fields,
+        )
+        .unwrap();
+        let exact_matched =
+            crate::protocol::match_requested_revision(&exact_request, &fresh).unwrap();
+        let exact_receipt =
+            build_v2_receipt(&manifest, &exact_matched, &cassette, &campaign, &legacy).unwrap();
+        let exact_parsed = parse_v2_receipt(&exact_receipt).unwrap();
+        let different_request_id =
+            crate::protocol::engine_request_id(&different_request, &cassette.identity());
+        let different_evidence_id = crate::protocol::evidence_id(
+            &different_request_id,
+            fresh.digest(),
+            &campaign.first.identity(),
+            &campaign.second.identity(),
+        );
+        assert_ne!(exact_parsed.engine_request_id, different_request_id);
+        assert_ne!(exact_parsed.evidence_id, different_evidence_id);
+        assert!(crate::protocol::match_requested_revision(&different_request, &fresh).is_err());
+    }
+
+    #[test]
+    fn negotiated_v2_positive_standalone_reverification_is_fresh() {
+        let (receipt, expected, _) = negotiated_v2_fixture("v2-positive-reverify");
+        let mut executions = 0;
+        let (outcome_code, record) = verify_v2_receipt(
+            &receipt,
+            &expected,
+            &mut executions,
+            crate::protocol::VERIFY_SCHEMA,
+        )
+        .unwrap();
+        assert_eq!(outcome_code, 0);
+        assert_eq!(
+            executions, 2,
+            "standalone verifier must freshly replay twice"
+        );
+        assert!(record.starts_with(format!("{}\n", crate::protocol::VERIFY_SCHEMA).as_bytes()));
+        let first_newline = record.iter().position(|byte| *byte == b'\n').unwrap();
+        assert!(
+            record[first_newline + 1..].starts_with(b"verdict "),
+            "verification schema must be followed directly by its first field"
+        );
+    }
+
+    #[test]
+    fn legacy_v1_receipt_and_verifier_remain_explicitly_compatible() {
+        let (_root, cassette, campaign, workspace, fields) = receipt_fixture("v1-compatibility");
+        let bytes = build_cooperative_receipt(
+            "cooperative-echo",
+            &cassette,
+            &campaign,
+            workspace.path(),
+            &fields,
+        )
+        .unwrap();
+        assert!(bytes.starts_with(format!("{COOPERATIVE_RECEIPT_SCHEMA}\n").as_bytes()));
+        let expected = ExpectedCooperativeRequest {
+            workload: "cooperative-echo".into(),
+            cassette_bytes: cassette.file_bytes(),
+        };
+        let mut executions = 0;
+        let (code, verify_fields) =
+            verify_cooperative_receipt(&bytes, Some(&expected), &mut executions);
+        assert_eq!(code, 0);
+        assert_eq!(executions, 2);
+        assert_eq!(
+            field_string(&verify_fields, "schema"),
+            COOPERATIVE_VERIFY_SCHEMA
+        );
+    }
+
+    #[test]
+    fn staged_target_substitution_refuses_before_any_child_execution() {
+        let cassette = fixture_cassette();
+        let root = cooperative_root("v2-staged-substitution", &cassette);
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir(&root).unwrap();
+        let manifest = crate::protocol::ProtocolManifest::current().unwrap();
+        let exact_original = format!(
+            "sha256:{}",
+            vh_digest::sha256_hex(COOPERATIVE_ECHO_CHILD.as_bytes())
+        );
+        let mut args = vec![
+            "--protocol-schema".to_string(),
+            crate::protocol::MANIFEST_SCHEMA.to_string(),
+            "--manifest-id".to_string(),
+            manifest.manifest_id.clone(),
+            "--operation".to_string(),
+            crate::protocol::OPERATION.to_string(),
+        ];
+        for feature in crate::protocol::MANDATORY_FEATURES {
+            args.push("--require-feature".to_string());
+            args.push((*feature).to_string());
+        }
+        args.extend([
+            "--requested-target-revision".to_string(),
+            exact_original,
+            "--out".to_string(),
+            root.to_string_lossy().into_owned(),
+        ]);
+        let mut mutate = |a: &Path, _b: &Path| {
+            std::fs::write(a.join(CHILD_LOGICAL_NAME), b"substituted target bytes\n")
+                .map_err(|error| error.to_string())
+        };
+        let mut output = Vec::new();
+        let code = cmd_cooperative_v2_inner(&args, "test usage", &mut output, Some(&mut mutate));
+        let refusal = String::from_utf8(output).unwrap();
+        assert_eq!(code, 4);
+        assert!(refusal.starts_with("vh-engine-negotiation-refusal-v1\n"));
+        assert!(refusal.contains("reason 27:requested-revision-mismatch\n"));
+        assert!(refusal.contains("executions 0\n"));
+        assert!(!refusal.contains("CLEAN"));
+        assert!(!root.join(COOPERATIVE_RECEIPT_NAME).exists());
+    }
+
+    #[test]
+    fn negotiated_registry_refuses_unsupported_invalid_and_stale_requests() {
+        let manifest = crate::protocol::ProtocolManifest::current().unwrap();
+        let good = crate::protocol::MANDATORY_FEATURES
+            .iter()
+            .map(|feature| feature.to_string())
+            .collect::<Vec<_>>();
+        let negotiate = |features: &[String], manifest_id: &str| {
+            crate::protocol::negotiate(
+                &manifest,
+                crate::protocol::MANIFEST_SCHEMA,
+                manifest_id,
+                crate::protocol::OPERATION,
+                features,
+                crate::protocol::RequestedTargetRevision::parse(&format!(
+                    "sha256:{}",
+                    vh_digest::sha256_hex(COOPERATIVE_ECHO_CHILD.as_bytes())
+                ))
+                .unwrap(),
+            )
+        };
+        let mut unsupported = good.clone();
+        unsupported.push("unsupported-v1".into());
+        unsupported.sort();
+        assert_eq!(
+            negotiate(&unsupported, &manifest.manifest_id),
+            Err(crate::protocol::RefusalReason::UnsupportedFeature)
+        );
+        let mut duplicate = good.clone();
+        duplicate.insert(1, duplicate[0].clone());
+        assert_eq!(
+            negotiate(&duplicate, &manifest.manifest_id),
+            Err(crate::protocol::RefusalReason::InvalidFeatureSet)
+        );
+        let mut unsorted = good.clone();
+        unsorted.reverse();
+        assert_eq!(
+            negotiate(&unsorted, &manifest.manifest_id),
+            Err(crate::protocol::RefusalReason::InvalidFeatureSet)
+        );
+        let oversized = vec!["fresh-replay-v1".to_string(); crate::protocol::MAX_FEATURES + 1];
+        assert_eq!(
+            negotiate(&oversized, &manifest.manifest_id),
+            Err(crate::protocol::RefusalReason::InvalidFeatureSet)
+        );
+        assert_eq!(
+            negotiate(&good, &"0".repeat(64)),
+            Err(crate::protocol::RefusalReason::ProtocolManifestMismatch)
+        );
+        assert_eq!(
+            crate::protocol::negotiate(
+                &manifest,
+                crate::protocol::MANIFEST_SCHEMA,
+                &manifest.manifest_id,
+                crate::protocol::OPERATION,
+                &good,
+                crate::protocol::RequestedTargetRevision::parse("unknown").unwrap(),
+            ),
+            Err(crate::protocol::RefusalReason::RequestedRevisionMismatch)
+        );
+    }
+
+    #[test]
+    fn negotiated_verifier_cli_rejects_duplicate_singletons_and_relative_receipt() {
+        let duplicate = vec![
+            "--receipt".to_string(),
+            "/tmp/cooperative.receipt".to_string(),
+            "--expected-request-schema".to_string(),
+            crate::protocol::REQUEST_SCHEMA.to_string(),
+            "--expected-request-schema".to_string(),
+            crate::protocol::REQUEST_SCHEMA.to_string(),
+        ];
+        assert_eq!(cmd_verify_cooperative_v2(&duplicate, "usage"), 2);
+
+        let relative = vec![
+            "--receipt".to_string(),
+            COOPERATIVE_RECEIPT_NAME.to_string(),
+        ];
+        assert_eq!(cmd_verify_cooperative_v2(&relative, "usage"), 2);
     }
 }

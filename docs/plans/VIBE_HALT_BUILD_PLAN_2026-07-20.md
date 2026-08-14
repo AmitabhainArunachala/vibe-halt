@@ -32,15 +32,15 @@ law.
 | 4 | three previously unknown, human-confirmed bugs | `docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71` records zero | **OPEN — 0/3** |
 | 5 | one-command replay and median shrink at least 90% | bundle replay and capture-enabled demo shrink gates are in `scripts/gate.sh`; representative median is not measured | **PARTIAL** |
 | 6 | at least 1,000 Tier-1 universes/hour on the build box | no named build-box benchmark receipt certifies this threshold | **OPEN** |
-| 7 | one end-to-end `dharma_swarm` adapter receipt | a strict local Rust-backed client and fresh generic/cooperative reverification exist in `clients/python/vibe_halt/core/runner.py`; operation/feature negotiation, observed-target-revision binding, the `dharma_swarm` adapter, and a real receipt do not | **OPEN — local bridge slice implemented** |
+| 7 | one end-to-end `dharma_swarm` adapter receipt | the strict local Rust-backed client now has additive cooperative-v2 operation/feature negotiation and a fresh observed revision for its Rust-owned fixture (`crates/vh-cli/src/protocol.rs`, `clients/python/vibe_halt/core/runner.py`); the `dharma_swarm` adapter and any foreign-target receipt remain absent | **OPEN — local contract implemented, external adapter absent** |
 
 The load-bearing next move is still external utility, not more internal
-simulation machinery. Complete issue #90's versioned negotiation and observed
-revision binding, repair the evaluator and D2 trust-boundary defects, then
-admit one bounded whole-target path before any foreign-target or tournament
-claim. Issue #60 retains its exact operator gate. PR #66's delivery workflow is
-orthogonal to that authority gate. The separately proposed C7 supervisor
-remains deferred.
+simulation machinery. Human-review issue #90's local versioned negotiation and
+observed-fixture-revision boundary, repair remaining evaluator and D2
+trust-boundary defects, then admit one bounded whole-target path before any
+foreign-target or tournament claim. Issue #60 retains its exact operator gate.
+PR #66's delivery workflow is orthogonal to that authority gate. The separately
+proposed C7 supervisor remains deferred.
 
 ### 2026-08-09 product reorientation — Product Lock v1
 
@@ -167,13 +167,13 @@ current critical path.
   `~/.dharma/` per dharma_swarm's rules; tier named in every receipt.
 - Live-fire demo on real vibe-coded repos.
 
-**2026-08-05 disposition:** the strict local Python-to-Rust evidence transport,
-fresh generic/cooperative re-verification, and versioned holdout/dossier
-validator are merged. Versioned feature negotiation,
-observed-target-revision binding, the real `dharma_swarm` adapter receipt, and
-one exactly authorized version-pinned foreign-target confirmation attempt via
-issue #60 remain. No live target, provider, credential, or sibling-repository
-write is implied by this plan.
+**Current-tree disposition:** the strict local Python-to-Rust evidence
+transport, fresh generic/cooperative re-verification, versioned holdout/dossier
+validator, and additive cooperative-v2 operation/feature plus
+observed-fixture-revision contract are present. The real `dharma_swarm` adapter
+receipt and one exactly authorized, version-pinned foreign-target confirmation
+attempt via issue #60 remain. No live target, provider, credential, or
+sibling-repository write is implied by this plan.
 
 ## Budget
 

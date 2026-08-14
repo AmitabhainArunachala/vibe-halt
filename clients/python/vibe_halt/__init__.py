@@ -2,15 +2,37 @@
 
 __version__ = "0.1.0"
 
-from .core.request import EnginePolicy, RunRequest
-from .core.result import Grade, Outcome, Tier, Verdict
+from .core.request import (
+    EnginePolicy,
+    FeatureId,
+    OperationId,
+    ProtocolRequirement,
+    RequestedTargetRevision,
+    RunRequest,
+)
+from .core.result import (
+    Grade,
+    Outcome,
+    ProtocolReport,
+    RefusalReport,
+    RevisionReport,
+    Tier,
+    Verdict,
+)
 from .core.runner import MultiverseRunner
 
 __all__ = [
     "EnginePolicy",
+    "FeatureId",
     "Grade",
     "MultiverseRunner",
+    "OperationId",
     "Outcome",
+    "ProtocolRequirement",
+    "ProtocolReport",
+    "RefusalReport",
+    "RequestedTargetRevision",
+    "RevisionReport",
     "RunRequest",
     "Tier",
     "Verdict",

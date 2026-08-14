@@ -7,6 +7,7 @@
 mod bundle;
 mod cooperative;
 mod eval;
+mod protocol;
 mod sandbox_campaign;
 mod sandbox_demo;
 
@@ -79,6 +80,11 @@ fn main() {
             Some("sandbox-campaign") => sandbox_campaign::cmd_sandbox_campaign(&args[1..], USAGE),
             Some("cooperative") => cooperative::cmd_cooperative(&args[1..], USAGE),
             Some("verify-cooperative") => cooperative::cmd_verify_cooperative(&args[1..], USAGE),
+            Some("cooperative-v2") => cooperative::cmd_cooperative_v2(&args[1..], USAGE),
+            Some("verify-cooperative-v2") => {
+                cooperative::cmd_verify_cooperative_v2(&args[1..], USAGE)
+            }
+            Some("protocol-manifest") => protocol::cmd_protocol_manifest(&args[1..], USAGE),
             Some("doctor") => cmd_doctor(),
             _ => {
                 eprint!("{}", USAGE);
@@ -107,6 +113,12 @@ USAGE:
     vh verify-cooperative --receipt PATH
            [--expected-workload cooperative-echo]
            [--expected-cassette PATH | --expect-default-cassette]
+    vh protocol-manifest
+    vh cooperative-v2 --protocol-schema vh-protocol-manifest-v1
+           --manifest-id SHA256 --operation cooperative-target-v1
+           --require-feature ID... --requested-target-revision unknown|sha256:HEX
+           [--cassette PATH] [--out DIR]
+    vh verify-cooperative-v2 --receipt PATH [expected negotiated request fields]
     vh doctor
 
 WORKLOADS:
