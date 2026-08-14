@@ -2184,6 +2184,488 @@ fn cooperative_receipt_expected_request_binding_rejects_substitution() {
     assert_eq!(vcode, 0, "matching context must pass:\n{stdout}\n{stderr}");
 }
 
+// ---- issue #90: negotiated cooperative-v2 red contract ----
+
+const ISSUE90_MANIFEST_SCHEMA: &str = "vh-protocol-manifest-v1";
+const ISSUE90_OPERATION: &str = "cooperative-target-v1";
+const ISSUE90_FEATURES: [&str; 3] = [
+    "cooperative-cassette-v2",
+    "fresh-replay-v1",
+    "observed-child-source-sha256-v1",
+];
+const ISSUE90_CHILD_SHA256: &str =
+    "abbbaf8284752607e8a80324c87e39302848c4fca50a5ad034ca40562a38d60a";
+
+fn issue90_v2_args(out: &std::path::Path) -> Vec<String> {
+    let (manifest_code, manifest, manifest_error) = vh(&["protocol-manifest"]);
+    assert_eq!(
+        manifest_code, 0,
+        "same-engine manifest query failed:\n{manifest}\n{manifest_error}"
+    );
+    let manifest_id = framed_record_value(&manifest, "manifest-id");
+    let mut args = vec![
+        "cooperative-v2".to_string(),
+        "--protocol-schema".to_string(),
+        ISSUE90_MANIFEST_SCHEMA.to_string(),
+        "--manifest-id".to_string(),
+        manifest_id,
+        "--operation".to_string(),
+        ISSUE90_OPERATION.to_string(),
+    ];
+    for feature in ISSUE90_FEATURES {
+        args.push("--require-feature".to_string());
+        args.push(feature.to_string());
+    }
+    args.extend([
+        "--requested-target-revision".to_string(),
+        format!("sha256:{ISSUE90_CHILD_SHA256}"),
+        "--out".to_string(),
+        out.display().to_string(),
+    ]);
+    args
+}
+
+fn issue90_verify_v2_args(receipt: &std::path::Path) -> Vec<String> {
+    let (manifest_code, manifest, manifest_error) = vh(&["protocol-manifest"]);
+    assert_eq!(
+        manifest_code, 0,
+        "same-engine manifest query failed:\n{manifest}\n{manifest_error}"
+    );
+    let manifest_id = framed_record_value(&manifest, "manifest-id");
+    let mut args = vec![
+        "verify-cooperative-v2".to_string(),
+        "--receipt".to_string(),
+        receipt.display().to_string(),
+        "--expected-operation".to_string(),
+        ISSUE90_OPERATION.to_string(),
+    ];
+    for feature in ISSUE90_FEATURES {
+        args.push("--expected-feature".to_string());
+        args.push(feature.to_string());
+    }
+    args.extend([
+        "--expected-requested-target-revision".to_string(),
+        format!("sha256:{ISSUE90_CHILD_SHA256}"),
+        "--expected-protocol-schema".to_string(),
+        ISSUE90_MANIFEST_SCHEMA.to_string(),
+        "--expected-manifest-id".to_string(),
+        manifest_id,
+        "--expect-default-cassette".to_string(),
+        "--expected-request-schema".to_string(),
+        "vh-cooperative-request-v2".to_string(),
+        "--expected-outcome-schema".to_string(),
+        "vh-cooperative-outcome-v2".to_string(),
+        "--expected-receipt-schema".to_string(),
+        "vh-cooperative-receipt-v2".to_string(),
+        "--expected-verifier-schema".to_string(),
+        "vh-cooperative-verify-v2".to_string(),
+        "--expected-observation-subject".to_string(),
+        "cooperative-child-source-v1".to_string(),
+        "--expected-revision-algorithm".to_string(),
+        "sha256".to_string(),
+        "--expected-revision-policy".to_string(),
+        "bound-required".to_string(),
+        "--expected-execution-binding".to_string(),
+        "staged-d2".to_string(),
+        "--expected-observation-to-exec-channel".to_string(),
+        "open".to_string(),
+    ]);
+    args
+}
+
+fn issue90_v2_receipt(label: &str) -> std::path::PathBuf {
+    let out = unique_tmp(label).join("O");
+    let args = issue90_v2_args(&out);
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(code, 0, "v2 fixture failed:\n{stdout}\n{stderr}");
+    let receipt = out.join("cooperative.receipt");
+    assert!(receipt.is_file(), "v2 fixture did not publish a receipt");
+    receipt
+}
+
+fn assert_issue90_verify_failure(receipt: &std::path::Path) {
+    let args = issue90_verify_v2_args(receipt);
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(code, 1, "tamper must fail:\n{stdout}\n{stderr}");
+    assert!(
+        stderr.is_empty(),
+        "machine failure must not depend on stderr: {stderr}"
+    );
+    assert!(
+        stdout.starts_with("vh-cooperative-verify-failure-v1\n"),
+        "tamper must emit the closed verification-failure record:\n{stdout}"
+    );
+    assert!(stdout.contains("executions 0\n"), "{stdout}");
+    assert!(stdout.contains("authentic false\n"), "{stdout}");
+    assert!(stdout.contains("verified false\n"), "{stdout}");
+    assert!(!stdout.contains("CLEAN"), "{stdout}");
+}
+
+fn framed_record_value(record: &str, tag: &str) -> String {
+    let prefix = format!("{tag} ");
+    let line = record
+        .lines()
+        .find(|line| line.starts_with(&prefix))
+        .unwrap_or_else(|| panic!("missing {tag} in record:\n{record}"));
+    let framed = &line[prefix.len()..];
+    let (length, value) = framed
+        .split_once(':')
+        .unwrap_or_else(|| panic!("malformed {tag} frame: {line}"));
+    let expected: usize = length.parse().expect("canonical frame length");
+    assert_eq!(value.len(), expected, "wrong {tag} frame length");
+    value.to_string()
+}
+
+fn vh_owned(args: &[String]) -> (i32, String, String) {
+    let borrowed: Vec<&str> = args.iter().map(String::as_str).collect();
+    vh(&borrowed)
+}
+
+fn issue90_set_features(args: &mut Vec<String>, features: &[String]) {
+    let start = args
+        .iter()
+        .position(|argument| argument == "--require-feature")
+        .expect("issue #90 request has mandatory features");
+    let end = args
+        .iter()
+        .position(|argument| argument == "--requested-target-revision")
+        .expect("issue #90 request has a revision requirement");
+    let replacement = features
+        .iter()
+        .flat_map(|feature| ["--require-feature".to_string(), feature.clone()])
+        .collect::<Vec<_>>();
+    args.splice(start..end, replacement);
+}
+
+fn assert_issue90_preexecution_refusal(
+    args: &[String],
+    out: &std::path::Path,
+    expected_reason: &str,
+) {
+    let (code, stdout, stderr) = vh_owned(args);
+    assert_eq!(
+        code, 4,
+        "negotiation refusal must use exit 4:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.starts_with("vh-engine-negotiation-refusal-v1\n"),
+        "refusal must be a strict Rust protocol record:\n{stdout}"
+    );
+    assert_eq!(
+        framed_record_value(&stdout, "reason"),
+        expected_reason,
+        "wrong typed refusal:\n{stdout}"
+    );
+    assert!(stdout.contains("executions 0\n"), "{stdout}");
+    assert!(
+        !stdout.contains("vh-cooperative-outcome-v2") && !stdout.contains("CLEAN"),
+        "a refusal must not publish a checked outcome:\n{stdout}"
+    );
+    assert!(
+        !out.exists(),
+        "negotiation crossed the output/staging boundary before refusal: {}",
+        out.display()
+    );
+    assert!(
+        !out.join("cooperative.receipt").exists(),
+        "negotiation refusal published a receipt"
+    );
+}
+
+#[test]
+fn negotiated_manifest_is_published_by_the_exact_engine() {
+    let (code, stdout, stderr) = vh(&["protocol-manifest"]);
+    assert_eq!(code, 0, "manifest query must succeed:\n{stdout}\n{stderr}");
+    assert!(stdout.starts_with(ISSUE90_MANIFEST_SCHEMA), "{stdout}");
+    assert!(stdout.contains(ISSUE90_OPERATION), "{stdout}");
+    for feature in ISSUE90_FEATURES {
+        assert!(stdout.contains(feature), "missing {feature}:\n{stdout}");
+    }
+}
+
+#[test]
+fn negotiated_unsupported_operation_is_typed_and_executes_nothing() {
+    let out = unique_tmp("issue90-unsupported-operation").join("O");
+    let mut args = issue90_v2_args(&out);
+    let operation = args.iter().position(|arg| arg == "--operation").unwrap() + 1;
+    args[operation] = "unsupported-target-v1".to_string();
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(
+        code, 4,
+        "engine refusal has a distinct status:\n{stdout}\n{stderr}"
+    );
+    assert!(
+        stdout.starts_with("vh-engine-negotiation-refusal-v1"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("unsupported-operation"), "{stdout}");
+    assert!(stdout.contains("executions 0"), "{stdout}");
+    assert!(!out.join("cooperative.receipt").exists());
+    assert!(!stdout.contains("CLEAN"));
+}
+
+#[test]
+fn negotiated_requested_revision_mismatch_refuses_before_execution() {
+    let out = unique_tmp("issue90-revision-mismatch").join("O");
+    let mut args = issue90_v2_args(&out);
+    let revision = args
+        .iter()
+        .position(|arg| arg == "--requested-target-revision")
+        .unwrap()
+        + 1;
+    args[revision] = format!("sha256:{}", "0".repeat(64));
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(
+        code, 4,
+        "revision mismatch must be an engine refusal:\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("requested-revision-mismatch"), "{stdout}");
+    assert!(stdout.contains("executions 0"), "{stdout}");
+    assert!(!out.join("cooperative.receipt").exists());
+}
+
+#[test]
+fn negotiated_bound_operation_refuses_unknown_revision_before_execution() {
+    let out = unique_tmp("issue90-revision-unknown").join("O");
+    let mut args = issue90_v2_args(&out);
+    let revision = args
+        .iter()
+        .position(|argument| argument == "--requested-target-revision")
+        .unwrap()
+        + 1;
+    args[revision] = "unknown".to_string();
+    assert_issue90_preexecution_refusal(&args, &out, "requested-revision-mismatch");
+}
+
+#[test]
+fn negotiated_v2_refuses_occupied_output_roots_before_sandbox_attempt() {
+    for occupied_name in ["marker", "cooperative.receipt"] {
+        let out = unique_tmp(&format!("issue90-v2-occupied-{occupied_name}")).join("out");
+        std::fs::create_dir(&out).unwrap();
+        let occupied = out.join(occupied_name);
+        std::fs::write(&occupied, b"caller-owned").unwrap();
+        let args = issue90_v2_args(&out);
+
+        let (code, stdout, stderr) = vh_owned(&args);
+
+        assert_eq!(
+            code, 2,
+            "occupied root must fail locally: {stdout}\n{stderr}"
+        );
+        assert!(
+            stdout.is_empty(),
+            "no machine success/refusal record: {stdout}"
+        );
+        assert!(
+            stderr.contains("not empty"),
+            "typed local boundary error: {stderr}"
+        );
+        assert_eq!(std::fs::read(&occupied).unwrap(), b"caller-owned");
+        assert!(!out.join("workspace").exists());
+    }
+}
+
+#[test]
+fn negotiated_feature_sets_fail_closed_before_child_execution() {
+    let cases = [
+        ("malformed", vec!["fresh_replay-v1".to_string()]),
+        (
+            "duplicate",
+            vec![
+                ISSUE90_FEATURES[0].to_string(),
+                ISSUE90_FEATURES[0].to_string(),
+                ISSUE90_FEATURES[1].to_string(),
+                ISSUE90_FEATURES[2].to_string(),
+            ],
+        ),
+        (
+            "unsorted",
+            ISSUE90_FEATURES
+                .iter()
+                .rev()
+                .map(|feature| feature.to_string())
+                .collect(),
+        ),
+        (
+            "oversized",
+            (0..17)
+                .map(|index| format!("feature-{index:02}-v1"))
+                .collect(),
+        ),
+        ("noncanonical", vec!["Fresh-replay-v1".to_string()]),
+    ];
+
+    for (label, features) in cases {
+        let out = unique_tmp(&format!("issue90-features-{label}")).join("O");
+        let mut args = issue90_v2_args(&out);
+        issue90_set_features(&mut args, &features);
+        assert_issue90_preexecution_refusal(&args, &out, "invalid-feature-set");
+    }
+}
+
+#[test]
+fn negotiated_stale_manifest_and_mutated_closure_are_revalidated_at_execution() {
+    let stale_out = unique_tmp("issue90-stale-manifest").join("O");
+    let mut stale_args = issue90_v2_args(&stale_out);
+    let manifest_index = stale_args
+        .iter()
+        .position(|argument| argument == "--manifest-id")
+        .unwrap()
+        + 1;
+    let mut stale_id = stale_args[manifest_index].clone().into_bytes();
+    stale_id[0] = if stale_id[0] == b'0' { b'1' } else { b'0' };
+    stale_args[manifest_index] = String::from_utf8(stale_id).unwrap();
+    assert_issue90_preexecution_refusal(&stale_args, &stale_out, "protocol-manifest-mismatch");
+
+    let mutated_out = unique_tmp("issue90-mutated-feature-closure").join("O");
+    let mut mutated_args = issue90_v2_args(&mutated_out);
+    let mut mutated_features = ISSUE90_FEATURES
+        .iter()
+        .map(|feature| feature.to_string())
+        .collect::<Vec<_>>();
+    mutated_features.push("unsupported-negotiated-feature-v1".to_string());
+    mutated_features.sort();
+    issue90_set_features(&mut mutated_args, &mutated_features);
+    assert_issue90_preexecution_refusal(&mutated_args, &mutated_out, "unsupported-feature");
+}
+
+#[test]
+fn negotiated_verifier_rejects_legacy_receipt_before_replay() {
+    let (code, receipt) = run_cooperative_receipt("issue90-v1-is-legacy", None);
+    assert_eq!(code, 0);
+    let (vcode, stdout, stderr) = vh(&[
+        "verify-cooperative-v2",
+        "--receipt",
+        receipt.to_str().unwrap(),
+        "--expected-operation",
+        ISSUE90_OPERATION,
+    ]);
+    assert_eq!(
+        vcode, 4,
+        "v1 must not acquire v2 meaning:\n{stdout}\n{stderr}"
+    );
+    assert!(stdout.contains("unsupported-receipt-schema"), "{stdout}");
+    assert!(stdout.contains("executions 0"), "{stdout}");
+}
+
+#[test]
+fn negotiated_v2_receipt_structural_tamper_is_public_typed_and_zero_execution() {
+    let seed_receipt = issue90_v2_receipt("issue90-v2-structural-seed");
+    let original = std::fs::read(&seed_receipt).unwrap();
+    let text = String::from_utf8(original.clone()).unwrap();
+    let protocol_line = text
+        .lines()
+        .find(|line| line.starts_with("protocol-schema "))
+        .unwrap();
+    let manifest_line = text
+        .lines()
+        .find(|line| line.starts_with("manifest-id "))
+        .unwrap();
+    let claim_line = text
+        .lines()
+        .find(|line| line.starts_with("claimed-observed-revision "))
+        .unwrap();
+    let mutations = [
+        (
+            "missing",
+            text.replacen(&format!("{claim_line}\n"), "", 1)
+                .into_bytes(),
+        ),
+        (
+            "duplicate",
+            text.replacen(
+                &format!("{protocol_line}\n"),
+                &format!("{protocol_line}\n{protocol_line}\n"),
+                1,
+            )
+            .into_bytes(),
+        ),
+        (
+            "unknown",
+            text.replacen(
+                "vh-cooperative-receipt-v2\n",
+                "vh-cooperative-receipt-v2\nunknown 1:x\n",
+                1,
+            )
+            .into_bytes(),
+        ),
+        (
+            "reordered",
+            text.replacen(
+                &format!("{protocol_line}\n{manifest_line}\n"),
+                &format!("{manifest_line}\n{protocol_line}\n"),
+                1,
+            )
+            .into_bytes(),
+        ),
+        ("truncated", original[..original.len() - 1].to_vec()),
+        (
+            "noncanonical-length",
+            text.replacen("protocol-schema 23:", "protocol-schema 023:", 1)
+                .into_bytes(),
+        ),
+        ("trailing", [original.as_slice(), b"trailing\n"].concat()),
+        (
+            "mutated-claim",
+            text.replacen(
+                claim_line,
+                &format!("claimed-observed-revision 64:{}", "0".repeat(64)),
+                1,
+            )
+            .into_bytes(),
+        ),
+    ];
+
+    for (label, bytes) in mutations {
+        let receipt = issue90_v2_receipt(&format!("issue90-v2-structural-{label}"));
+        std::fs::write(&receipt, bytes).unwrap();
+        assert_issue90_verify_failure(&receipt);
+    }
+
+    let oversized = issue90_v2_receipt("issue90-v2-structural-oversized");
+    std::fs::write(&oversized, vec![b'x'; (4 << 20) + 1]).unwrap();
+    let args = issue90_verify_v2_args(&oversized);
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(code, 1, "oversized receipt must fail:\n{stdout}\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(stdout.starts_with("vh-cooperative-verify-failure-v1\n"));
+    assert_eq!(framed_record_value(&stdout, "reason"), "malformed-receipt");
+    assert_eq!(
+        framed_record_value(&stdout, "receipt-sha256"),
+        "unavailable",
+        "an unread oversized receipt has no observed bounded SHA-256"
+    );
+    assert!(stdout.contains("executions 0\n"), "{stdout}");
+    assert!(stdout.contains("authentic false\n"), "{stdout}");
+    assert!(stdout.contains("verified false\n"), "{stdout}");
+}
+
+#[test]
+fn negotiated_v2_alternate_expected_request_is_public_typed_and_zero_execution() {
+    let receipt = issue90_v2_receipt("issue90-v2-alternate-request");
+    let mut args = issue90_verify_v2_args(&receipt);
+    let revision = args
+        .iter()
+        .position(|argument| argument == "--expected-requested-target-revision")
+        .unwrap()
+        + 1;
+    args[revision] = format!("sha256:{}", "0".repeat(64));
+    let (code, stdout, stderr) = vh_owned(&args);
+    assert_eq!(code, 1, "alternate request must fail:\n{stdout}\n{stderr}");
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(
+        stdout.starts_with("vh-cooperative-verify-failure-v1\n"),
+        "{stdout}"
+    );
+    assert_eq!(
+        framed_record_value(&stdout, "reason"),
+        "expected-request-mismatch"
+    );
+    assert!(stdout.contains("executions 0\n"), "{stdout}");
+    assert!(stdout.contains("authentic false\n"), "{stdout}");
+    assert!(stdout.contains("verified false\n"), "{stdout}");
+}
+
 #[test]
 fn cooperative_receipt_deletion_fails_closed() {
     let (code, receipt) = run_cooperative_receipt("coop-rcpt-delete", None);

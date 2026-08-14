@@ -48,11 +48,13 @@ input envelope never permits a broad safety claim.
    and unreachable grades remain visible.
 6. **Humans merge and confirm.** Green automation is evidence, not approval.
 
-## Proven boundary on 2026-08-05
+## Proven boundary in the current tree
 
-Merged `main` commit `63ccd32` includes the accepted Reality Bridge slice and
-demonstrates the repo-local boundary below; recheck it with
-`git rev-parse HEAD` and `make gate`. The exact merged commit passed
+Merged `main` commit `63ccd32` established the inherited Reality Bridge slice;
+the current tree adds only the local negotiated cooperative-v2 contract
+described below. Recheck the complete current boundary with `git rev-parse
+HEAD`, `cargo test -p vh-cli negotiated --locked --offline`, and `make gate`.
+The earlier exact merged commit passed
 [CI run 30965578160](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578160)
 and [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/actions/runs/30965578156).
 
@@ -74,6 +76,16 @@ and [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/a
   Rust executable, consumes only Rust machine records, and re-verifies the run
   receipt before returning a typed outcome
   (`clients/python/vibe_halt/core/runner.py`);
+- an additive local cooperative-v2 protocol whose Rust-owned closed registry
+  publishes a same-engine manifest, refuses unsupported operations/features
+  and an `unknown` requested revision before child execution, and binds a fresh
+  SHA-256 observation of the staged fixture source to the caller's exact
+  coordinate in a revision-bound receipt while naming the execution
+  ceiling `staged-d2` and its observation-to-exec channel `open`
+  (`crates/vh-cli/src/protocol.rs`; runnable check:
+  `cargo test -p vh-cli negotiated --locked --offline`); its `executions`
+  counter records admitted sandbox-run attempts, so zero proves no sandbox
+  boundary invocation while a positive count does not attest a child start;
 - a versioned holdout/dossier contract plus two calibration fixtures, with
   misses and authority-blocked states retained
   (`docs/specs/HOLDOUT_CONTRACT_V1.md`, `corpus/calibration/`);
@@ -83,21 +95,27 @@ and [Verify run 30965578156](https://github.com/AmitabhainArunachala/vibe-halt/a
 
 The project has **not** yet demonstrated:
 
-- a version-negotiated production or `dharma_swarm` adapter receipt binding an
-  observed target revision (the strict local Rust-backed client is only the
-  first bridge slice; see `clients/python/vibe_halt/core/runner.py`);
+- a production or `dharma_swarm` adapter receipt; the negotiated,
+  revision-bound cooperative-v2 path covers only the Rust-owned local fixture
+  and does not close either the target-byte or copied-engine
+  observation-to-execution channel
+  (`clients/python/vibe_halt/core/runner.py`,
+  `crates/vh-cli/src/cooperative.rs`);
 - a real foreign target executed through that adapter;
 - an independently curated frozen `N >= 25` acceptance holdout;
 - any previously unknown, independently human-confirmed bug
   (`docs/audits/REACH_STRATEGY_DEBATE_PACKET_2026-07-25.md:64-71`);
 - D1 subprocess containment or Tier 3 hypervisor determinism.
 
-The Python package now exposes only a strict local request/result/runner client.
-It snapshots an explicitly configured Rust engine, validates closed machine
-records after fresh Rust replay, and trust-qualifies public checked outcomes
-(`clients/python/vibe_halt/core/runner.py`, `clients/python/tests/`). It does not
-yet implement the `dharma_swarm` sandbox ABC, operation/feature negotiation,
-observed-target-revision binding, or a real foreign-target receipt. Criterion 7
+The Python package exposes only a strict local request/result/runner client. It
+snapshots an explicitly configured Rust engine, strictly consumes its
+same-copy protocol manifest, validates closed machine records after fresh Rust
+replay, and trust-qualifies public checked outcomes. Cooperative v2 now carries
+versioned operation/feature negotiation plus a verified observed fixture-source
+revision; Python can expose those Rust values as data but cannot construct a
+fresh or verified revision (`clients/python/vibe_halt/core/runner.py`,
+`clients/python/tests/test_transport.py`). It does not implement the
+`dharma_swarm` sandbox ABC or a real foreign-target receipt. Criterion 7
 therefore remains OPEN.
 
 ## Current technical frontier — the reality bridge
@@ -140,10 +158,11 @@ Never weaken these to accelerate reach.
 
 ### 2. Reality bridge — current
 
-Complete versioned operation/feature and observed-target-revision binding for
-the strict Python-to-Rust evidence protocol, then validate one
-operator-authorized foreign target or publish the predeclared null. Preserve
-typed `CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes throughout.
+Preserve and subject the local versioned operation/feature and
+observed-fixture-revision contract, then validate one operator-authorized,
+version-pinned foreign target or publish the predeclared null. Preserve typed
+`CLEAN`/`FINDINGS`/`UNCHECKED`/error outcomes throughout; do not promote the
+local staged-byte equality into causal execution or external-target evidence.
 
 ### 3. Honest external evaluation
 

@@ -3,6 +3,7 @@
 import hashlib
 import os
 from pathlib import Path
+import tempfile
 import unittest
 from unittest import mock
 
@@ -516,7 +517,6 @@ class CooperativeCrossSurfaceTests(unittest.TestCase):
         runner = MultiverseRunner(self.policy)
         parent = Path(tempfile.mkdtemp(prefix="vibe-halt-contested-"))
         out = parent / "shared"
-        out.mkdir(mode=0o700)
         sentinel = parent / "sentinel"
         sentinel.write_text("preserve")
         barrier = threading.Barrier(2)
@@ -637,7 +637,9 @@ class CooperativeCrossSurfaceTests(unittest.TestCase):
             runner_module._strict_errors(__import__("json").dumps(["right-to-left\u202e"]))
         )
         self.assertEqual(
-            runner_module._strict_errors(__import__("json").dumps([""] * 64)),
+            runner_module._strict_errors(
+                __import__("json").dumps([""] * 64, separators=(",", ":"))
+            ),
             [""] * 64,
         )
         self.assertIsNone(
@@ -665,3 +667,641 @@ class CooperativeCrossSurfaceTests(unittest.TestCase):
         self.assertIsNone(
             runner_module._parse_cooperative_verify(completed.stdout)
         )
+
+
+class CooperativeNegotiationV2ContractTests(unittest.TestCase):
+    """Issue #90 red contract: negotiated operation, features, and revision."""
+
+    TARGET_REVISION = "abbbaf8284752607e8a80324c87e39302848c4fca50a5ad034ca40562a38d60a"
+
+    @classmethod
+    def setUpClass(cls):
+        cls.engine = _engine_path()
+        if not Path(cls.engine).exists():
+            raise RuntimeError(
+                f"vh engine not found at {cls.engine}; build it with cargo build -p vh-cli"
+            )
+        cls.engine_digest = _engine_digest(cls.engine)
+        cls.policy = EnginePolicy(cls.engine, cls.engine_digest)
+
+    @staticmethod
+    def _requirement(
+        digest="abbbaf8284752607e8a80324c87e39302848c4fca50a5ad034ca40562a38d60a",
+        required_features=(),
+    ):
+        from vibe_halt import (
+            OperationId,
+            ProtocolRequirement,
+            RequestedTargetRevision,
+        )
+
+        return ProtocolRequirement(
+            operation=OperationId("cooperative-target", 1),
+            required_features=required_features,
+            requested_target_revision=RequestedTargetRevision(
+                "cooperative-child-source-v1", "sha256", digest
+            ),
+        )
+
+    def test_protocol_requirement_is_immutable_and_canonical(self):
+        from dataclasses import FrozenInstanceError
+        from vibe_halt import FeatureId, OperationId, ProtocolRequirement
+
+        requirement = self._requirement()
+        with self.assertRaises(FrozenInstanceError):
+            requirement.operation = OperationId("other", 1)
+        with self.assertRaises(ValueError):
+            ProtocolRequirement(
+                operation=OperationId("cooperative-target", 1),
+                required_features=(
+                    FeatureId("fresh-replay", 1),
+                    FeatureId("cooperative-cassette", 2),
+                ),
+                requested_target_revision=requirement.requested_target_revision,
+            )
+        with self.assertRaises(ValueError):
+            RunRequest("demo", 1, invocation_id="x" * 129)
+        with self.assertRaises(ValueError):
+            ProtocolRequirement(
+                operation=OperationId("cooperative-target", 1),
+                required_features=(FeatureId("fresh-replay", 1),) * 2,
+                requested_target_revision=requirement.requested_target_revision,
+            )
+
+    def test_public_result_constructors_cannot_mint_trust_positive_data(self):
+        from dataclasses import replace
+        from vibe_halt import Outcome, RevisionReport
+
+        safe = Outcome(
+            verdict=Verdict.ERROR,
+            tier=Tier.UNKNOWN,
+            grade=Grade.UNTRUSTED,
+            scope="caller-data",
+        )
+        for changes in (
+            {"verdict": Verdict.CLEAN},
+            {"verdict": Verdict.FINDINGS},
+            {"grade": Grade.D0},
+            {"grade": Grade.D2},
+            {"verified": True},
+        ):
+            with self.subTest(outcome_changes=changes), self.assertRaises(TypeError):
+                replace(safe, **changes)
+        with self.assertRaises(TypeError):
+            class ForgedOutcome(Outcome):
+                pass
+
+        legacy = RevisionReport(
+            observation_subject=None,
+            revision_algorithm=None,
+            revision_policy=None,
+            requested=None,
+            claimed_observed=None,
+            fresh_observed=None,
+            verified_observed=None,
+            binding="legacy-unbound",
+            execution_binding="staged-d2",
+            observation_to_exec_channel="open",
+        )
+        for changes in (
+            {"binding": "bound"},
+            {"fresh_observed": "0" * 64},
+            {"verified_observed": "0" * 64},
+        ):
+            with self.subTest(revision_changes=changes), self.assertRaises(TypeError):
+                replace(legacy, **changes)
+        with self.assertRaises(TypeError):
+            class ForgedRevision(RevisionReport):
+                pass
+
+    def test_hostile_nested_protocol_mutations_fail_before_output_reservation(self):
+        mutations = (
+            ("operation", object()),
+            ("required_features", []),
+            ("required_features", (object(),)),
+            ("requested_target_revision", object()),
+        )
+        for field, hostile_value in mutations:
+            with self.subTest(field=field, value_type=type(hostile_value).__name__):
+                requirement = self._requirement()
+                request = RunRequest(
+                    "cooperative-echo",
+                    1,
+                    transport="cooperative",
+                    protocol_requirement=requirement,
+                )
+                object.__setattr__(requirement, field, hostile_value)
+                with mock.patch.object(
+                    runner_module, "_prepare_output_root"
+                ) as prepare_output_root:
+                    outcome = MultiverseRunner(self.policy).run(request)
+                self.assertEqual(outcome.verdict, Verdict.ERROR)
+                self.assertFalse(outcome.verified)
+                self.assertIn("invalid request at run boundary", outcome.errors[0])
+                prepare_output_root.assert_not_called()
+
+    def test_hostile_nested_protocol_mutation_fails_before_reverify_io(self):
+        requirement = self._requirement()
+        expected = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=requirement,
+        )
+        object.__setattr__(requirement, "operation", object())
+        with mock.patch.object(
+            runner_module, "_copy_and_verify_engine"
+        ) as engine_snapshot:
+            outcome = MultiverseRunner(self.policy).reverify(
+                "/not/inspected", expected_request=expected
+            )
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertIn("invalid expected request", outcome.errors[0])
+        engine_snapshot.assert_not_called()
+
+    def test_manifest_query_uses_actual_private_copy_and_parser_rejects_mutations(self):
+        lease, private_dir = runner_module._private_engine_directory(
+            "vibe-halt-manifest-test-"
+        )
+        with lease:
+            copied, untrusted, copied_digest = runner_module._copy_and_verify_engine(
+                self.policy, private_dir
+            )
+            self.assertFalse(untrusted)
+            manifest = runner_module._query_protocol_manifest(
+                copied, private_dir, copied_digest
+            )
+            self.assertEqual(manifest.engine_sha256, copied_digest)
+            process = runner_module._invoke_engine_bytes(
+                [str(copied), "protocol-manifest"], cwd=private_dir
+            )
+            self.assertEqual(process.returncode, 0, process.stderr)
+            encoded = process.stdout
+
+        marker = b"manifest-id 64:"
+        manifest_start = encoded.index(marker) + len(marker)
+        bad_manifest_id = (
+            encoded[:manifest_start]
+            + b"0" * 64
+            + encoded[manifest_start + 64 :]
+        )
+        mutations = {
+            "missing-field": encoded.replace(b"optional-features 0\n", b"", 1),
+            "duplicate-field": encoded.replace(
+                b"descriptors 1\n", b"descriptors 1\ndescriptors 1\n", 1
+            ),
+            "reordered-field": encoded.replace(
+                b"request-schema 25:vh-cooperative-request-v2\n"
+                b"outcome-schema 25:vh-cooperative-outcome-v2\n",
+                b"outcome-schema 25:vh-cooperative-outcome-v2\n"
+                b"request-schema 25:vh-cooperative-request-v2\n",
+                1,
+            ),
+            "truncated": encoded[:-1],
+            "trailing-data": encoded + b"x",
+            "noncanonical-count": encoded.replace(
+                b"descriptors 1\n", b"descriptors 01\n", 1
+            ),
+            "noncanonical-length": encoded.replace(
+                b"operation 21:", b"operation 021:", 1
+            ),
+            "manifest-identity": bad_manifest_id,
+        }
+        for name, value in mutations.items():
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                runner_module._parse_protocol_manifest(value)
+
+    def test_legacy_client_request_digest_preimages_remain_pinned(self):
+        cases = (
+            (
+                RunRequest("demo", 3),
+                "3e90575a72fc9c334334916f442a1642211ecba785d67065e1d5130fc3f056a3",
+            ),
+            (
+                RunRequest(
+                    "cooperative-echo", 1, transport="cooperative"
+                ),
+                "f886d50c0c56b1176546fed113108b3c95f0c072c32bc7f2d037da35d7b4318c",
+            ),
+        )
+        for request, expected in cases:
+            with self.subTest(workload=request.workload):
+                actual = runner_module._sha256_hex(
+                    runner_module._canonical_json_bytes(
+                        runner_module._request_dict(request)
+                    )
+                )
+                self.assertEqual(actual, expected)
+
+    def test_manifest_engine_digest_mismatch_is_local_error_before_v2_dispatch(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        canonical = runner_module._invoke_engine_bytes(
+            [self.engine, "protocol-manifest"]
+        )
+        self.assertEqual(canonical.returncode, 0, canonical.stderr)
+        manifest = runner_module._parse_protocol_manifest(canonical.stdout)
+        descriptor = manifest.descriptors[0]
+        mismatched_engine_digest = (
+            "0" * 64 if manifest.engine_sha256 != "0" * 64 else "1" * 64
+        )
+        preimage = bytearray(
+            (runner_module._PROTOCOL_MANIFEST_ID_DOMAIN + "\n").encode("ascii")
+        )
+        for tag, value in (
+            ("schema", runner_module.PROTOCOL_MANIFEST_SCHEMA),
+            ("engine-sha256", mismatched_engine_digest),
+            ("operation", descriptor.operation),
+            ("request-schema", descriptor.request_schema),
+            ("outcome-schema", descriptor.outcome_schema),
+            ("receipt-schema", descriptor.receipt_schema),
+            ("verifier-schema", descriptor.verifier_schema),
+            ("observation-subject", descriptor.observation_subject),
+            ("revision-algorithm", descriptor.revision_algorithm),
+            ("revision-policy", descriptor.revision_policy),
+            ("execution-binding", descriptor.execution_binding),
+            (
+                "observation-to-exec-channel",
+                descriptor.observation_to_exec_channel,
+            ),
+        ):
+            preimage.extend(runner_module._wire_frame(tag, value.encode("ascii")))
+        preimage.extend(
+            f"mandatory-features {len(descriptor.mandatory_features)}\n".encode(
+                "ascii"
+            )
+        )
+        for feature in descriptor.mandatory_features:
+            preimage.extend(
+                runner_module._wire_frame("feature", feature.encode("ascii"))
+            )
+        preimage.extend(
+            f"optional-features {len(descriptor.optional_features)}\n".encode(
+                "ascii"
+            )
+        )
+        for feature in descriptor.optional_features:
+            preimage.extend(
+                runner_module._wire_frame("feature", feature.encode("ascii"))
+            )
+        mismatched_manifest_id = hashlib.sha256(bytes(preimage)).hexdigest()
+        mismatched_record = canonical.stdout.replace(
+            manifest.engine_sha256.encode("ascii"),
+            mismatched_engine_digest.encode("ascii"),
+            1,
+        ).replace(
+            manifest.manifest_id.encode("ascii"),
+            mismatched_manifest_id.encode("ascii"),
+            1,
+        )
+        parsed_mismatch = runner_module._parse_protocol_manifest(mismatched_record)
+        self.assertEqual(parsed_mismatch.engine_sha256, mismatched_engine_digest)
+        self.assertEqual(parsed_mismatch.manifest_id, mismatched_manifest_id)
+        forged_process = mock.Mock(
+            returncode=0,
+            stdout=mismatched_record,
+            stderr=b"",
+        )
+        with mock.patch.object(
+            runner_module,
+            "_invoke_engine_bytes",
+            return_value=forged_process,
+        ), mock.patch.object(
+            MultiverseRunner, "_run_cooperative_v2"
+        ) as v2_dispatch:
+            outcome = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertFalse(outcome.verified)
+        self.assertIn("engine digest differs", outcome.errors[0])
+        v2_dispatch.assert_not_called()
+
+    def test_empty_caller_extras_still_send_full_mandatory_closure(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        outcome = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(outcome.verdict, Verdict.CLEAN, outcome.errors)
+        self.assertTrue(outcome.verified)
+        self.assertIsNotNone(outcome.protocol)
+        self.assertIsNotNone(outcome.revision)
+        self.assertEqual(outcome.raw["operation"], "cooperative-target-v1")
+        self.assertEqual(
+            outcome.raw["features"],
+            "cooperative-cassette-v2,fresh-replay-v1,observed-child-source-sha256-v1",
+        )
+        self.assertEqual(outcome.raw["revision_binding"], "bound")
+        self.assertEqual(outcome.raw["execution_binding"], "staged-d2")
+        self.assertEqual(outcome.raw["observation_to_exec_channel"], "open")
+        self.assertEqual(outcome.raw["claimed_observed_revision"], outcome.raw["fresh_observed_revision"])
+        self.assertNotEqual(outcome.request_digest, outcome.raw["engine_request_id"])
+        self.assertEqual(
+            outcome.revision.observation_subject,
+            "cooperative-child-source-v1",
+        )
+        self.assertEqual(outcome.revision.revision_algorithm, "sha256")
+        self.assertEqual(outcome.revision.revision_policy, "bound-required")
+        self.assertEqual(
+            outcome.to_dict()["revision"]["observation_subject"],
+            "cooperative-child-source-v1",
+        )
+
+    def test_unknown_caller_extra_reaches_typed_engine_refusal(self):
+        from vibe_halt import FeatureId
+
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(
+                required_features=(FeatureId("unknown-capability", 1),)
+            ),
+        )
+        outcome = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertFalse(outcome.verified)
+        self.assertEqual(outcome.raw["refusal"], "unsupported-feature")
+        self.assertEqual(outcome.raw["executions"], 0)
+        self.assertIsNotNone(outcome.refusal)
+        self.assertEqual(outcome.refusal.reason, "unsupported-feature")
+
+    def test_unknown_operation_reaches_typed_engine_refusal(self):
+        from vibe_halt import OperationId, ProtocolRequirement
+
+        base = self._requirement()
+        requirement = ProtocolRequirement(
+            operation=OperationId("unknown-operation", 1),
+            required_features=(),
+            requested_target_revision=base.requested_target_revision,
+        )
+        outcome = MultiverseRunner(self.policy).run(
+            RunRequest(
+                "cooperative-echo",
+                1,
+                transport="cooperative",
+                protocol_requirement=requirement,
+            )
+        )
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertFalse(outcome.verified)
+        self.assertEqual(outcome.raw["refusal"], "unsupported-operation")
+        self.assertEqual(outcome.raw["executions"], 0)
+
+    def test_no_trust_root_cannot_promote_bound_engine_data(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        outcome = MultiverseRunner(EnginePolicy(self.engine)).run(request)
+        self.assertEqual(outcome.verdict, Verdict.UNCHECKED, outcome.errors)
+        self.assertEqual(outcome.grade, Grade.UNTRUSTED)
+        self.assertFalse(outcome.verified)
+        self.assertTrue(outcome.raw["verified"])
+        self.assertEqual(outcome.raw["revision_binding"], "bound")
+        self.assertEqual(
+            outcome.revision.verified_observed,
+            outcome.raw["verified_observed_revision"],
+        )
+
+    def test_requested_revision_mismatch_maps_typed_zero_execution_refusal(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement("0" * 64),
+        )
+        outcome = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertFalse(outcome.verified)
+        self.assertEqual(outcome.raw["refusal"], "requested-revision-mismatch")
+        self.assertEqual(outcome.raw["executions"], 0)
+        self.assertFalse((Path(outcome.receipt_dir) / "cooperative.receipt").exists())
+
+    def test_revision_coordinate_mismatch_refuses_before_v2_execution(self):
+        from vibe_halt import ProtocolRequirement, RequestedTargetRevision
+
+        cases = (
+            ("other-target-v1", "sha256"),
+            ("cooperative-child-source-v1", "sha512"),
+        )
+        for subject, algorithm in cases:
+            with self.subTest(subject=subject, algorithm=algorithm):
+                base = self._requirement()
+                request = RunRequest(
+                    "cooperative-echo",
+                    1,
+                    transport="cooperative",
+                    protocol_requirement=ProtocolRequirement(
+                        operation=base.operation,
+                        required_features=(),
+                        requested_target_revision=RequestedTargetRevision(
+                            subject, algorithm, self.TARGET_REVISION
+                        ),
+                    ),
+                )
+                with mock.patch.object(
+                    runner_module, "_build_cooperative_v2_args"
+                ) as execution_args:
+                    outcome = MultiverseRunner(self.policy).run(request)
+                self.assertEqual(outcome.verdict, Verdict.ERROR)
+                self.assertFalse(outcome.verified)
+                self.assertIn("coordinate differs", outcome.errors[0])
+                execution_args.assert_not_called()
+                self.assertFalse(
+                    (Path(outcome.receipt_dir) / "cooperative.receipt").exists()
+                )
+
+    def test_unknown_revision_refuses_bound_required_before_execution(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(None),
+        )
+        outcome = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertFalse(outcome.verified)
+        self.assertEqual(outcome.raw["refusal"], "requested-revision-mismatch")
+        self.assertEqual(outcome.raw["executions"], 0)
+        self.assertFalse((Path(outcome.receipt_dir) / "cooperative.receipt").exists())
+
+    def test_v2_reverify_requires_independent_expected_request(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        runner = MultiverseRunner(self.policy)
+        outcome = runner.run(request)
+        self.assertEqual(outcome.verdict, Verdict.CLEAN, outcome.errors)
+        without_expected = runner.reverify(outcome.receipt_dir)
+        self.assertEqual(without_expected.verdict, Verdict.ERROR)
+        with_expected = runner.reverify(outcome.receipt_dir, expected_request=request)
+        self.assertEqual(with_expected.verdict, Verdict.CLEAN, with_expected.errors)
+        self.assertTrue(with_expected.verified)
+
+    def test_v2_reverify_rejects_alternate_expected_revision(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        runner = MultiverseRunner(self.policy)
+        outcome = runner.run(request)
+        self.assertEqual(outcome.verdict, Verdict.CLEAN, outcome.errors)
+        alternate = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement("0" * 64),
+        )
+        replay = runner.reverify(
+            outcome.receipt_dir, expected_request=alternate
+        )
+        self.assertEqual(replay.verdict, Verdict.ERROR)
+        self.assertFalse(replay.verified)
+        self.assertEqual(
+            replay.raw["schema"],
+            runner_module.COOPERATIVE_VERIFY_FAILURE_SCHEMA_V1,
+        )
+        self.assertEqual(
+            replay.raw["verification_failure"], "expected-request-mismatch"
+        )
+        self.assertEqual(replay.raw["executions"], 0)
+        self.assertFalse(replay.raw["authentic"])
+
+    def test_direct_cli_and_python_v2_records_have_field_parity(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        manifest_process = runner_module._invoke_engine_bytes(
+            [self.engine, "protocol-manifest"]
+        )
+        self.assertEqual(manifest_process.returncode, 0, manifest_process.stderr)
+        manifest = runner_module._parse_protocol_manifest(manifest_process.stdout)
+        descriptor = manifest.descriptors[0]
+        features = descriptor.mandatory_features
+        with tempfile.TemporaryDirectory(prefix="vh-python-parity-") as root:
+            direct_out = Path(root) / "direct"
+            direct_out.mkdir(mode=0o700)
+            direct_process = runner_module._invoke_engine_bytes(
+                [self.engine]
+                + runner_module._build_cooperative_v2_args(
+                    request, direct_out, manifest, features
+                )
+            )
+        self.assertEqual(direct_process.returncode, 0, direct_process.stderr)
+        direct = runner_module._parse_v2_machine_record(
+            direct_process.stdout, runner_module.COOPERATIVE_OUTCOME_SCHEMA_V2
+        )
+        python = MultiverseRunner(self.policy).run(request)
+        self.assertEqual(python.verdict, Verdict.CLEAN, python.errors)
+        for field in (
+            "manifest_id",
+            "engine_request_id",
+            "evidence_id",
+            "receipt_sha256",
+            "operation",
+            "features_tuple",
+            "claimed_observed_revision",
+            "fresh_observed_revision",
+            "verified_observed_revision",
+            "execution_binding",
+            "observation_to_exec_channel",
+            "verdict",
+        ):
+            with self.subTest(field=field):
+                self.assertEqual(python.raw[field], direct[field])
+        self.assertEqual(direct["executions"], 4)
+        self.assertEqual(python.raw["executions"], 2)
+        self.assertNotEqual(python.request_digest, direct["engine_request_id"])
+
+    def test_nonempty_output_root_refuses_before_engine_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="vh-python-occupied-") as root:
+            output = Path(root) / "output"
+            output.mkdir(mode=0o700)
+            (output / "occupied").write_bytes(b"occupied")
+            request = RunRequest(
+                "cooperative-echo",
+                1,
+                transport="cooperative",
+                output_root=str(output),
+                protocol_requirement=self._requirement(),
+            )
+            with mock.patch.object(
+                runner_module, "_copy_and_verify_engine"
+            ) as engine_snapshot:
+                outcome = MultiverseRunner(self.policy).run(request)
+            self.assertEqual(outcome.verdict, Verdict.ERROR)
+        self.assertIn("already exists", outcome.errors[0])
+        engine_snapshot.assert_not_called()
+        self.assertFalse((output / "cooperative.receipt").exists())
+
+    def test_preexisting_empty_output_root_refuses_before_engine_snapshot(self):
+        with tempfile.TemporaryDirectory(prefix="vh-python-preexisting-") as root:
+            output = Path(root) / "output"
+            output.mkdir(mode=0o700)
+            request = RunRequest(
+                "cooperative-echo",
+                1,
+                transport="cooperative",
+                output_root=str(output),
+                protocol_requirement=self._requirement(),
+            )
+            with mock.patch.object(
+                runner_module, "_copy_and_verify_engine"
+            ) as engine_snapshot:
+                outcome = MultiverseRunner(self.policy).run(request)
+            self.assertEqual(outcome.verdict, Verdict.ERROR)
+            self.assertIn("already exists", outcome.errors[0])
+            engine_snapshot.assert_not_called()
+            self.assertEqual(list(output.iterdir()), [])
+
+    def test_two_v2_runs_reserve_isolated_output_roots(self):
+        request = RunRequest(
+            "cooperative-echo",
+            1,
+            transport="cooperative",
+            protocol_requirement=self._requirement(),
+        )
+        runner = MultiverseRunner(self.policy)
+        first = runner.run(request)
+        second = runner.run(request)
+        self.assertEqual(first.verdict, Verdict.CLEAN, first.errors)
+        self.assertEqual(second.verdict, Verdict.CLEAN, second.errors)
+        self.assertNotEqual(first.receipt_dir, second.receipt_dir)
+        self.assertTrue(
+            (Path(first.receipt_dir) / "cooperative.receipt").is_file()
+        )
+        self.assertTrue(
+            (Path(second.receipt_dir) / "cooperative.receipt").is_file()
+        )
+
+    def test_legacy_v1_is_explicitly_unbound(self):
+        outcome = MultiverseRunner(self.policy).run(
+            RunRequest("cooperative-echo", 1, transport="cooperative")
+        )
+        self.assertEqual(outcome.verdict, Verdict.CLEAN, outcome.errors)
+        self.assertIsNotNone(outcome.revision)
+        self.assertEqual(outcome.revision.binding, "legacy-unbound")
+        self.assertIsNone(outcome.revision.observation_subject)
+        self.assertIsNone(outcome.revision.revision_algorithm)
+        self.assertIsNone(outcome.revision.revision_policy)
+        self.assertIsNone(outcome.revision.requested)
+        self.assertIsNone(outcome.revision.claimed_observed)
+        self.assertIsNone(outcome.revision.fresh_observed)
+        self.assertIsNone(outcome.revision.verified_observed)
+        self.assertEqual(outcome.raw["revision_binding"], "legacy-unbound")

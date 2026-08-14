@@ -144,7 +144,7 @@ class AdapterSmokeTests(unittest.TestCase):
             runner = MultiverseRunner(self.policy)
             outcome = runner.run(RunRequest("demo", 3, output_root=str(root)))
             self.assertEqual(outcome.verdict, Verdict.ERROR)
-            self.assertTrue(any("not empty" in e for e in outcome.errors))
+            self.assertTrue(any("already exists" in e for e in outcome.errors))
         finally:
             shutil.rmtree(root, ignore_errors=True)
 
@@ -273,7 +273,8 @@ class AdapterSmokeTests(unittest.TestCase):
             RunRequest("demo", 3, seed=0xBEEF)
         )
         self.assertTrue(replacement.verified)
-        target_root = Path(tempfile.mkdtemp(prefix="vibe-halt-swap-target-"))
+        target_parent = Path(tempfile.mkdtemp(prefix="vibe-halt-swap-target-"))
+        target_root = target_parent / "receipt"
         original_invoke = runner_module._invoke_engine
         swapped = False
 

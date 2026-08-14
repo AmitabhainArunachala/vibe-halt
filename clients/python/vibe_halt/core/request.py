@@ -3,12 +3,15 @@
 import os
 import unicodedata
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 
 MAX_RECEIPT_UNIVERSES = 10_000
 MAX_U64 = (1 << 64) - 1
 MAX_REQUEST_STRING_BYTES = 4096
+MAX_INVOCATION_ID_BYTES = 128
+MAX_PROTOCOL_IDENTIFIER_BYTES = 64
+MAX_REQUIRED_FEATURES = 16
 
 
 def _contains_control(value: str) -> bool:
@@ -18,6 +21,130 @@ def _contains_control(value: str) -> bool:
         unicodedata.category(character) in {"Cc", "Cf", "Zl", "Zp"}
         for character in value
     )
+
+
+def _validate_protocol_name(field: str, value: str) -> None:
+    if type(value) is not str:
+        raise TypeError(f"{field} must be a string")
+    if (
+        not value
+        or len(value.encode("ascii", errors="ignore")) != len(value)
+        or len(value) > MAX_PROTOCOL_IDENTIFIER_BYTES
+        or value[0] == "-"
+        or value[-1] == "-"
+        or any(character not in "abcdefghijklmnopqrstuvwxyz0123456789-" for character in value)
+    ):
+        raise ValueError(
+            f"{field} must be a non-empty canonical lowercase ASCII identifier"
+        )
+
+
+def _validate_protocol_version(field: str, value: int) -> None:
+    if type(value) is not int:
+        raise TypeError(f"{field} must be an integer (not bool)")
+    if value <= 0 or value > MAX_U64:
+        raise ValueError(f"{field} must be in the positive Rust u64 domain")
+
+
+@dataclass(frozen=True)
+class OperationId:
+    """Caller-requested operation identity; support is decided by Rust."""
+
+    name: str
+    version: int
+
+    def __post_init__(self):
+        _validate_protocol_name("operation name", self.name)
+        _validate_protocol_version("operation version", self.version)
+        if len(self.value) > MAX_PROTOCOL_IDENTIFIER_BYTES:
+            raise ValueError("versioned operation identifier exceeds the 64-byte bound")
+
+    @property
+    def value(self) -> str:
+        return f"{self.name}-v{self.version}"
+
+
+@dataclass(frozen=True)
+class FeatureId:
+    """Caller-required feature identity; mandatory closure is Rust-owned."""
+
+    name: str
+    version: int
+
+    def __post_init__(self):
+        _validate_protocol_name("feature name", self.name)
+        _validate_protocol_version("feature version", self.version)
+        if len(self.value) > MAX_PROTOCOL_IDENTIFIER_BYTES:
+            raise ValueError("versioned feature identifier exceeds the 64-byte bound")
+
+    @property
+    def value(self) -> str:
+        return f"{self.name}-v{self.version}"
+
+
+@dataclass(frozen=True)
+class RequestedTargetRevision:
+    """Untrusted caller intent, never a fresh or verified observation.
+
+    ``digest=None`` encodes the explicit ``unknown`` request. Operation policy
+    decides whether that request is admissible; the current cooperative
+    ``BoundRequired`` descriptor refuses it before execution. A digest is an
+    exact-match constraint and remains caller metadata even when it matches a
+    later Rust observation.
+    """
+
+    subject: str
+    algorithm: str
+    digest: Optional[str] = None
+
+    def __post_init__(self):
+        _validate_protocol_name("revision subject", self.subject)
+        _validate_protocol_name("revision algorithm", self.algorithm)
+        if self.digest is not None:
+            if type(self.digest) is not str:
+                raise TypeError("requested revision digest must be a string or None")
+            if len(self.digest) != 64 or any(
+                character not in "0123456789abcdef" for character in self.digest
+            ):
+                raise ValueError(
+                    "requested revision digest must be 64 lowercase hexadecimal characters"
+                )
+
+    @property
+    def coordinate(self) -> str:
+        if self.digest is None:
+            return "unknown"
+        return f"{self.algorithm}:{self.digest}"
+
+
+@dataclass(frozen=True)
+class ProtocolRequirement:
+    """Immutable negotiated-v2 requirements supplied to the Rust engine."""
+
+    operation: OperationId
+    required_features: Tuple[FeatureId, ...]
+    requested_target_revision: RequestedTargetRevision
+
+    def __post_init__(self):
+        if type(self.operation) is not OperationId:
+            raise TypeError("operation must be an OperationId")
+        if type(self.required_features) is not tuple:
+            raise TypeError("required_features must be a tuple")
+        if len(self.required_features) > MAX_REQUIRED_FEATURES:
+            raise ValueError(
+                f"required_features exceeds the {MAX_REQUIRED_FEATURES}-feature bound"
+            )
+        if any(type(feature) is not FeatureId for feature in self.required_features):
+            raise TypeError("every required feature must be a FeatureId")
+        feature_values = tuple(feature.value for feature in self.required_features)
+        if feature_values != tuple(sorted(feature_values)):
+            raise ValueError("required_features must be in canonical sorted order")
+        if len(set(feature_values)) != len(feature_values):
+            raise ValueError("required_features must be unique")
+        if type(self.requested_target_revision) is not RequestedTargetRevision:
+            raise TypeError(
+                "requested_target_revision must be a RequestedTargetRevision"
+            )
 
 
 @dataclass(frozen=True)
@@ -84,6 +211,7 @@ class RunRequest:
     invocation_id: Optional[str] = None
     transport: Optional[str] = None
     cassette_path: Optional[str] = None
+    protocol_requirement: Optional[ProtocolRequirement] = None
 
     def __post_init__(self):
         string_fields = {
@@ -127,6 +255,11 @@ class RunRequest:
                     raise ValueError(f"{field} exceeds the 4096-byte request bound")
         if self.invocation_id == "":
             raise ValueError("invocation_id must be non-empty when supplied")
+        if self.invocation_id is not None:
+            if len(self.invocation_id.encode("utf-8")) > MAX_INVOCATION_ID_BYTES:
+                raise ValueError(
+                    f"invocation_id exceeds the {MAX_INVOCATION_ID_BYTES}-byte bound"
+                )
         for field, value in {"universes": self.universes, "seed": self.seed}.items():
             # `bool` is an `int` subclass; accepting it would make `True`
             # silently satisfy the cooperative `universes == 1` contract.
@@ -154,6 +287,16 @@ class RunRequest:
             raise ValueError(f"cassette_path must be absolute: {self.cassette_path!r}")
         if self.transport is not None and self.transport not in {"cooperative"}:
             raise ValueError(f"unknown transport: {self.transport!r}")
+        if self.protocol_requirement is not None and type(
+            self.protocol_requirement
+        ) is not ProtocolRequirement:
+            raise TypeError(
+                "protocol_requirement must be a ProtocolRequirement or None"
+            )
+        if self.protocol_requirement is not None and self.transport != "cooperative":
+            raise ValueError(
+                "protocol_requirement requires transport='cooperative'"
+            )
         if self.cassette_path is not None and self.transport != "cooperative":
             raise ValueError(
                 "cassette_path requires transport='cooperative': a cassette is "
