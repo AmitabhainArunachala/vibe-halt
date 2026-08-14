@@ -37,6 +37,10 @@ Demonstrated now:
 - strict evidence bundles, standalone semantic replay, content-digest
   self-consistency checks, and exact-fingerprint shrinking for the currently
   capture-enabled demo workloads (`scripts/gate.sh`);
+- a closed Tier-1 faulty/fixed admission demo that predeclares
+  `demo-buggy`/`demo`, freshly verifies both exact four-universe arms, and
+  derives `CONFIRMED` only from `FINDINGS`/`CLEAN` under one shared fault plan
+  (`vh demo-admission --out ABSOLUTE_DIR`);
 - a Tier 2/D2 subprocess harness with child-visible cassette replay and a
   published 100-pair reference campaign (`scripts/gate.sh`);
 - eleven pinned regression-corpus entries (runnable count:
@@ -87,6 +91,7 @@ cargo run -p vh-cli -- run --workload demo-buggy --universes 100 --shrink
 cargo run -p vh-cli -- run --workload demo-buggy --universes 100 --out /tmp/vh-evidence
 finding_path=$(find /tmp/vh-evidence/findings -name finding.ndjson -print -quit)
 cargo run -p vh-cli -- replay-bundle "$finding_path"
+cargo run -p vh-cli -- demo-admission --out /tmp/vh-demo-admission
 cargo run -p vh-cli -- sandbox-campaign --mode reference --pairs 100
 ```
 
@@ -100,6 +105,12 @@ schema, content-digest self-consistency, lineage, execution observations, and
 finding identity before it reports `REPRODUCED`. The bundles are not signed
 and do not authenticate source provenance
 (`crates/vh-cli/src/receipts_v2.rs:26-31`).
+
+`demo-admission` exits 1 because its intentionally faulty treatment is
+confirmed against the repaired control. Its `RUST_FRESH_REPLAY` receipt is a
+local, built-in calibration artifact. Strictly reparsing or hashing that
+unsigned receipt checks structure and integrity only; imported bytes cannot
+reconstruct the private fresh-proof values or become a foreign-target result.
 
 ## Layout
 

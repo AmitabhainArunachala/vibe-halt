@@ -11,6 +11,7 @@
 //! generate real secrets, award criterion-3/4 credit, or execute target
 //! code.
 
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::PathBuf;
 
@@ -21,7 +22,9 @@ pub const MANIFEST_SCHEMA: &str = "vibe-halt.holdout-manifest.v1";
 pub const COMMITMENT_DOMAIN: &str = "vh-eval-dossier-commitment-v1";
 pub const MIN_SALT_LEN: usize = 32;
 
-const REQUIRED_STRING_FIELDS: &[&str] = &[
+const DOSSIER_STRING_FIELDS: &[&str] = &[
+    "record",
+    "schema",
     "dossier_id",
     "vb_id",
     "title",
@@ -35,6 +38,75 @@ const REQUIRED_STRING_FIELDS: &[&str] = &[
     "pre_fix_revision",
     "post_fix_revision",
     "injection_seam",
+    "evaluator_image",
+    "toolchain",
+    "treatment_command",
+    "control_command",
+    "required_facts",
+    "status",
+    "cohort",
+    "candidate_state",
+    "candidate_state_log",
+    "commitment_domain",
+    "commitment_salt",
+    "reveal",
+    "commitment_digest",
+];
+
+const DOSSIER_BOOL_FIELDS: &[&str] = &["fixed_control_miss", "acceptance_credit"];
+
+const DOSSIER_FIELDS: &[&str] = &[
+    "record",
+    "schema",
+    "dossier_id",
+    "vb_id",
+    "title",
+    "class",
+    "source_repo",
+    "source_issue",
+    "source_url",
+    "workload",
+    "oracle",
+    "mechanism",
+    "pre_fix_revision",
+    "post_fix_revision",
+    "injection_seam",
+    "evaluator_image",
+    "toolchain",
+    "treatment_command",
+    "control_command",
+    "required_facts",
+    "status",
+    "cohort",
+    "candidate_state",
+    "candidate_state_log",
+    "bridge_execution",
+    "fixed_control_miss",
+    "acceptance_credit",
+    "commitment_domain",
+    "commitment_salt",
+    "reveal",
+    "commitment_digest",
+];
+
+const MANIFEST_FIELDS: &[&str] = &["record", "schema", "name"];
+
+/// A bridge result names an execution. None of these identity-bearing
+/// fields may retain the public calibration sentinels when a bridge is set.
+const EXECUTION_IDENTITY_FIELDS: &[&str] = &[
+    "source_repo",
+    "source_issue",
+    "source_url",
+    "workload",
+    "oracle",
+    "pre_fix_revision",
+    "post_fix_revision",
+    "injection_seam",
+    "evaluator_image",
+    "toolchain",
+    "treatment_command",
+    "control_command",
+    "required_facts",
 ];
 
 /// Fields bound into the reveal/canonical commitment. The commitment
@@ -74,21 +146,110 @@ const VALID_COHORT: &[&str] = &["HOLDOUT", "CALIBRATION"];
 const VALID_CANDIDATE: &[&str] = &["UNRUN", "AUTHORITY_BLOCKED", "DETECTED", "MISS", "INVALID"];
 const VALID_BRIDGE: &[&str] = &["FORWARD_CONFIRMED", "FORWARD_NULL", "FORWARD_INVALID"];
 
-fn get_str<'a>(fields: &'a [(String, Val)], key: &str) -> Option<&'a str> {
+fn get_val<'a>(fields: &'a [(String, Val)], key: &str) -> Option<&'a Val> {
     fields
         .iter()
         .find(|(k, _)| k == key)
-        .and_then(|(_, v)| v.as_str())
+        .map(|(_, value)| value)
+}
+
+fn get_str<'a>(fields: &'a [(String, Val)], key: &str) -> Option<&'a str> {
+    get_val(fields, key).and_then(Val::as_str)
 }
 
 fn get_bool(fields: &[(String, Val)], key: &str) -> Option<bool> {
-    fields
-        .iter()
-        .find(|(k, _)| k == key)
-        .and_then(|(_, v)| match v {
-            Val::B(b) => Some(*b),
-            _ => None,
-        })
+    get_val(fields, key).and_then(|v| match v {
+        Val::B(b) => Some(*b),
+        _ => None,
+    })
+}
+
+fn validate_key_set(fields: &[(String, Val)], allowed: &[&str], errors: &mut Vec<String>) {
+    for key in allowed {
+        match fields
+            .iter()
+            .filter(|(candidate, _)| candidate == key)
+            .count()
+        {
+            0 => errors.push(format!("missing required field {key:?}")),
+            1 => {}
+            count => errors.push(format!("duplicate field {key:?} ({count} occurrences)")),
+        }
+    }
+    for (key, _) in fields {
+        if !allowed.contains(&key.as_str()) {
+            errors.push(format!("unknown field {key:?}"));
+        }
+    }
+}
+
+fn validate_dossier_types(fields: &[(String, Val)], errors: &mut Vec<String>) {
+    for key in DOSSIER_STRING_FIELDS {
+        match get_val(fields, key) {
+            Some(Val::S(value)) if !value.is_empty() => {
+                // `reveal` intentionally contains the canonical newlines.
+                // Every source field feeding `key=value\n` must remain a
+                // single control-free line or two distinct dossiers can
+                // collapse to identical commitment bytes.
+                if *key != "reveal" && value.chars().any(char::is_control) {
+                    errors.push(format!(
+                        "field {key:?} contains a control character forbidden by canonical framing"
+                    ));
+                }
+            }
+            Some(Val::S(_)) => errors.push(format!("field {key:?} must not be empty")),
+            Some(_) => errors.push(format!("field {key:?} must be a string")),
+            None => {}
+        }
+    }
+    for key in DOSSIER_BOOL_FIELDS {
+        match get_val(fields, key) {
+            Some(Val::B(_)) | None => {}
+            Some(_) => errors.push(format!("field {key:?} must be a boolean")),
+        }
+    }
+    match get_val(fields, "bridge_execution") {
+        Some(Val::S(_)) | Some(Val::Null) | None => {}
+        Some(_) => {
+            errors.push("field \"bridge_execution\" must be a string enum or null".to_string())
+        }
+    }
+}
+
+fn validate_manifest(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
+    let mut errors = Vec::new();
+    validate_key_set(fields, MANIFEST_FIELDS, &mut errors);
+    for key in MANIFEST_FIELDS {
+        match get_val(fields, key) {
+            Some(Val::S(value)) if !value.is_empty() => {}
+            Some(Val::S(_)) => errors.push(format!("manifest field {key:?} must not be empty")),
+            Some(_) => errors.push(format!("manifest field {key:?} must be a string")),
+            None => {}
+        }
+    }
+    if get_str(fields, "record") != Some("manifest") {
+        errors.push("manifest record must be \"manifest\"".to_string());
+    }
+    if get_str(fields, "schema") != Some(MANIFEST_SCHEMA) {
+        errors.push(format!("manifest schema must be {MANIFEST_SCHEMA:?}"));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors)
+    }
+}
+
+fn has_calibration_marker(value: &str) -> bool {
+    let upper = value.to_ascii_uppercase();
+    upper.contains("SYNTHETIC-") || upper.contains("NOT-EXECUTED")
+}
+
+fn is_lower_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
 /// Render the canonical dossier bytes that the reveal must expose and the
@@ -143,6 +304,8 @@ fn allowed_candidate_transition(from: &str, to: &str) -> bool {
 /// targets.
 fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
     let mut errors: Vec<String> = Vec::new();
+    validate_key_set(fields, DOSSIER_FIELDS, &mut errors);
+    validate_dossier_types(fields, &mut errors);
 
     if get_str(fields, "record") != Some("dossier") {
         errors.push("record must be \"dossier\"".to_string());
@@ -151,20 +314,13 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
         errors.push(format!("schema must be \"{DOSSIER_SCHEMA}\""));
     }
 
-    for key in REQUIRED_STRING_FIELDS {
-        match get_str(fields, key) {
-            Some(s) if !s.is_empty() => {}
-            _ => errors.push(format!("missing or empty required string field {key:?}")),
-        }
-    }
-
     let status = get_str(fields, "status").unwrap_or("");
-    if !status.is_empty() && !VALID_PRE_COHORT.contains(&status) {
+    if !VALID_PRE_COHORT.contains(&status) {
         errors.push(format!("invalid status {status:?}"));
     }
 
     let cohort = get_str(fields, "cohort").unwrap_or("");
-    if !cohort.is_empty() && !VALID_COHORT.contains(&cohort) {
+    if !VALID_COHORT.contains(&cohort) {
         errors.push(format!("invalid cohort {cohort:?}"));
     }
 
@@ -212,16 +368,21 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
         errors.push("missing candidate_state_log".to_string());
     }
 
-    let bridge = get_str(fields, "bridge_execution").unwrap_or("");
-    if !bridge.is_empty() && !VALID_BRIDGE.contains(&bridge) {
-        errors.push(format!("invalid bridge_execution {bridge:?}"));
+    let bridge = match get_val(fields, "bridge_execution") {
+        Some(Val::S(value)) => Some(value.as_str()),
+        Some(Val::Null) | Some(_) | None => None,
+    };
+    if let Some(value) = bridge {
+        if !VALID_BRIDGE.contains(&value) {
+            errors.push(format!("invalid bridge_execution {value:?}"));
+        }
     }
 
     if cohort == "CALIBRATION" && get_bool(fields, "acceptance_credit") == Some(true) {
         errors.push("HOLDOUT credit claimed for a CALIBRATION dossier".to_string());
     }
 
-    if !bridge.is_empty() {
+    if let Some(bridge) = bridge {
         match (bridge, candidate) {
             ("FORWARD_CONFIRMED", "DETECTED") => {}
             ("FORWARD_NULL", "MISS") => {}
@@ -230,8 +391,26 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
                 "bridge_execution {bridge:?} inconsistent with candidate_state {candidate:?}"
             )),
         }
-        if bridge == "FORWARD_CONFIRMED" && get_bool(fields, "fixed_control_miss") != Some(true) {
-            errors.push("FORWARD_CONFIRMED requires fixed_control_miss=true".to_string());
+        match (bridge, get_bool(fields, "fixed_control_miss")) {
+            ("FORWARD_CONFIRMED", Some(true)) => {}
+            ("FORWARD_CONFIRMED", _) => {
+                errors.push("FORWARD_CONFIRMED requires fixed_control_miss=true".to_string());
+            }
+            (_, Some(true)) => errors
+                .push("fixed_control_miss=true is valid only for FORWARD_CONFIRMED".to_string()),
+            _ => {}
+        }
+        if cohort == "CALIBRATION" {
+            errors.push("CALIBRATION dossier cannot set bridge_execution".to_string());
+        }
+        for key in EXECUTION_IDENTITY_FIELDS {
+            if let Some(value) = get_str(fields, key) {
+                if has_calibration_marker(value) {
+                    errors.push(format!(
+                        "bridge_execution cannot promote synthetic/not-executed identity field {key:?}"
+                    ));
+                }
+            }
         }
         for key in [
             "evaluator_image",
@@ -244,7 +423,7 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
             }
         }
     } else if get_bool(fields, "fixed_control_miss") == Some(true) {
-        errors.push("fixed_control_miss=true without a bridge_execution".to_string());
+        errors.push("fixed_control_miss=true is valid only for FORWARD_CONFIRMED".to_string());
     }
 
     let domain = get_str(fields, "commitment_domain").unwrap_or("");
@@ -255,15 +434,18 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
     if domain != COMMITMENT_DOMAIN {
         errors.push(format!("commitment_domain must be {COMMITMENT_DOMAIN:?}"));
     }
-    if !salt.is_empty() && salt.len() < MIN_SALT_LEN {
+    if salt.len() < MIN_SALT_LEN {
         errors.push(format!(
             "commitment_salt too short ({} < {MIN_SALT_LEN})",
             salt.len()
         ));
     }
+    if !is_lower_sha256(digest) {
+        errors.push("commitment_digest must be exactly 64 lowercase hexadecimal bytes".to_string());
+    }
 
     let expected_reveal = canonical(fields);
-    if !reveal.is_empty() && reveal != expected_reveal {
+    if reveal != expected_reveal {
         errors.push(
             "reveal does not match canonical dossier fields (fields changed after commitment)"
                 .to_string(),
@@ -282,6 +464,103 @@ fn validate_dossier(fields: &[(String, Val)]) -> Result<(), Vec<String>> {
         Ok(())
     } else {
         Err(errors)
+    }
+}
+
+struct DocumentValidation {
+    dossier_count: u64,
+    manifest_count: u64,
+    dossier_errors: Vec<(usize, Vec<String>)>,
+    document_errors: Vec<String>,
+}
+
+impl DocumentValidation {
+    fn is_valid(&self) -> bool {
+        self.dossier_errors.is_empty() && self.document_errors.is_empty()
+    }
+}
+
+fn validate_document(text: &str) -> DocumentValidation {
+    let mut dossier_count: u64 = 0;
+    let mut record_count: u64 = 0;
+    let mut manifest_count: u64 = 0;
+    let mut dossier_ids = BTreeSet::new();
+    let mut dossier_errors = Vec::new();
+    let mut document_errors = Vec::new();
+
+    for (line_no, line) in text.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let record_index = record_count;
+        record_count += 1;
+        let fields = match parse_line(line) {
+            Ok(fields) => fields,
+            Err(error) => {
+                document_errors.push(format!("line {}: {error}", line_no + 1));
+                continue;
+            }
+        };
+        let kind = get_str(&fields, "record").unwrap_or("");
+        match kind {
+            "manifest" => {
+                manifest_count += 1;
+                if record_index != 0 {
+                    document_errors.push(format!(
+                        "manifest on line {} must be the first non-empty record",
+                        line_no + 1
+                    ));
+                }
+                if manifest_count > 1 {
+                    document_errors.push(format!(
+                        "manifest on line {} violates exact-one manifest multiplicity",
+                        line_no + 1
+                    ));
+                }
+                if let Err(errors) = validate_manifest(&fields) {
+                    for error in errors {
+                        document_errors.push(format!("manifest on line {}: {error}", line_no + 1));
+                    }
+                }
+            }
+            "dossier" => {
+                dossier_count += 1;
+                if let Some(dossier_id) = get_str(&fields, "dossier_id") {
+                    if !dossier_ids.insert(dossier_id.to_string()) {
+                        document_errors.push(format!(
+                            "duplicate dossier_id {dossier_id:?} on line {}",
+                            line_no + 1
+                        ));
+                    }
+                }
+                if let Err(errors) = validate_dossier(&fields) {
+                    dossier_errors.push((line_no + 1, errors));
+                }
+            }
+            other => {
+                document_errors.push(format!(
+                    "line {}: unknown record kind {other:?}",
+                    line_no + 1
+                ));
+            }
+        }
+    }
+
+    if dossier_count == 0 {
+        document_errors.push("no dossier records found".to_string());
+    }
+    if manifest_count == 0 && dossier_count != 1 {
+        document_errors.push(format!(
+            "a manifest-less file must contain exactly one dossier, found {dossier_count}"
+        ));
+    }
+
+    DocumentValidation {
+        dossier_count,
+        manifest_count,
+        dossier_errors,
+        document_errors,
     }
 }
 
@@ -321,74 +600,34 @@ pub fn cmd_eval_validate(args: &[String], usage: &str) -> i32 {
         }
     };
 
-    let mut dossier_count: u64 = 0;
-    let mut invalid_count: u64 = 0;
-    let mut manifest_seen = false;
+    let validation = validate_document(&text);
 
-    for (line_no, line) in text.lines().enumerate() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let fields = match parse_line(line) {
-            Ok(f) => f,
-            Err(e) => {
-                eprintln!("error: line {}: {e}", line_no + 1);
-                return 2;
-            }
-        };
-        let kind = fields
-            .iter()
-            .find(|(k, _)| k == "record")
-            .and_then(|(_, v)| v.as_str())
-            .unwrap_or("");
-        match kind {
-            "manifest" => {
-                let schema = fields
-                    .iter()
-                    .find(|(k, _)| k == "schema")
-                    .and_then(|(_, v)| v.as_str())
-                    .unwrap_or("");
-                if schema != MANIFEST_SCHEMA {
-                    eprintln!("error: manifest schema must be {MANIFEST_SCHEMA:?}");
-                    return 2;
-                }
-                manifest_seen = true;
-            }
-            "dossier" => {
-                dossier_count += 1;
-                match validate_dossier(&fields) {
-                    Ok(()) => {}
-                    Err(errors) => {
-                        invalid_count += 1;
-                        eprintln!("dossier on line {}: INVALID", line_no + 1);
-                        for msg in errors {
-                            eprintln!("  - {msg}");
-                        }
-                    }
-                }
-            }
-            other => {
-                eprintln!("error: line {}: unknown record kind {other:?}", line_no + 1);
-                return 2;
-            }
+    for (line_no, errors) in &validation.dossier_errors {
+        eprintln!("dossier on line {line_no}: INVALID");
+        for error in errors {
+            eprintln!("  - {error}");
         }
     }
-
-    if dossier_count == 0 {
-        eprintln!("error: no dossier records found in {path}");
-        return 2;
+    for error in &validation.document_errors {
+        eprintln!("document: INVALID: {error}");
     }
 
-    println!("eval-validate: {dossier_count} dossier(s) checked");
-    if invalid_count == 0 {
+    println!(
+        "eval-validate: {} dossier(s) checked",
+        validation.dossier_count
+    );
+    if validation.is_valid() {
         println!("verdict: VALID");
-        if manifest_seen {
+        if validation.manifest_count == 1 {
             println!("manifest: {MANIFEST_SCHEMA}");
         }
         0
     } else {
-        println!("verdict: INVALID ({invalid_count} dossier(s))");
+        println!(
+            "verdict: INVALID ({invalid_count} dossier(s), {} document violation(s))",
+            validation.document_errors.len(),
+            invalid_count = validation.dossier_errors.len()
+        );
         1
     }
 }
@@ -398,7 +637,88 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use vh_cli::receipts::Val;
+    use vh_cli::receipts::{json_escape, Val};
+
+    const DOSSIER_KEYS: &[&str] = &[
+        "record",
+        "schema",
+        "dossier_id",
+        "vb_id",
+        "title",
+        "class",
+        "source_repo",
+        "source_issue",
+        "source_url",
+        "workload",
+        "oracle",
+        "mechanism",
+        "pre_fix_revision",
+        "post_fix_revision",
+        "injection_seam",
+        "evaluator_image",
+        "toolchain",
+        "treatment_command",
+        "control_command",
+        "required_facts",
+        "status",
+        "cohort",
+        "candidate_state",
+        "candidate_state_log",
+        "bridge_execution",
+        "fixed_control_miss",
+        "acceptance_credit",
+        "commitment_domain",
+        "commitment_salt",
+        "reveal",
+        "commitment_digest",
+    ];
+
+    const DOSSIER_STRING_KEYS: &[&str] = &[
+        "record",
+        "schema",
+        "dossier_id",
+        "vb_id",
+        "title",
+        "class",
+        "source_repo",
+        "source_issue",
+        "source_url",
+        "workload",
+        "oracle",
+        "mechanism",
+        "pre_fix_revision",
+        "post_fix_revision",
+        "injection_seam",
+        "evaluator_image",
+        "toolchain",
+        "treatment_command",
+        "control_command",
+        "required_facts",
+        "status",
+        "cohort",
+        "candidate_state",
+        "candidate_state_log",
+        "commitment_domain",
+        "commitment_salt",
+        "reveal",
+        "commitment_digest",
+    ];
+
+    const SYNTHETIC_IDENTITY_KEYS: &[&str] = &[
+        "source_repo",
+        "source_issue",
+        "source_url",
+        "workload",
+        "oracle",
+        "pre_fix_revision",
+        "post_fix_revision",
+        "injection_seam",
+        "evaluator_image",
+        "toolchain",
+        "treatment_command",
+        "control_command",
+        "required_facts",
+    ];
 
     fn base_dossier() -> Vec<(String, Val)> {
         let mut fields: BTreeMap<String, Val> = BTreeMap::new();
@@ -508,10 +828,175 @@ mod tests {
         set_field(fields, "commitment_digest", Val::S(digest));
     }
 
+    fn remove_field(fields: &mut Vec<(String, Val)>, key: &str) {
+        fields.retain(|(candidate, _)| candidate != key);
+    }
+
+    fn real_dossier() -> Vec<(String, Val)> {
+        let mut fields = base_dossier();
+        for (key, value) in [
+            (
+                "pre_fix_revision",
+                "1111111111111111111111111111111111111111",
+            ),
+            (
+                "post_fix_revision",
+                "2222222222222222222222222222222222222222",
+            ),
+            ("injection_seam", "fixture::checkpoint::after_write"),
+            (
+                "evaluator_image",
+                "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            ),
+            ("toolchain", "rustc-1.89.0-x86_64-unknown-linux-gnu"),
+            ("treatment_command", "vh-local-fixture treatment"),
+            ("control_command", "vh-local-fixture fixed-control"),
+            ("required_facts", "treatment_outcome;fixed_control_outcome"),
+            ("cohort", "HOLDOUT"),
+            (
+                "commitment_salt",
+                "public-shape-salt-vb008-00000000000000000000000000000000",
+            ),
+        ] {
+            set_field(&mut fields, key, Val::S(value.into()));
+        }
+        recompute_commitment(&mut fields);
+        fields
+    }
+
+    fn set_candidate(fields: &mut [(String, Val)], candidate: &str) {
+        let log = match candidate {
+            "UNRUN" => "UNRUN",
+            "AUTHORITY_BLOCKED" => "UNRUN;AUTHORITY_BLOCKED",
+            "DETECTED" => "UNRUN;DETECTED",
+            "MISS" => "UNRUN;MISS",
+            "INVALID" => "UNRUN;INVALID",
+            other => panic!("unexpected candidate state {other}"),
+        };
+        set_field(fields, "candidate_state", Val::S(candidate.into()));
+        set_field(fields, "candidate_state_log", Val::S(log.into()));
+    }
+
+    fn render_record(fields: &[(String, Val)]) -> String {
+        let rendered: Vec<String> = fields
+            .iter()
+            .map(|(key, value)| {
+                let value = match value {
+                    Val::S(s) => format!("\"{}\"", json_escape(s)),
+                    Val::N(n) => n.to_string(),
+                    Val::B(b) => b.to_string(),
+                    Val::Null => "null".to_string(),
+                };
+                format!("\"{}\":{value}", json_escape(key))
+            })
+            .collect();
+        format!("{{{}}}", rendered.join(","))
+    }
+
+    fn validation_exit(text: &str) -> i32 {
+        if validate_document(text).is_valid() {
+            0
+        } else {
+            1
+        }
+    }
+
+    fn manifest() -> Vec<(String, Val)> {
+        vec![
+            ("record".into(), Val::S("manifest".into())),
+            ("schema".into(), Val::S(MANIFEST_SCHEMA.into())),
+            ("name".into(), Val::S("wave-b-calibration-manifest".into())),
+        ]
+    }
+
     #[test]
     fn valid_calibration_dossier_passes() {
         let fields = base_dossier();
         assert!(validate_dossier(&fields).is_ok());
+    }
+
+    #[test]
+    fn every_dossier_schema_field_is_required() {
+        let base = base_dossier();
+        let mut accepted_missing = Vec::new();
+        for key in DOSSIER_KEYS {
+            let mut fields = base.clone();
+            remove_field(&mut fields, key);
+            if CANONICAL_FIELDS.contains(key) {
+                recompute_commitment(&mut fields);
+            }
+            if validate_dossier(&fields).is_ok() {
+                accepted_missing.push(*key);
+            }
+        }
+        assert!(
+            accepted_missing.is_empty(),
+            "missing fields accepted: {accepted_missing:?}"
+        );
+    }
+
+    #[test]
+    fn duplicate_and_unknown_dossier_fields_fail() {
+        let base = base_dossier();
+        let mut accepted_duplicates = Vec::new();
+        for key in DOSSIER_KEYS {
+            let mut fields = base.clone();
+            let value = fields
+                .iter()
+                .find(|(candidate, _)| candidate == key)
+                .map(|(_, value)| value.clone())
+                .unwrap();
+            fields.push(((*key).into(), value));
+            if validate_dossier(&fields).is_ok() {
+                accepted_duplicates.push(*key);
+            }
+        }
+        assert!(
+            accepted_duplicates.is_empty(),
+            "duplicate fields accepted: {accepted_duplicates:?}"
+        );
+
+        let mut fields = base;
+        fields.push(("future_extension".into(), Val::B(true)));
+        assert!(validate_dossier(&fields).is_err(), "unknown field accepted");
+    }
+
+    #[test]
+    fn dossier_fields_have_exact_types() {
+        let base = base_dossier();
+        let mut accepted_wrong_types = Vec::new();
+        for key in DOSSIER_STRING_KEYS {
+            let mut fields = base.clone();
+            set_field(&mut fields, key, Val::N(7));
+            if CANONICAL_FIELDS.contains(key) {
+                recompute_commitment(&mut fields);
+            }
+            if validate_dossier(&fields).is_ok() {
+                accepted_wrong_types.push(*key);
+            }
+        }
+        for key in ["fixed_control_miss", "acceptance_credit"] {
+            for value in [Val::Null, Val::N(0), Val::S("false".into())] {
+                let mut fields = base.clone();
+                set_field(&mut fields, key, value);
+                recompute_commitment(&mut fields);
+                if validate_dossier(&fields).is_ok() {
+                    accepted_wrong_types.push(key);
+                }
+            }
+        }
+        for value in [Val::B(false), Val::N(0)] {
+            let mut fields = base.clone();
+            set_field(&mut fields, "bridge_execution", value);
+            recompute_commitment(&mut fields);
+            if validate_dossier(&fields).is_ok() {
+                accepted_wrong_types.push("bridge_execution");
+            }
+        }
+        assert!(
+            accepted_wrong_types.is_empty(),
+            "wrong field types accepted: {accepted_wrong_types:?}"
+        );
     }
 
     #[test]
@@ -597,6 +1082,34 @@ mod tests {
     }
 
     #[test]
+    fn canonical_source_fields_reject_newline_boundary_collisions() {
+        let mut left = base_dossier();
+        set_field(&mut left, "title", Val::S("alpha\nclass=beta".into()));
+        set_field(&mut left, "class", Val::S("gamma".into()));
+        recompute_commitment(&mut left);
+
+        let mut right = base_dossier();
+        set_field(&mut right, "title", Val::S("alpha".into()));
+        set_field(&mut right, "class", Val::S("beta\nclass=gamma".into()));
+        recompute_commitment(&mut right);
+
+        assert_eq!(get_str(&left, "reveal"), get_str(&right, "reveal"));
+        assert_eq!(
+            get_str(&left, "commitment_digest"),
+            get_str(&right, "commitment_digest")
+        );
+        for fields in [&left, &right] {
+            let errors = validate_dossier(fields).unwrap_err();
+            assert!(
+                errors
+                    .iter()
+                    .any(|error| error.contains("forbidden by canonical framing")),
+                "{errors:?}"
+            );
+        }
+    }
+
+    #[test]
     fn forward_confirmed_requires_detection_and_control_miss() {
         let mut fields = base_dossier();
         set_field(&mut fields, "candidate_state", Val::S("DETECTED".into()));
@@ -639,7 +1152,7 @@ mod tests {
 
     #[test]
     fn forward_confirmed_with_detection_and_control_miss_passes() {
-        let mut fields = base_dossier();
+        let mut fields = real_dossier();
         set_field(&mut fields, "candidate_state", Val::S("DETECTED".into()));
         set_field(
             &mut fields,
@@ -654,5 +1167,182 @@ mod tests {
         set_field(&mut fields, "fixed_control_miss", Val::B(true));
         recompute_commitment(&mut fields);
         assert!(validate_dossier(&fields).is_ok());
+    }
+
+    #[test]
+    fn bridge_candidate_control_matrix_is_exact() {
+        let candidates = ["UNRUN", "AUTHORITY_BLOCKED", "DETECTED", "MISS", "INVALID"];
+        let bridges = [
+            None,
+            Some("FORWARD_CONFIRMED"),
+            Some("FORWARD_NULL"),
+            Some("FORWARD_INVALID"),
+        ];
+        let mut mismatches = Vec::new();
+        for candidate in candidates {
+            for bridge in bridges {
+                for fixed_control_miss in [false, true] {
+                    let mut fields = real_dossier();
+                    set_candidate(&mut fields, candidate);
+                    set_field(
+                        &mut fields,
+                        "bridge_execution",
+                        bridge.map_or(Val::Null, |value| Val::S(value.into())),
+                    );
+                    set_field(
+                        &mut fields,
+                        "fixed_control_miss",
+                        Val::B(fixed_control_miss),
+                    );
+                    recompute_commitment(&mut fields);
+
+                    let expected = matches!(
+                        (candidate, bridge, fixed_control_miss),
+                        (_, None, false)
+                            | ("DETECTED", Some("FORWARD_CONFIRMED"), true)
+                            | ("MISS", Some("FORWARD_NULL"), false)
+                            | ("INVALID", Some("FORWARD_INVALID"), false)
+                    );
+                    let actual = validate_dossier(&fields).is_ok();
+                    if actual != expected {
+                        mismatches.push((candidate, bridge, fixed_control_miss, actual));
+                    }
+                }
+            }
+        }
+        assert!(mismatches.is_empty(), "matrix mismatches: {mismatches:?}");
+    }
+
+    #[test]
+    fn synthetic_calibration_positive_cannot_promote() {
+        let mut fields = base_dossier();
+        set_candidate(&mut fields, "DETECTED");
+        set_field(
+            &mut fields,
+            "bridge_execution",
+            Val::S("FORWARD_CONFIRMED".into()),
+        );
+        set_field(&mut fields, "fixed_control_miss", Val::B(true));
+        recompute_commitment(&mut fields);
+        assert!(validate_dossier(&fields).is_err());
+    }
+
+    #[test]
+    fn calibration_cohort_cannot_promote_real_shaped_identity() {
+        let mut fields = real_dossier();
+        set_field(&mut fields, "cohort", Val::S("CALIBRATION".into()));
+        set_candidate(&mut fields, "MISS");
+        set_field(
+            &mut fields,
+            "bridge_execution",
+            Val::S("FORWARD_NULL".into()),
+        );
+        recompute_commitment(&mut fields);
+        assert!(validate_dossier(&fields).is_err());
+    }
+
+    #[test]
+    fn synthetic_or_not_executed_identity_cannot_promote() {
+        let mut accepted = Vec::new();
+        for key in SYNTHETIC_IDENTITY_KEYS {
+            for marker in ["SYNTHETIC-IDENTITY", "identity-NOT-EXECUTED"] {
+                let mut fields = real_dossier();
+                set_field(&mut fields, key, Val::S(marker.into()));
+                set_candidate(&mut fields, "DETECTED");
+                set_field(
+                    &mut fields,
+                    "bridge_execution",
+                    Val::S("FORWARD_CONFIRMED".into()),
+                );
+                set_field(&mut fields, "fixed_control_miss", Val::B(true));
+                recompute_commitment(&mut fields);
+                if validate_dossier(&fields).is_ok() {
+                    accepted.push((*key, marker));
+                }
+            }
+        }
+        assert!(
+            accepted.is_empty(),
+            "synthetic identities accepted: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn manifest_shape_is_exact() {
+        let dossier = render_record(&base_dossier());
+        let mut accepted = Vec::new();
+
+        let mut missing = manifest();
+        remove_field(&mut missing, "name");
+        if validation_exit(&format!("{}\n{dossier}\n", render_record(&missing))) == 0 {
+            accepted.push("missing name");
+        }
+
+        let mut duplicate = manifest();
+        duplicate.push(("name".into(), Val::S("duplicate".into())));
+        if validation_exit(&format!("{}\n{dossier}\n", render_record(&duplicate))) == 0 {
+            accepted.push("duplicate name");
+        }
+
+        let mut unknown = manifest();
+        unknown.push(("extra".into(), Val::B(true)));
+        if validation_exit(&format!("{}\n{dossier}\n", render_record(&unknown))) == 0 {
+            accepted.push("unknown field");
+        }
+
+        let mut wrong_type = manifest();
+        set_field(&mut wrong_type, "name", Val::N(1));
+        if validation_exit(&format!("{}\n{dossier}\n", render_record(&wrong_type))) == 0 {
+            accepted.push("wrong name type");
+        }
+
+        assert!(
+            accepted.is_empty(),
+            "invalid manifests accepted: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn readable_structural_failures_are_invalid_not_usage_errors() {
+        let manifest_only = format!("{}\n", render_record(&manifest()));
+        assert_eq!(validation_exit(&manifest_only), 1);
+        assert_eq!(validation_exit("{not-json}\n"), 1);
+        assert_eq!(validation_exit("{\"record\":1,\"schema\":\"x\"}\n"), 1);
+    }
+
+    #[test]
+    fn manifest_multiplicity_order_and_dossier_ids_are_exact() {
+        let manifest = render_record(&manifest());
+        let first = base_dossier();
+        let first_line = render_record(&first);
+        let mut second = real_dossier();
+        set_field(&mut second, "dossier_id", Val::S("VB-010-7361".into()));
+        recompute_commitment(&mut second);
+        let second_line = render_record(&second);
+
+        let invalid_documents = [
+            format!("{first_line}\n{manifest}\n"),
+            format!("{manifest}\n{manifest}\n{first_line}\n"),
+            format!("{first_line}\n{second_line}\n"),
+            format!("{manifest}\n{first_line}\n{first_line}\n"),
+        ];
+        let accepted: Vec<usize> = invalid_documents
+            .iter()
+            .enumerate()
+            .filter_map(|(index, text)| (validation_exit(text) == 0).then_some(index))
+            .collect();
+        assert!(
+            accepted.is_empty(),
+            "invalid document shapes accepted: {accepted:?}"
+        );
+    }
+
+    #[test]
+    fn checked_in_calibration_files_remain_valid() {
+        let manifest = include_str!("../../../corpus/calibration/manifest.ndjson");
+        assert_eq!(validation_exit(manifest), 0);
+
+        let single = include_str!("../../../corpus/calibration/vb008_langgraph_6491.json");
+        assert_eq!(validation_exit(single), 0);
     }
 }
