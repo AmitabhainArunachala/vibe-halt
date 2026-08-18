@@ -4,6 +4,7 @@
 //! process exit code, and nothing inside the kernel crates may. Arg parsing
 //! is manual to keep the workspace zero-dependency.
 
+mod admission;
 mod bundle;
 mod cooperative;
 mod eval;
@@ -74,6 +75,7 @@ fn main() {
             Some("run") => cmd_run(&args[1..]),
             Some("replay-bundle") => bundle::cmd_replay_bundle(&args[1..], USAGE),
             Some("verify-run") => bundle::cmd_verify_run(&args[1..], USAGE),
+            Some("demo-admission") => bundle::cmd_demo_admission(&args[1..], USAGE),
             Some("eval-validate") => eval::cmd_eval_validate(&args[1..], USAGE),
             Some("shrink") => cmd_shrink(&args[1..]),
             Some("sandbox-demo") => sandbox_demo::cmd_sandbox_demo(&args[1..], USAGE),
@@ -105,6 +107,7 @@ USAGE:
            [--record-tape] [--schedule fifo|pct:<d>|uniform]
     vh replay-bundle PATH
     vh verify-run --out DIR --engine PATH
+    vh demo-admission --out DIR
     vh eval-validate --dossier PATH
     vh shrink [--workload NAME] [--seed N] --universe K
     vh sandbox-demo [--mode clean|cassette-miss|nondet]
@@ -633,6 +636,13 @@ pub(crate) fn build_provenance(
         target_arch: std::env::consts::ARCH.to_string(),
         declared_source_commit,
     }
+}
+
+/// Resolve the exact executable image used by typed fresh-verification paths.
+/// Keeping this environment read at the CLI boundary lets evidence modules
+/// remain inside the determinism deny-list instead of acquiring an exemption.
+pub(crate) fn current_engine_path() -> Result<std::path::PathBuf, String> {
+    std::env::current_exe().map_err(|_| "executing engine path could not be resolved".to_string())
 }
 
 /// Print one minimization (or its typed unavailability) for `--shrink`

@@ -214,6 +214,26 @@ pub(crate) fn create_private_directory(path: &Path) -> std::io::Result<()> {
     std::fs::create_dir(path)
 }
 
+/// Reserve an invocation-unique directory for cross-module boundary tests.
+/// Environment and process identity stay in this already-declared boundary
+/// file; deterministic evidence modules receive only the resulting path.
+#[cfg(test)]
+pub(crate) fn reserve_test_directory(label: &str) -> Result<PathBuf, String> {
+    let root = std::env::temp_dir();
+    for suffix in 0..MAX_WORKSPACE_RESERVATION_ATTEMPTS {
+        let path = root.join(format!(
+            "vh-cli-test-{}-{label}-{suffix}",
+            std::process::id()
+        ));
+        match create_private_directory(&path) {
+            Ok(()) => return Ok(path),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(_) => return Err("test directory reservation failed".to_string()),
+        }
+    }
+    Err("test directory reservation attempts exhausted".to_string())
+}
+
 impl WorkspaceLease {
     fn path(&self) -> &Path {
         &self.path

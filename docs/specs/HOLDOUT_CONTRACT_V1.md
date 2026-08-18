@@ -5,10 +5,11 @@
 This document defines the public, synthetic, non-secret dossier schema used
 for Wave B/C Reality Bridge R3: versioned holdout manifests and calibration
 dossiers. It is separate from `corpus/SCHEMA.md`, which governs the
-regression corpus. Holdout and calibration dossiers may not award
-criterion-3 or criterion-4 credit; they exist only to freeze candidate
-metadata, state transitions, and commitment/reveal shape before any target
-execution.
+regression corpus. Holdout and calibration dossiers may not award criterion-3
+or criterion-4 credit; they exist only to freeze candidate metadata, state
+transitions, and commitment/reveal shape before any target execution. A
+`VALID` dossier is therefore not a real-execution admission, even when its
+strings describe a plausible command, revision, or forward result.
 
 ## Dossier schema (`vibe-halt.eval-dossier.v1`)
 
@@ -80,9 +81,13 @@ commitment_digest = SHA256(domain || '\0' || salt || '\0' || reveal)
 
 The `reveal` is the deterministic canonical rendering of all
 non-commitment, non-envelope fields in the fixed order listed above, one per
-line as `key=value`. Changing any canonical field invalidates the reveal and
-therefore the digest, which detects post-commitment edits such as changing
-`cohort` from `CALIBRATION` to `HOLDOUT`.
+line as `key=value`. Every source string (and the salt) must be a non-empty,
+control-free single line; only the derived `reveal` may contain line breaks.
+This restriction makes the line framing injective instead of allowing a
+newline inside one field to impersonate the next `key=` boundary. Changing any
+canonical field invalidates the reveal and therefore the digest, which detects
+post-commitment edits such as changing `cohort` from `CALIBRATION` to
+`HOLDOUT`.
 
 ## Bridge execution rules
 
@@ -92,6 +97,15 @@ therefore the digest, which detects post-commitment edits such as changing
 - `FORWARD_INVALID` requires `candidate_state == INVALID`.
 - A non-null `bridge_execution` requires non-empty `evaluator_image`,
   `toolchain`, `treatment_command`, and `control_command`.
+- `fixed_control_miss == true` is rejected for `FORWARD_NULL`,
+  `FORWARD_INVALID`, and a null bridge.
+- A `CALIBRATION` dossier cannot set a bridge result. Identity fields bearing
+  `SYNTHETIC-*` or `NOT-EXECUTED` markers cannot be presented as an executed
+  bridge.
+
+These are closed shape rules for the v1 dossier. They do not authenticate the
+named executable, prove that either command ran, or construct real-execution
+authority. Real admission is a separate Rust-owned state described below.
 
 ## Validator
 
@@ -102,15 +116,55 @@ vh eval-validate --dossier PATH
 The validator:
 
 1. Reads the file (which may be a single dossier or a manifest).
-2. Checks every `dossier` record for required fields and allowed enum values.
+2. Requires the exact versioned key set and value types; missing, duplicate,
+   unknown, empty, or type-confused fields fail closed.
 3. Verifies append-only state transitions.
 4. Verifies domain separation, salt length, and commitment/reveal re-computation.
 5. Rejects `CALIBRATION` dossiers claiming acceptance credit.
-6. Rejects malformed `FORWARD_CONFIRMED` claims without a checked detection
-   and fixed-control miss.
-7. Never executes any target code.
+6. Applies the exact candidate/bridge/control matrix and rejects every other
+   combination, including a fixed-control miss on null or invalid results.
+7. Requires exactly one first-position manifest for multi-dossier documents,
+   exact manifest fields, and unique dossier ids.
+8. Never executes target code and never constructs real-execution authority.
 
 Exit codes: `0` VALID, `1` INVALID, `2` usage or unreadable file.
+
+## Real-execution admission (`vh-real-execution-receipt-v1`)
+
+Real admission is deliberately not parsed from `vibe-halt.eval-dossier.v1`.
+The Tier-1 Rust verifier constructs a private, non-cloneable proof value only
+after verifying a canonical run receipt, its complete finding tree, and a
+fresh execution of the exact closed-registry workload. A paired plan is frozen
+before either arm runs. Its current v1 profile is intentionally tiny:
+
+- treatment workload: `demo-buggy`;
+- repaired control workload: `demo`;
+- shared condition: caller-selected seed and universe budget, palette `v0`,
+  FIFO scheduling, and divergence checking enabled;
+- oracle contract: the identical closed `durability` property contract;
+- target identity: the observed executing-file SHA-256 plus the role's closed
+  workload/configuration identity.
+
+The classifier consumes the plan and both proof values, rechecks the exact
+role-specific target, command, condition, oracle, exhausted budget, result
+count, and ordered fault-plan vector, and then derives this closed matrix:
+
+| state | treatment | fixed control | `fixed_control_miss` | authority |
+|---|---|---|---:|---|
+| `CONFIRMED` | `FINDINGS` | `CLEAN` | `true` | `RUST_FRESH_REPLAY` |
+| `NULL` | `CLEAN` | `CLEAN` | `false` | `RUST_FRESH_REPLAY` |
+| `INVALID` | every other pair or binding failure | any | `false` | `none` |
+
+The canonical paired receipt is length-framed, strictly reparsed, and
+content-addressed. All safety-relevant values are derived or checked in Rust;
+dossier strings, project metadata, model consensus, and prose cannot construct
+the private proof values. `RUST_FRESH_REPLAY` means only that this local engine
+freshly reproduced both bounded Tier-1 model executions. It is not an
+independent witness, an arbitrary-app or foreign-target result, proof that the
+property contract matches human intent, or proof that the observed executable
+path bytes are the bytes the operating-system loader mapped into this process.
+The last observation-to-loaded-image channel therefore remains explicit even
+though the engine-owned workload semantics themselves are Tier-1/D0.
 
 ## Manifest schema (`vibe-halt.holdout-manifest.v1`)
 

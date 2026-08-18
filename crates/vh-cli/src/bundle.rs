@@ -677,33 +677,339 @@ struct VerifyManifest {
 }
 
 const GENERIC_ENGINE_REQUEST_DOMAIN: &str = "vh-generic-engine-request-v1";
+const TIER1_RUN_COMMAND_DOMAIN: &str = "vh-tier1-run-command-v1";
+const TIER1_RUN_CONDITION_DOMAIN: &str = "vh-tier1-run-condition-v1";
+const TIER1_ORACLE_CONTRACT_DOMAIN: &str = "vh-tier1-oracle-contract-v1";
+const TIER1_WORKLOAD_TARGET_REVISION_DOMAIN: &str = "vh-tier1-workload-target-revision-v1";
+const TIER1_VERIFICATION_RESULT_DOMAIN: &str = "vh-tier1-verification-result-v1";
 
-fn generic_engine_request_digest(manifest: &VerifyManifest) -> String {
-    fn frame(bytes: &mut Vec<u8>, tag: &str, value: &[u8]) {
-        bytes.extend_from_slice(tag.as_bytes());
-        bytes.push(b' ');
-        bytes.extend_from_slice(value.len().to_string().as_bytes());
-        bytes.push(b':');
-        bytes.extend_from_slice(value);
-        bytes.push(b'\n');
+fn digest_frame(bytes: &mut Vec<u8>, tag: &str, value: &[u8]) {
+    bytes.extend_from_slice(tag.as_bytes());
+    bytes.push(b' ');
+    bytes.extend_from_slice(value.len().to_string().as_bytes());
+    bytes.push(b':');
+    bytes.extend_from_slice(value);
+    bytes.push(b'\n');
+}
+
+fn framed_digest<'a>(
+    domain: &str,
+    fields: impl IntoIterator<Item = (&'a str, &'a [u8])>,
+) -> String {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(domain.as_bytes());
+    bytes.push(b'\n');
+    for (tag, value) in fields {
+        digest_frame(&mut bytes, tag, value);
+    }
+    vh_digest::sha256_hex(&bytes)
+}
+
+fn is_canonical_sha256(value: &str) -> bool {
+    value.len() == 64
+        && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        && !value.bytes().any(|byte| byte.is_ascii_uppercase())
+}
+
+fn condition_id(seed: u64, universes: u64, palette: &str, check_divergence: bool) -> String {
+    let seed = format!("0x{seed:x}");
+    let universes = universes.to_string();
+    framed_digest(
+        TIER1_RUN_CONDITION_DOMAIN,
+        [
+            ("seed", seed.as_bytes()),
+            ("universes", universes.as_bytes()),
+            ("palette", palette.as_bytes()),
+            ("schedule", b"fifo" as &[u8]),
+            (
+                "divergence-check",
+                if check_divergence { b"true" } else { b"false" },
+            ),
+        ],
+    )
+}
+
+fn command_id(workload: &str, condition_id: &str) -> String {
+    framed_digest(
+        TIER1_RUN_COMMAND_DOMAIN,
+        [
+            ("workload", workload.as_bytes()),
+            ("condition-id", condition_id.as_bytes()),
+            ("record-tape", b"false" as &[u8]),
+        ],
+    )
+}
+
+fn oracle_contract_id(workload: &dyn vh_multiverse::Workload) -> String {
+    let contract = workload.property_contract();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(TIER1_ORACLE_CONTRACT_DOMAIN.as_bytes());
+    bytes.push(b'\n');
+    for (index, name) in contract.required_always().iter().enumerate() {
+        digest_frame(&mut bytes, &format!("always-{index}"), name.as_bytes());
+    }
+    for (index, name) in contract.required_sometimes().iter().enumerate() {
+        digest_frame(&mut bytes, &format!("sometimes-{index}"), name.as_bytes());
+    }
+    for (index, name) in contract.required_oracles().iter().enumerate() {
+        digest_frame(&mut bytes, &format!("oracle-{index}"), name.as_bytes());
+    }
+    vh_digest::sha256_hex(&bytes)
+}
+
+/// An independently supplied, exact Tier-1 campaign request. The schedule is
+/// deliberately constructed as FIFO-only: v2 receipts do not authenticate
+/// exploratory scheduling or decision-tape profiles.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RunExpectation {
+    workload: String,
+    seed: u64,
+    universes: UniverseCount,
+    palette: String,
+    schedule_policy: SchedulePolicy,
+    check_divergence: bool,
+    command_id: String,
+    condition_id: String,
+    oracle_contract_id: String,
+}
+
+impl RunExpectation {
+    pub(crate) fn fifo(
+        workload: &str,
+        seed: u64,
+        universes: u64,
+        palette: &str,
+        check_divergence: bool,
+    ) -> Result<Self, String> {
+        if universes > MAX_VERIFY_UNIVERSES {
+            return Err(format!(
+                "expected universe count exceeds the verifier work bound ({MAX_VERIFY_UNIVERSES})"
+            ));
+        }
+        let universes = UniverseCount::try_from(universes).map_err(|error| error.to_string())?;
+        let closed_workload = workloads::by_name(workload).ok_or_else(|| {
+            format!("expected workload {workload:?} is outside the closed registry")
+        })?;
+        if closed_workload.name() != workload {
+            return Err("closed workload registry returned a non-canonical identity".into());
+        }
+        palette_by_name(palette)?;
+        let condition_id = condition_id(seed, universes.get(), palette, check_divergence);
+        let command_id = command_id(workload, &condition_id);
+        let oracle_contract_id = oracle_contract_id(closed_workload.as_ref());
+        Ok(Self {
+            workload: workload.to_string(),
+            seed,
+            universes,
+            palette: palette.to_string(),
+            schedule_policy: SchedulePolicy::Fifo,
+            check_divergence,
+            command_id,
+            condition_id,
+            oracle_contract_id,
+        })
     }
 
+    pub(crate) fn workload(&self) -> &str {
+        &self.workload
+    }
+
+    pub(crate) fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    pub(crate) fn universes(&self) -> u64 {
+        self.universes.get()
+    }
+
+    pub(crate) fn palette(&self) -> &str {
+        &self.palette
+    }
+
+    pub(crate) fn schedule_policy(&self) -> SchedulePolicy {
+        self.schedule_policy
+    }
+
+    pub(crate) fn check_divergence(&self) -> bool {
+        self.check_divergence
+    }
+
+    pub(crate) fn target_revision_for_engine(&self, engine_sha256: &str) -> Result<String, String> {
+        if !is_canonical_sha256(engine_sha256) {
+            return Err("engine SHA-256 must be 64 lowercase hexadecimal characters".into());
+        }
+        Ok(framed_digest(
+            TIER1_WORKLOAD_TARGET_REVISION_DOMAIN,
+            [
+                ("engine-sha256", engine_sha256.as_bytes()),
+                ("closed-workload-id", self.workload.as_bytes()),
+            ],
+        ))
+    }
+
+    pub(crate) fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    pub(crate) fn condition_id(&self) -> &str {
+        &self.condition_id
+    }
+
+    pub(crate) fn oracle_contract_id(&self) -> &str {
+        &self.oracle_contract_id
+    }
+
+    fn matches_manifest(&self, manifest: &VerifyManifest) -> Result<(), String> {
+        if self.workload() != manifest.workload {
+            return Err("run workload does not match the exact expectation".into());
+        }
+        if self.seed() != manifest.seed {
+            return Err("run seed does not match the exact expectation".into());
+        }
+        if self.universes != manifest.universes {
+            return Err("run universe count does not match the exact expectation".into());
+        }
+        if self.palette() != manifest.palette {
+            return Err("run palette does not match the exact expectation".into());
+        }
+        if self.schedule_policy() != SchedulePolicy::Fifo {
+            return Err("run schedule does not match the exact FIFO expectation".into());
+        }
+        if self.check_divergence() != manifest.divergence_check {
+            return Err("run divergence setting does not match the exact expectation".into());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FreshRunOutcome {
+    Clean,
+    Findings,
+    Unchecked,
+}
+
+impl FreshRunOutcome {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Clean => "CLEAN",
+            Self::Findings => "FINDINGS",
+            Self::Unchecked => "UNCHECKED",
+        }
+    }
+
+    fn exit_code(self) -> i32 {
+        match self {
+            Self::Clean => 0,
+            Self::Findings => 1,
+            Self::Unchecked => 3,
+        }
+    }
+
+    fn semantically_verified(self) -> bool {
+        !matches!(self, Self::Unchecked)
+    }
+}
+
+/// Unforgeable-by-safe-callers evidence that this exact verifier image freshly
+/// reproduced and authenticated a complete v2 run tree. Construction is kept
+/// private to the verifier core; notably this type has no `Clone`, `Default`,
+/// `From`, or raw constructor.
+#[derive(Debug)]
+pub(crate) struct FreshRunProof {
+    engine_sha256: String,
+    workload_target_revision: String,
+    command_id: String,
+    condition_id: String,
+    oracle_contract_id: String,
+    outcome: FreshRunOutcome,
+    evidence_digest: String,
+    result_digest: String,
+    finding_count: usize,
+    budget_universes: u64,
+    results_len: usize,
+    budget_exhausted: bool,
+    fault_plan_digests: Vec<String>,
+    verification_result_id: String,
+}
+
+impl FreshRunProof {
+    pub(crate) fn engine_sha256(&self) -> &str {
+        &self.engine_sha256
+    }
+
+    pub(crate) fn workload_target_revision(&self) -> &str {
+        &self.workload_target_revision
+    }
+
+    pub(crate) fn command_id(&self) -> &str {
+        &self.command_id
+    }
+
+    pub(crate) fn condition_id(&self) -> &str {
+        &self.condition_id
+    }
+
+    pub(crate) fn oracle_contract_id(&self) -> &str {
+        &self.oracle_contract_id
+    }
+
+    pub(crate) fn outcome(&self) -> FreshRunOutcome {
+        self.outcome
+    }
+
+    pub(crate) fn evidence_digest(&self) -> &str {
+        &self.evidence_digest
+    }
+
+    pub(crate) fn result_digest(&self) -> &str {
+        &self.result_digest
+    }
+
+    pub(crate) fn finding_count(&self) -> usize {
+        self.finding_count
+    }
+
+    pub(crate) fn budget_universes(&self) -> u64 {
+        self.budget_universes
+    }
+
+    pub(crate) fn results_len(&self) -> usize {
+        self.results_len
+    }
+
+    pub(crate) fn budget_exhausted(&self) -> bool {
+        self.budget_exhausted
+    }
+
+    /// Ordered by universe id. `"null"` is the canonical value for a
+    /// workload that retrieved no plan; no vector element is omitted.
+    pub(crate) fn fault_plan_digests(&self) -> &[String] {
+        &self.fault_plan_digests
+    }
+
+    pub(crate) fn verification_result_id(&self) -> &str {
+        &self.verification_result_id
+    }
+}
+
+fn generic_engine_request_digest(manifest: &VerifyManifest) -> String {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(GENERIC_ENGINE_REQUEST_DOMAIN.as_bytes());
     bytes.push(b'\n');
-    frame(&mut bytes, "workload", manifest.workload.as_bytes());
-    frame(
+    digest_frame(&mut bytes, "workload", manifest.workload.as_bytes());
+    digest_frame(
         &mut bytes,
         "seed",
         format!("0x{:x}", manifest.seed).as_bytes(),
     );
-    frame(
+    digest_frame(
         &mut bytes,
         "universes",
         manifest.universes.get().to_string().as_bytes(),
     );
-    frame(&mut bytes, "palette", manifest.palette.as_bytes());
-    frame(
+    digest_frame(&mut bytes, "palette", manifest.palette.as_bytes());
+    digest_frame(
         &mut bytes,
         "divergence-check",
         if manifest.divergence_check {
@@ -712,14 +1018,14 @@ fn generic_engine_request_digest(manifest: &VerifyManifest) -> String {
             b"false"
         },
     );
-    frame(&mut bytes, "schedule", b"fifo");
-    frame(&mut bytes, "record-tape", b"false");
+    digest_frame(&mut bytes, "schedule", b"fifo");
+    digest_frame(&mut bytes, "record-tape", b"false");
     match &manifest.provenance.declared_source_commit {
         Some(commit) => {
-            frame(&mut bytes, "source-commit-present", b"true");
-            frame(&mut bytes, "source-commit", commit.as_bytes());
+            digest_frame(&mut bytes, "source-commit-present", b"true");
+            digest_frame(&mut bytes, "source-commit", commit.as_bytes());
         }
-        None => frame(&mut bytes, "source-commit-present", b"false"),
+        None => digest_frame(&mut bytes, "source-commit-present", b"false"),
     }
     vh_digest::sha256_hex(&bytes)
 }
@@ -1005,6 +1311,448 @@ fn bounded_verify_error(error: &str) -> String {
     crate::cooperative::bounded_diagnostic(error)
 }
 
+struct VerifyRunAttempt {
+    proof: Result<FreshRunProof, String>,
+    result_digest: String,
+    evidence_digest: String,
+    engine_request_digest: String,
+    findings_total: usize,
+    findings_verified: usize,
+}
+
+pub(crate) struct VerificationResultFacts<'a> {
+    pub(crate) engine_sha256: &'a str,
+    pub(crate) workload_target_revision: &'a str,
+    pub(crate) expected: &'a RunExpectation,
+    pub(crate) outcome: FreshRunOutcome,
+    pub(crate) evidence_digest: &'a str,
+    pub(crate) result_digest: &'a str,
+    pub(crate) finding_count: usize,
+    pub(crate) results_len: usize,
+    pub(crate) budget_exhausted: bool,
+    pub(crate) fault_plan_digests: &'a [String],
+}
+
+pub(crate) fn verification_result_id(facts: &VerificationResultFacts<'_>) -> String {
+    let finding_count = facts.finding_count.to_string();
+    let budget_universes = facts.expected.universes().to_string();
+    let results_len = facts.results_len.to_string();
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(TIER1_VERIFICATION_RESULT_DOMAIN.as_bytes());
+    bytes.push(b'\n');
+    digest_frame(&mut bytes, "engine-sha256", facts.engine_sha256.as_bytes());
+    digest_frame(
+        &mut bytes,
+        "workload-target-revision",
+        facts.workload_target_revision.as_bytes(),
+    );
+    digest_frame(
+        &mut bytes,
+        "command-id",
+        facts.expected.command_id().as_bytes(),
+    );
+    digest_frame(
+        &mut bytes,
+        "condition-id",
+        facts.expected.condition_id().as_bytes(),
+    );
+    digest_frame(
+        &mut bytes,
+        "oracle-contract-id",
+        facts.expected.oracle_contract_id().as_bytes(),
+    );
+    digest_frame(&mut bytes, "outcome", facts.outcome.label().as_bytes());
+    digest_frame(
+        &mut bytes,
+        "evidence-digest",
+        facts.evidence_digest.as_bytes(),
+    );
+    digest_frame(&mut bytes, "result-digest", facts.result_digest.as_bytes());
+    digest_frame(&mut bytes, "finding-count", finding_count.as_bytes());
+    digest_frame(&mut bytes, "budget-universes", budget_universes.as_bytes());
+    digest_frame(&mut bytes, "results-len", results_len.as_bytes());
+    digest_frame(
+        &mut bytes,
+        "budget-exhausted",
+        if facts.budget_exhausted {
+            b"true"
+        } else {
+            b"false"
+        },
+    );
+    for (universe, digest) in facts.fault_plan_digests.iter().enumerate() {
+        digest_frame(
+            &mut bytes,
+            &format!("fault-plan-digest-{universe}"),
+            digest.as_bytes(),
+        );
+    }
+    vh_digest::sha256_hex(&bytes)
+}
+
+/// Shared semantic core for both the legacy record-rendering command and the
+/// typed Tier-1 API. `expected == None` exists solely for the byte-compatible
+/// CLI wrapper, whose historical request surface did not carry an independent
+/// expectation; typed consumers must call [`verify_run_fresh`].
+fn verify_run_inner(
+    dir_path: &Path,
+    engine_sha256: &str,
+    bytes: &[u8],
+    text: &str,
+    expected: Option<&RunExpectation>,
+    fresh_replay_attempts: &mut u64,
+) -> VerifyRunAttempt {
+    let result_digest = vh_digest::sha256_hex(bytes);
+    let mut evidence_digest = String::new();
+    let mut findings_total = 0usize;
+    let mut findings_verified = 0usize;
+    let mut engine_request_digest = String::new();
+
+    let proof: Result<FreshRunProof, String> = (|| {
+        let max_lines = (MAX_VERIFY_UNIVERSES as usize)
+            .saturating_mul(2)
+            .saturating_add(2);
+        if text
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .take(max_lines + 1)
+            .count()
+            > max_lines
+        {
+            return Err("run receipt exceeds the canonical line-count bound".into());
+        }
+        let raw: Vec<&str> = text.split('\n').collect();
+        let (tail, body_and_digest) = raw.split_last().ok_or("empty run receipt")?;
+        if !tail.is_empty() || body_and_digest.iter().any(|line| line.is_empty()) {
+            return Err("run receipt line framing is not canonical".into());
+        }
+        let (digest_line, body_lines) = body_and_digest
+            .split_last()
+            .ok_or("run receipt has no digest record")?;
+        if body_lines.is_empty() {
+            return Err("run receipt has no manifest record".into());
+        }
+        let mut body = String::new();
+        for line in body_lines {
+            body.push_str(line);
+            body.push('\n');
+        }
+        evidence_digest = exact_digest(digest_line, body.as_bytes())?;
+        let manifest = exact_manifest(body_lines[0])?;
+        engine_request_digest = generic_engine_request_digest(&manifest);
+
+        // An independently supplied mismatch is rejected before the closed
+        // workload is selected or any universe executes.
+        if let Some(expected) = expected {
+            expected.matches_manifest(&manifest)?;
+        }
+        let inferred_expectation = if expected.is_none() {
+            Some(RunExpectation::fifo(
+                &manifest.workload,
+                manifest.seed,
+                manifest.universes.get(),
+                &manifest.palette,
+                manifest.divergence_check,
+            )?)
+        } else {
+            None
+        };
+        let expected = expected
+            .or(inferred_expectation.as_ref())
+            .ok_or("verifier expectation was not established")?;
+
+        let workload = workloads::by_name(&manifest.workload)
+            .ok_or("manifest workload is outside the closed registry")?;
+        if oracle_contract_id(workload.as_ref()) != expected.oracle_contract_id() {
+            return Err("fresh workload oracle contract does not match the expectation".into());
+        }
+        let palette = palette_by_name(&manifest.palette)?;
+        let config = MultiverseConfig {
+            root_seed: manifest.seed,
+            universes: manifest.universes,
+            check_divergence: manifest.divergence_check,
+        };
+        *fresh_replay_attempts += 1;
+        let report = run_multiverse_with_palette(&config, workload.as_ref(), palette);
+        let outcome = match report.verdict() {
+            Verdict::Clean => FreshRunOutcome::Clean,
+            Verdict::Findings => FreshRunOutcome::Findings,
+            Verdict::Unchecked => FreshRunOutcome::Unchecked,
+        };
+        let findings = finding_universes(&report);
+        findings_total = findings.len();
+        let identity = RunIdentity {
+            palette_name: &manifest.palette,
+            universes_requested: manifest.universes.get(),
+            check_divergence: manifest.divergence_check,
+            verdict_label: outcome.label(),
+            provenance: &manifest.provenance,
+            lineage: None,
+        };
+        if body != run_receipt_body(&report, &identity, &findings) {
+            return Err("run receipt body does not equal the fresh semantic reproduction".into());
+        }
+        let finding_ids: Vec<String> = findings
+            .iter()
+            .map(|&universe| {
+                let result = &report.results()[universe as usize];
+                let digest =
+                    vh_digest::sha256_hex(result.complete_observation_identity().canonical_bytes());
+                finding_id_v2(universe, &digest)
+            })
+            .collect();
+        verify_receipt_tree(dir_path, &finding_ids)?;
+        findings_verified = verify_finding_bundles(
+            dir_path,
+            &report,
+            &findings,
+            &manifest.palette,
+            &manifest.provenance,
+        )?;
+        if findings_verified != findings_total {
+            return Err("fresh verification did not exhaust the complete finding set".into());
+        }
+
+        let results_len = report.results().len();
+        let budget_exhausted = results_len as u64 == expected.universes();
+        if !budget_exhausted || report.universes_requested() != expected.universes() {
+            return Err("fresh verification did not exhaust the exact universe budget".into());
+        }
+        let mut fault_plan_digests = Vec::with_capacity(results_len);
+        for (universe, result) in report.results().iter().enumerate() {
+            if result.universe_id() != universe as u64 {
+                return Err("fresh report universe order is not canonical".into());
+            }
+            let digest = match result.fault_plan_digest() {
+                Some(digest) => digest.to_string(),
+                None => "null".to_string(),
+            };
+            fault_plan_digests.push(digest);
+        }
+
+        let workload_target_revision = expected.target_revision_for_engine(engine_sha256)?;
+        let verification_result_id = verification_result_id(&VerificationResultFacts {
+            engine_sha256,
+            workload_target_revision: &workload_target_revision,
+            expected,
+            outcome,
+            evidence_digest: &evidence_digest,
+            result_digest: &result_digest,
+            finding_count: findings_total,
+            results_len,
+            budget_exhausted,
+            fault_plan_digests: &fault_plan_digests,
+        });
+        Ok(FreshRunProof {
+            engine_sha256: engine_sha256.to_string(),
+            workload_target_revision,
+            command_id: expected.command_id().to_string(),
+            condition_id: expected.condition_id().to_string(),
+            oracle_contract_id: expected.oracle_contract_id().to_string(),
+            outcome,
+            evidence_digest: evidence_digest.clone(),
+            result_digest: result_digest.clone(),
+            finding_count: findings_total,
+            budget_universes: expected.universes(),
+            results_len,
+            budget_exhausted,
+            fault_plan_digests,
+            verification_result_id,
+        })
+    })();
+
+    VerifyRunAttempt {
+        proof,
+        result_digest,
+        evidence_digest,
+        engine_request_digest,
+        findings_total,
+        findings_verified,
+    }
+}
+
+/// Verify an exact, independently declared Tier-1 campaign using the supplied
+/// executing engine image. A caller receives no partially populated proof:
+/// every boundary, canonical receipt/tree check, and fresh reproduction must
+/// complete first.
+pub(crate) fn verify_run_fresh(
+    out_dir: &Path,
+    engine_path: &Path,
+    expected: &RunExpectation,
+) -> Result<FreshRunProof, String> {
+    let engine_bytes = vh_sandbox::read_bounded_file(engine_path, MAX_VERIFY_ENGINE_BYTES)
+        .map_err(|_| "verifier engine boundary read refused".to_string())?;
+    let supplied_engine_sha256 = vh_digest::sha256_hex(&engine_bytes);
+    let engine_sha256 = crate::cooperative::current_engine_sha256()
+        .map_err(|_| "executing verifier image boundary read refused".to_string())?;
+    if engine_sha256 != supplied_engine_sha256 {
+        return Err("--engine does not identify the executing verifier image".into());
+    }
+    let bytes = vh_sandbox::read_bounded_file(&out_dir.join("run.ndjson"), MAX_RUN_RECEIPT_BYTES)
+        .map_err(|_| "run receipt boundary read refused".to_string())?;
+    let text = std::str::from_utf8(&bytes).map_err(|_| "run receipt is not UTF-8".to_string())?;
+    let mut fresh_replay_attempts = 0;
+    verify_run_inner(
+        out_dir,
+        &engine_sha256,
+        &bytes,
+        text,
+        Some(expected),
+        &mut fresh_replay_attempts,
+    )
+    .proof
+}
+
+const DEMO_ADMISSION_SEED: u64 = 0xd1ce;
+const DEMO_ADMISSION_UNIVERSES: u64 = 4;
+const MAX_ADMISSION_RECEIPT_BYTES: u64 = 1 << 20;
+
+fn run_expected_receipt(out_dir: &Path, expected: &RunExpectation) -> Result<(), String> {
+    if expected.schedule_policy() != SchedulePolicy::Fifo {
+        return Err("demo admission accepts only the exact FIFO plan".into());
+    }
+    let workload = workloads::by_name(expected.workload())
+        .ok_or_else(|| "demo admission workload left the closed registry".to_string())?;
+    let palette = palette_by_name(expected.palette())?;
+    let config = MultiverseConfig {
+        root_seed: expected.seed(),
+        universes: UniverseCount::try_from(expected.universes())
+            .map_err(|error| error.to_string())?,
+        check_divergence: expected.check_divergence(),
+    };
+    let report = run_multiverse_with_palette(&config, workload.as_ref(), palette);
+    let verdict = match report.verdict() {
+        Verdict::Clean => "CLEAN",
+        Verdict::Findings => "FINDINGS",
+        Verdict::Unchecked => "UNCHECKED",
+    };
+    let provenance = crate::build_provenance(None);
+    let out = out_dir
+        .to_str()
+        .ok_or_else(|| "demo admission output path is not UTF-8".to_string())?;
+    write_run_receipts(
+        out,
+        &report,
+        &RunIdentity {
+            palette_name: expected.palette(),
+            universes_requested: expected.universes(),
+            check_divergence: expected.check_divergence(),
+            verdict_label: verdict,
+            provenance: &provenance,
+            lineage: None,
+        },
+    )?;
+    Ok(())
+}
+
+/// Execute and freshly verify the one closed faulty/fixed Tier-1 calibration
+/// pair. The canonical receipt is useful for dogfood and parser integration;
+/// it is not a foreign-target or arbitrary-repository result.
+pub(crate) fn cmd_demo_admission(args: &[String], usage: &str) -> i32 {
+    let mut out: Option<String> = None;
+    let mut iterator = args.iter();
+    while let Some(argument) = iterator.next() {
+        match argument.as_str() {
+            "--out" if out.is_none() => match iterator.next() {
+                Some(value) => out = Some(value.clone()),
+                None => {
+                    eprintln!("error: --out requires a value\n\n{usage}");
+                    return 2;
+                }
+            },
+            "--out" => {
+                eprintln!("error: duplicate --out\n\n{usage}");
+                return 2;
+            }
+            other => {
+                eprintln!(
+                    "error: unknown argument: {}\n\n{usage}",
+                    crate::cooperative::bounded_diagnostic(other)
+                );
+                return 2;
+            }
+        }
+    }
+    let Some(out) = out else {
+        eprintln!("error: demo-admission requires --out\n\n{usage}");
+        return 2;
+    };
+
+    let result: Result<crate::admission::Admission, String> = (|| {
+        let engine_path = crate::current_engine_path()?;
+        let engine_sha256 = crate::cooperative::current_engine_sha256()?;
+        // This is the authority-critical ordering: both exact role requests
+        // and their target identities are frozen before either arm executes.
+        let plan = crate::admission::PairedExecutionPlan::tier1_kv_demo(
+            &engine_sha256,
+            DEMO_ADMISSION_SEED,
+            DEMO_ADMISSION_UNIVERSES,
+        )?;
+        let output_root = crate::cooperative::prepare_output_root(Path::new(&out))?;
+        let treatment_root = output_root.join("treatment");
+        let fixed_control_root = output_root.join("fixed-control");
+
+        run_expected_receipt(&treatment_root, plan.treatment_expectation())?;
+        run_expected_receipt(&fixed_control_root, plan.fixed_control_expectation())?;
+        let treatment =
+            verify_run_fresh(&treatment_root, &engine_path, plan.treatment_expectation())?;
+        let fixed_control = verify_run_fresh(
+            &fixed_control_root,
+            &engine_path,
+            plan.fixed_control_expectation(),
+        )?;
+        Ok(crate::admission::Admission::classify(
+            plan,
+            treatment,
+            fixed_control,
+        ))
+    })();
+
+    let admission = match result {
+        Ok(admission) => admission,
+        Err(error) => {
+            eprintln!(
+                "error: demo admission failed closed: {}",
+                crate::cooperative::bounded_diagnostic(&error)
+            );
+            return 2;
+        }
+    };
+    let receipt = admission.receipt();
+    let receipt_path = Path::new(&out).join("admission.receipt");
+    if crate::cooperative::write_new_file(&receipt_path, receipt.canonical_bytes()).is_err() {
+        eprintln!("error: demo admission receipt publication failed closed");
+        return 2;
+    }
+    let published = match vh_sandbox::read_bounded_file(&receipt_path, MAX_ADMISSION_RECEIPT_BYTES)
+    {
+        Ok(bytes) => bytes,
+        Err(_) => {
+            eprintln!("error: demo admission receipt read-back failed closed");
+            return 2;
+        }
+    };
+    if published != receipt.canonical_bytes()
+        || crate::admission::RealExecutionReceipt::verify_canonical(&published, receipt.sha256())
+            .is_err()
+    {
+        eprintln!("error: demo admission receipt verification failed closed");
+        return 2;
+    }
+    match std::str::from_utf8(&published) {
+        Ok(text) => print!("{text}"),
+        Err(_) => {
+            eprintln!("error: demo admission receipt is not UTF-8");
+            return 2;
+        }
+    }
+    debug_assert_eq!(
+        admission.fixed_control_miss(),
+        admission.kind_label() == "CONFIRMED"
+    );
+    admission.exit_code()
+}
+
 /// `vh verify-run --out DIR --engine PATH` performs a fresh semantic
 /// reproduction with this engine. Caller-authored verdict/count/path fields
 /// are never trusted: the full receipt body and every bundle's base observation
@@ -1079,113 +1827,35 @@ pub fn cmd_verify_run(args: &[String], usage: &str) -> i32 {
             return 2;
         }
     };
-    let result_digest = vh_digest::sha256_hex(&bytes);
-    let mut evidence_digest = String::new();
-    let mut findings_total = 0usize;
-    let mut findings_verified = 0usize;
-    let mut final_verdict = "ERROR";
-    let mut outcome_exit_code = 2;
-    let mut outcome_verified = false;
-    let mut engine_request_digest = String::new();
-
-    let verification: Result<(), String> = (|| {
-        let max_lines = (MAX_VERIFY_UNIVERSES as usize)
-            .saturating_mul(2)
-            .saturating_add(2);
-        if text
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .take(max_lines + 1)
-            .count()
-            > max_lines
-        {
-            return Err("run receipt exceeds the canonical line-count bound".into());
-        }
-        let raw: Vec<&str> = text.split('\n').collect();
-        let (tail, body_and_digest) = raw.split_last().ok_or("empty run receipt")?;
-        if !tail.is_empty() || body_and_digest.iter().any(|line| line.is_empty()) {
-            return Err("run receipt line framing is not canonical".into());
-        }
-        let (digest_line, body_lines) = body_and_digest
-            .split_last()
-            .ok_or("run receipt has no digest record")?;
-        if body_lines.is_empty() {
-            return Err("run receipt has no manifest record".into());
-        }
-        let mut body = String::new();
-        for line in body_lines {
-            body.push_str(line);
-            body.push('\n');
-        }
-        evidence_digest = exact_digest(digest_line, body.as_bytes())?;
-        let manifest = exact_manifest(body_lines[0])?;
-        engine_request_digest = generic_engine_request_digest(&manifest);
-        let workload = workloads::by_name(&manifest.workload)
-            .ok_or("manifest workload is outside the closed registry")?;
-        let palette = palette_by_name(&manifest.palette)?;
-        let config = MultiverseConfig {
-            root_seed: manifest.seed,
-            universes: manifest.universes,
-            check_divergence: manifest.divergence_check,
-        };
-        let report = run_multiverse_with_palette(&config, workload.as_ref(), palette);
-        let (verdict, exit_code, semantically_verified) = match report.verdict() {
-            Verdict::Clean => ("CLEAN", 0, true),
-            Verdict::Findings => ("FINDINGS", 1, true),
-            Verdict::Unchecked => ("UNCHECKED", 3, false),
-        };
-        let findings = finding_universes(&report);
-        findings_total = findings.len();
-        let identity = RunIdentity {
-            palette_name: &manifest.palette,
-            universes_requested: manifest.universes.get(),
-            check_divergence: manifest.divergence_check,
-            verdict_label: verdict,
-            provenance: &manifest.provenance,
-            lineage: None,
-        };
-        if body != run_receipt_body(&report, &identity, &findings) {
-            return Err("run receipt body does not equal the fresh semantic reproduction".into());
-        }
-        let finding_ids: Vec<String> = findings
-            .iter()
-            .map(|&universe| {
-                let result = &report.results()[universe as usize];
-                let digest =
-                    vh_digest::sha256_hex(result.complete_observation_identity().canonical_bytes());
-                finding_id_v2(universe, &digest)
-            })
-            .collect();
-        verify_receipt_tree(dir_path, &finding_ids)?;
-        findings_verified = verify_finding_bundles(
-            dir_path,
-            &report,
-            &findings,
-            &manifest.palette,
-            &manifest.provenance,
-        )?;
-        final_verdict = verdict;
-        outcome_exit_code = exit_code;
-        outcome_verified = semantically_verified;
-        Ok(())
-    })();
-
-    let errors = verification
+    let mut fresh_replay_attempts = 0;
+    let attempt = verify_run_inner(
+        dir_path,
+        &engine_sha256,
+        &bytes,
+        text,
+        None,
+        &mut fresh_replay_attempts,
+    );
+    let errors = attempt
+        .proof
+        .as_ref()
         .err()
-        .map(|error| vec![bounded_verify_error(&error)])
+        .map(|error| vec![bounded_verify_error(error)])
         .unwrap_or_default();
     let authentic = errors.is_empty();
+    let outcome = attempt.proof.as_ref().ok().map(FreshRunProof::outcome);
+    let outcome_verified = outcome.is_some_and(FreshRunOutcome::semantically_verified);
     render_verify_run_record(
         authentic,
         outcome_verified,
-        if authentic { final_verdict } else { "ERROR" },
-        if authentic { outcome_exit_code } else { 2 },
-        &result_digest,
-        &evidence_digest,
+        outcome.map(FreshRunOutcome::label).unwrap_or("ERROR"),
+        outcome.map(FreshRunOutcome::exit_code).unwrap_or(2),
+        &attempt.result_digest,
+        &attempt.evidence_digest,
         &engine_sha256,
-        &engine_request_digest,
-        findings_total,
-        findings_verified,
+        &attempt.engine_request_digest,
+        attempt.findings_total,
+        attempt.findings_verified,
         &errors,
     );
     if authentic {
@@ -1475,6 +2145,70 @@ fn replay_v1(text: &str, file: &Path) -> i32 {
 mod writer_boundary_tests {
     use super::*;
 
+    const TIER1_TEST_SEED: u64 = 0xd1ce;
+    const TIER1_TEST_UNIVERSES: u64 = 4;
+
+    struct TestReceiptDir(PathBuf);
+
+    impl TestReceiptDir {
+        fn new(label: &str) -> Self {
+            let path = crate::cooperative::reserve_test_directory(label)
+                .expect("reserve isolated receipt directory");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestReceiptDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn write_tier1_test_receipt(workload_name: &str) -> TestReceiptDir {
+        let dir = TestReceiptDir::new(workload_name);
+        let workload = workloads::by_name(workload_name).expect("closed test workload");
+        let config = MultiverseConfig {
+            root_seed: TIER1_TEST_SEED,
+            universes: UniverseCount::try_from(TIER1_TEST_UNIVERSES)
+                .expect("nonzero bounded test budget"),
+            check_divergence: true,
+        };
+        let report = run_multiverse_with_palette(
+            &config,
+            workload.as_ref(),
+            palette_by_name("v0").expect("closed v0 palette"),
+        );
+        let verdict = match report.verdict() {
+            Verdict::Clean => "CLEAN",
+            Verdict::Findings => "FINDINGS",
+            Verdict::Unchecked => "UNCHECKED",
+        };
+        let provenance = crate::build_provenance(None);
+        write_run_receipts(
+            dir.path().to_str().expect("UTF-8 test path"),
+            &report,
+            &RunIdentity {
+                palette_name: "v0",
+                universes_requested: TIER1_TEST_UNIVERSES,
+                check_divergence: true,
+                verdict_label: verdict,
+                provenance: &provenance,
+                lineage: None,
+            },
+        )
+        .expect("write canonical test receipt");
+        dir
+    }
+
+    fn tier1_expectation(workload: &str) -> RunExpectation {
+        RunExpectation::fifo(workload, TIER1_TEST_SEED, TIER1_TEST_UNIVERSES, "v0", true)
+            .expect("valid closed test expectation")
+    }
+
     #[test]
     fn aggregate_bundle_byte_bound_is_exact_and_overflow_safe() {
         assert_eq!(
@@ -1493,5 +2227,138 @@ mod writer_boundary_tests {
         assert!(diagnostic.is_ascii());
         assert!(diagnostic.len() <= crate::cooperative::MAX_DIAGNOSTIC_BYTES);
         assert!(diagnostic.ends_with("...[truncated]"));
+    }
+
+    #[test]
+    fn fresh_proofs_bind_distinct_targets_under_one_shared_condition() {
+        let buggy_dir = write_tier1_test_receipt("demo-buggy");
+        let control_dir = write_tier1_test_receipt("demo");
+        let buggy_expected = tier1_expectation("demo-buggy");
+        let control_expected = tier1_expectation("demo");
+        let engine = crate::current_engine_path().expect("test engine path");
+
+        let buggy = verify_run_fresh(buggy_dir.path(), &engine, &buggy_expected)
+            .expect("fresh buggy proof");
+        let control = verify_run_fresh(control_dir.path(), &engine, &control_expected)
+            .expect("fresh control proof");
+
+        assert_eq!(buggy.outcome(), FreshRunOutcome::Findings);
+        assert_eq!(control.outcome(), FreshRunOutcome::Clean);
+        assert_eq!(buggy.finding_count(), 2);
+        assert_eq!(control.finding_count(), 0);
+        assert_ne!(
+            buggy.workload_target_revision(),
+            control.workload_target_revision()
+        );
+        assert_ne!(buggy.command_id(), control.command_id());
+        assert_eq!(buggy.condition_id(), control.condition_id());
+        assert_eq!(buggy.oracle_contract_id(), control.oracle_contract_id());
+        assert_eq!(buggy.engine_sha256(), control.engine_sha256());
+        assert_eq!(buggy.budget_universes(), TIER1_TEST_UNIVERSES);
+        assert_eq!(buggy.budget_universes(), control.budget_universes());
+        assert_eq!(buggy.results_len(), TIER1_TEST_UNIVERSES as usize);
+        assert_eq!(buggy.results_len(), control.results_len());
+        assert!(buggy.budget_exhausted());
+        assert!(control.budget_exhausted());
+        assert_eq!(buggy.fault_plan_digests(), control.fault_plan_digests());
+        assert_ne!(buggy.evidence_digest(), control.evidence_digest());
+        assert_ne!(buggy.result_digest(), control.result_digest());
+        assert_ne!(
+            buggy.verification_result_id(),
+            control.verification_result_id()
+        );
+        assert_eq!(
+            buggy.workload_target_revision(),
+            buggy_expected
+                .target_revision_for_engine(buggy.engine_sha256())
+                .expect("valid observed engine SHA")
+        );
+        assert_eq!(buggy.command_id(), buggy_expected.command_id());
+        assert_eq!(buggy.condition_id(), buggy_expected.condition_id());
+        assert_eq!(
+            buggy.oracle_contract_id(),
+            buggy_expected.oracle_contract_id()
+        );
+    }
+
+    fn assert_expectation_refused_before_replay(dir: &TestReceiptDir, expected: &RunExpectation) {
+        let bytes = fs::read(dir.path().join("run.ndjson")).expect("read canonical receipt");
+        let text = std::str::from_utf8(&bytes).expect("canonical receipt UTF-8");
+        let engine_sha256 = crate::cooperative::current_engine_sha256().expect("engine digest");
+        let mut fresh_replay_attempts = 0;
+
+        let attempt = verify_run_inner(
+            dir.path(),
+            &engine_sha256,
+            &bytes,
+            text,
+            Some(expected),
+            &mut fresh_replay_attempts,
+        );
+
+        assert!(attempt.proof.is_err());
+        assert_eq!(
+            fresh_replay_attempts, 0,
+            "an expectation mismatch must precede fresh execution"
+        );
+    }
+
+    #[test]
+    fn every_expectation_mismatch_returns_no_proof_before_replay() {
+        let buggy_dir = write_tier1_test_receipt("demo-buggy");
+        let mismatches = [
+            RunExpectation::fifo("demo", TIER1_TEST_SEED, TIER1_TEST_UNIVERSES, "v0", true)
+                .unwrap(),
+            RunExpectation::fifo(
+                "demo-buggy",
+                TIER1_TEST_SEED + 1,
+                TIER1_TEST_UNIVERSES,
+                "v0",
+                true,
+            )
+            .unwrap(),
+            RunExpectation::fifo(
+                "demo-buggy",
+                TIER1_TEST_SEED,
+                TIER1_TEST_UNIVERSES + 1,
+                "v0",
+                true,
+            )
+            .unwrap(),
+            RunExpectation::fifo(
+                "demo-buggy",
+                TIER1_TEST_SEED,
+                TIER1_TEST_UNIVERSES,
+                "swarm",
+                true,
+            )
+            .unwrap(),
+            RunExpectation::fifo(
+                "demo-buggy",
+                TIER1_TEST_SEED,
+                TIER1_TEST_UNIVERSES,
+                "v0",
+                false,
+            )
+            .unwrap(),
+        ];
+        for expected in &mismatches {
+            assert_expectation_refused_before_replay(&buggy_dir, expected);
+        }
+    }
+
+    #[test]
+    fn fresh_verification_returns_no_proof_for_tampered_receipt() {
+        let control_dir = write_tier1_test_receipt("demo");
+        let expected = tier1_expectation("demo");
+        let engine = crate::current_engine_path().expect("test engine path");
+        let run_path = control_dir.path().join("run.ndjson");
+        let mut bytes = fs::read(&run_path).expect("read canonical receipt");
+        bytes.push(b'\n');
+        fs::write(&run_path, bytes).expect("tamper isolated receipt");
+
+        let result = verify_run_fresh(control_dir.path(), &engine, &expected);
+
+        assert!(result.is_err());
     }
 }

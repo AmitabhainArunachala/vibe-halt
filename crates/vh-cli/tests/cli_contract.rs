@@ -528,6 +528,117 @@ fn verify_run_rejects_wrong_engine_and_oversized_work_claim_without_replay() {
     let _ = std::fs::remove_dir_all(tmp);
 }
 
+#[test]
+fn demo_admission_executes_and_freshly_verifies_the_fixed_pair() {
+    let tmp = unique_tmp("demo-admission-positive");
+    let out = tmp.join("evidence");
+    let (code, stdout, stderr) = vh(&[
+        "demo-admission",
+        "--out",
+        out.to_str().expect("UTF-8 test path"),
+    ]);
+
+    assert_eq!(
+        code, 1,
+        "the seeded faulty target must HALT:\n{stdout}\n{stderr}"
+    );
+    assert!(stderr.is_empty(), "{stderr}");
+    assert!(
+        stdout.starts_with("vh-real-execution-receipt-digest-v1\n"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("admission-kind 9:CONFIRMED\n"), "{stdout}");
+    assert!(stdout.contains("fixed-control-miss true\n"), "{stdout}");
+    assert!(
+        stdout.contains("confirmation-authority 17:RUST_FRESH_REPLAY\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("treatment-outcome 8:FINDINGS\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("fixed-control-outcome 5:CLEAN\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("treatment-budget-universes 4\n"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains("fixed-control-budget-universes 4\n"),
+        "{stdout}"
+    );
+    let receipt = std::fs::read(out.join("admission.receipt")).unwrap();
+    assert_eq!(receipt, stdout.as_bytes());
+    assert_eq!(vh_digest::sha256_hex(&receipt).len(), 64);
+    assert!(out.join("treatment/run.ndjson").is_file());
+    assert!(out.join("fixed-control/run.ndjson").is_file());
+
+    let before = receipt;
+    let (rerun_code, rerun_stdout, rerun_stderr) = vh(&[
+        "demo-admission",
+        "--out",
+        out.to_str().expect("UTF-8 test path"),
+    ]);
+    assert_eq!(rerun_code, 2);
+    assert!(rerun_stdout.is_empty());
+    assert!(rerun_stderr.contains("failed closed"), "{rerun_stderr}");
+    assert_eq!(
+        std::fs::read(out.join("admission.receipt")).unwrap(),
+        before
+    );
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn demo_admission_refuses_an_occupied_root_before_any_arm_runs() {
+    let tmp = unique_tmp("demo-admission-occupied");
+    let out = tmp.join("evidence");
+    std::fs::create_dir(&out).unwrap();
+    std::fs::write(out.join("owner-marker"), b"preserve").unwrap();
+
+    let (code, stdout, stderr) = vh(&[
+        "demo-admission",
+        "--out",
+        out.to_str().expect("UTF-8 test path"),
+    ]);
+
+    assert_eq!(code, 2);
+    assert!(stdout.is_empty());
+    assert!(stderr.contains("failed closed"), "{stderr}");
+    assert_eq!(
+        std::fs::read(out.join("owner-marker")).unwrap(),
+        b"preserve"
+    );
+    assert!(!out.join("treatment").exists());
+    assert!(!out.join("fixed-control").exists());
+    assert!(!out.join("admission.receipt").exists());
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
+#[test]
+fn eval_validate_maps_readable_structural_failures_to_invalid_exit_1() {
+    let tmp = unique_tmp("eval-structural-invalid");
+    let path = tmp.join("manifest-only.ndjson");
+    std::fs::write(
+        &path,
+        b"{\"record\":\"manifest\",\"schema\":\"vibe-halt.holdout-manifest.v1\",\"name\":\"x\"}\n",
+    )
+    .unwrap();
+
+    let (code, stdout, stderr) = vh(&[
+        "eval-validate",
+        "--dossier",
+        path.to_str().expect("UTF-8 test path"),
+    ]);
+
+    assert_eq!(code, 1, "{stdout}\n{stderr}");
+    assert!(stdout.contains("verdict: INVALID"), "{stdout}");
+    assert!(stderr.contains("no dossier records found"), "{stderr}");
+    let _ = std::fs::remove_dir_all(tmp);
+}
+
 /// The full C4 acceptance in one flow: receipts are byte-deterministic
 /// across two runs; a finding bundle copied OUT of the out-dir replays
 /// standalone after the out-dirs are deleted (exit 0, anchored
